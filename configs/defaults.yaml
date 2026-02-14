@@ -1,0 +1,173 @@
+# TriShift 默认配置（总入口：scripts/run_dataset.py）
+
+# 每个 pert 细胞匹配的 top-k control 邻居数。
+k_topk: 300
+# control/pert 匹配方式：knn | ot | knn_ot | soft_ot。
+matching_mode: ot
+# 训练模式：joint | sequential | stage3_only。
+# 注意：当 train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。
+train_mode: joint
+# 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
+n_eval_ensemble: 300
+# 全局随机种子。
+seed: 24
+
+run:
+  # 是否做多随机划分评估。
+  multi_split: true
+  # 划分次数（multi_split=true 时生效）。
+  n_splits: 1
+
+performance:
+  # 混合精度；仅在 CUDA 可用时生效。
+  amp: false
+  # DataLoader worker 数量。
+  num_workers: 0
+  # DataLoader pin_memory。
+  pin_memory: false
+  # 梯度累积步数。
+  grad_accum_steps: 1
+  # 大矩阵计算分块大小（用于内存控制）。
+  chunk_size: 4096
+
+train:
+  stage1:
+    # Stage1 (VAE) 训练轮数。
+    epochs: 80
+    # Stage1 batch size。
+    batch_size: 128
+    # Stage1 学习率。
+    lr: 0.0005
+    # Stage1 KL 系数（额外乘以 model.stage1.kl_weight）。
+    beta: 1.0
+    # 指数学习率衰减系数（1 表示不衰减）。
+    sched_gamma: 1
+    # 早停耐心。
+    patience: 10
+    # 早停最小提升阈值。
+    min_delta: 0.001
+  stage23:
+    # joint 模式下 Stage2+Stage3 的训练轮数。
+    epochs: 40
+    # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里的 batch）。
+    batch_size: 256
+    # joint 学习率。
+    lr: 0.001
+    sched_gamma: 0.9
+    patience: 5
+    min_delta: 0.001
+  stage2:
+    # sequential 模式 Phase A (Stage2) 轮数/学习率。
+    epochs: 40
+    lr: 0.001
+    sched_gamma: 0.9
+    patience: 5
+    min_delta: 0.001
+  stage3:
+    # sequential 模式 Phase B (Stage3) 轮数/学习率。
+    epochs: 40
+    lr: 0.001
+    sched_gamma: 0.9
+    patience: 5
+    min_delta: 0.001
+
+loss:
+  # GEARS 风格 autofocus 指数；0 表示退化为平方误差型项。
+  gamma: 0
+  # 方向损失通用权重（当 *_expr / *_z 未单独指定时使用）。
+  lambda_dir: 0.01
+  # 表达空间方向损失权重。
+  lambda_dir_expr: 0.01
+  # latent 空间方向损失权重（latent_loss_type=gears 时用到）。
+  lambda_dir_z: 0.05
+  # latent 监督损失权重（仅 predict_delta=true 生效）。
+  lambda_z: 1
+  # DE 基因加权倍率（=1 表示不加权）。
+  deg_weight: 1
+  # 额外表达 MSE 权重（0 表示关闭）。
+  lambda_expr_mse: 0
+
+ablation:
+  # Stage1 是否使用 train split 的 ctrl+pert（false 则仅 ctrl）。
+  stage1_use_train_split: true
+  # sequential 训练后是否追加短轮 joint finetune。
+  sequential_joint_finetune: false
+  # 追加 finetune 轮数。
+  joint_finetune_epochs: 6
+  # 追加 finetune 学习率倍率（乘以 train.stage23.lr）。
+  joint_finetune_lr_scale: 0.2
+  # top-k 采样策略：random | weighted | expand | weighted_sample。
+  topk_strategy: random
+  # 软权重场景下是否按分布采样 control（否则取 argmax）。
+  sample_soft_ctrl: true
+  # OT 是否按 perturbation 条件分组计算（更细粒度，通常更慢）。
+  per_condition_ot: false
+  # 是否允许复用 OT/soft_ot/knn_ot 的 top-k 缓存（knn 一直可复用）。
+  # 注意：缓存文件名和校验键已包含 matching_mode 与 stage1 配置指纹，避免误复用。
+  reuse_ot_cache: true
+  # latent 损失类型：gears | mse | smooth_l1。
+  latent_loss_type: gears
+
+model:
+  stage1:
+    # VAE latent 维度。
+    z_dim: 64
+    # VAE 主干隐层宽度。
+    hidden_dim: 1024
+    # 输入噪声注入比例。
+    noise_rate: 0.1
+    # VAE KL 权重（与 train.stage1.beta 相乘）。
+    kl_weight: 0.0005
+  stage2:
+    # Shift MLP 隐层结构。
+    shift_hidden:
+    - 512
+    - 2048
+    # 是否预测显式 delta_z（false 则输出 shift 表征）。
+    # 注意：false 时 latent supervision 会自动关闭。
+    predict_delta: true
+    # Shift 输入来源：latent_mu | state。
+    # - latent_mu: 使用 z_ctrl_mu
+    # - state: 使用 Stage3 compressor(x_ctrl)
+    shift_input_source: latent_mu
+    # 多基因条件 embedding 聚合方式：sum | mean。
+    cond_pool_mode: sum
+    # 条件向量是否做 L2 归一化。
+    cond_l2_norm: false
+    # cross-attention（与 transformer block 互斥）。
+    use_cross_attention: false
+    # 注意力头数（需整除 model_dim）。
+    cross_attn_heads: 4
+    # cross-attention dropout。
+    cross_attn_dropout: 0
+    # transformer block（与 cross-attention 互斥）。
+    use_transformer_block: false
+    # transformer token 读出：first | mean | concat。
+    transformer_readout: first
+    # transformer encoder 层数。
+    transformer_layers: 2
+    # transformer FFN 扩展倍率。
+    transformer_ff_mult: 4
+    # transformer dropout。
+    transformer_dropout: 0
+  stage3:
+    # Generator 输入模式：full | fusion_only | state_fusion。
+    # 注意：train_mode=stage3_only 时必须是 full。
+    input_mode: full
+    # 控制状态编码器（compressor）隐层。
+    encoder_hidden:
+    - 2048
+    - 512
+    # 状态维度；可写整数，或写 cond_dim 复用条件维度。
+    state_dim: 64
+    # 生成器解码器隐层。
+    decoder_hidden:
+    - 2048
+    # 是否启用 BatchNorm。
+    use_batch_norm: true
+    # 是否启用 LayerNorm。
+    use_layer_norm: false
+    # Stage3 dropout。
+    dropout: 0.0
+    # 残差头：x_pred = x_ctrl + delta_x。
+    use_residual_head: false

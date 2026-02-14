@@ -1,0 +1,43 @@
+﻿# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local assistant / temp
+.backup/
+.claude/
+.qoder/
+.tmp*
+
+# Training outputs / caches
+artifacts/
+csv_output/
+external/
+
+# Local datasets / embeddings (too large for git)
+src/data/**/*.h5ad
+src/data/**/*.pickle
+
+# LaTeX build artifacts
+*.pdf
+*.tex
+*.aux
+*.log
+*.out
+*.toc
+
+# Local odd files
+nul
