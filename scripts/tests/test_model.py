@@ -145,12 +145,39 @@ def test_trishiftnet_state_requires_gen_state_dim() -> None:
         assert "shift_input_source=state requires gen_state_dim" in str(exc)
 
 
+def test_trishiftnet_latent_state_source_supports_all_input_modes() -> None:
+    x_ctrl = torch.randn(4, 10)
+    cond_vec = torch.randn(4, 8)
+    z_ctrl_mu = torch.randn(4, 6)
+    for input_mode in ("full", "state_fusion", "fusion_only"):
+        model = TriShiftNet(
+            x_dim=10,
+            z_dim=6,
+            cond_dim=8,
+            vae_enc_hidden=[16],
+            vae_dec_hidden=[16],
+            shift_hidden=[16],
+            gen_hidden=[16],
+            gen_input_mode=input_mode,
+            gen_state_source="latent_mu",
+            shift_input_source="latent_mu",
+        )
+        out = model.forward_joint(
+            x_ctrl=x_ctrl,
+            cond_vec=cond_vec,
+            z_ctrl_mu=z_ctrl_mu,
+        )
+        assert out["x_pred"].shape == (4, 10)
+        assert model.gen.compressor is None
+
+
 def main() -> None:
     test_aggregate_cond_embedding_empty_and_mean()
     test_shift_net_output_dims()
     test_shift_net_transformer_concat_repr_dim()
     test_trishiftnet_state_source_resolution_and_forward_keys()
     test_trishiftnet_state_requires_gen_state_dim()
+    test_trishiftnet_latent_state_source_supports_all_input_modes()
     print("test_model: PASS")
 
 

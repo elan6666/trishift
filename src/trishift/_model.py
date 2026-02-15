@@ -330,6 +330,7 @@ class GeneratorNet(nn.Module):
         hidden: list[int] | None,
         shift_dim: int | None = None,
         input_mode: str = "full",
+        state_source: str = "compressor",
         dropout: float = 0.0,
         encoder_hidden: list[int] | None = None,
         state_dim: int | None = None,
@@ -343,35 +344,46 @@ class GeneratorNet(nn.Module):
         self.input_mode = str(input_mode)
         if self.input_mode not in {"full", "fusion_only", "state_fusion"}:
             raise ValueError("input_mode must be one of: full, fusion_only, state_fusion")
+        self.state_source = str(state_source)
+        if self.state_source not in {"compressor", "latent_mu"}:
+            raise ValueError("state_source must be one of: compressor, latent_mu")
         self.use_residual_head = bool(use_residual_head)
 
-        if encoder_hidden is None and state_dim is None and decoder_hidden is None:
-            hidden = hidden or []
-            if hidden:
-                state_dim = hidden[0]
-                comp_hidden = hidden[1:]
-                gen_hidden = hidden[1:]
+        if self.state_source == "compressor":
+            if encoder_hidden is None and state_dim is None and decoder_hidden is None:
+                hidden = hidden or []
+                if hidden:
+                    state_dim = hidden[0]
+                    comp_hidden = hidden[1:]
+                    gen_hidden = hidden[1:]
+                else:
+                    state_dim = x_dim
+                    comp_hidden = []
+                    gen_hidden = []
             else:
-                state_dim = x_dim
-                comp_hidden = []
-                gen_hidden = []
+                if state_dim is None:
+                    raise ValueError(
+                        "state_dim must be provided when using encoder_hidden/decoder_hidden"
+                    )
+                comp_hidden = encoder_hidden or []
+                gen_hidden = decoder_hidden or []
+            self.state_dim = int(state_dim)
+            self.compressor = MLP(
+                in_dim=x_dim,
+                hidden_dims=comp_hidden,
+                out_dim=self.state_dim,
+                dropout=dropout,
+                activation="selu",
+                use_batchnorm=use_batchnorm,
+                use_layernorm=use_layernorm,
+                use_alpha_dropout=True,
+            )
         else:
-            if state_dim is None:
-                raise ValueError("state_dim must be provided when using encoder_hidden/decoder_hidden")
-            comp_hidden = encoder_hidden or []
-            gen_hidden = decoder_hidden or []
-        self.state_dim = int(state_dim)
+            hidden = hidden or []
+            gen_hidden = hidden if decoder_hidden is None else (decoder_hidden or [])
+            self.state_dim = int(z_dim)
+            self.compressor = None
 
-        self.compressor = MLP(
-            in_dim=x_dim,
-            hidden_dims=comp_hidden,
-            out_dim=self.state_dim,
-            dropout=dropout,
-            activation="selu",
-            use_batchnorm=use_batchnorm,
-            use_layernorm=use_layernorm,
-            use_alpha_dropout=True,
-        )
         if self.input_mode == "fusion_only":
             gen_in_dim = self.z_dim
         elif self.input_mode == "state_fusion":
@@ -406,18 +418,30 @@ class GeneratorNet(nn.Module):
         x_ctrl: torch.Tensor,
         cond_vec: torch.Tensor,
         delta_z: torch.Tensor,
+        z_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if self.input_mode == "fusion_only":
             return delta_z
-        state = self.compressor(x_ctrl)
+        if self.state_source == "compressor":
+            if self.compressor is None:
+                raise RuntimeError("compressor is not initialized")
+            state = self.compressor(x_ctrl)
+        else:
+            if z_state is None:
+                raise RuntimeError("z_state is required when state_source=latent_mu")
+            state = z_state
         if self.input_mode == "state_fusion":
             return torch.cat([state, delta_z], dim=1)
         return torch.cat([cond_vec, state, delta_z], dim=1)
 
     def forward(
-        self, x_ctrl: torch.Tensor, cond_vec: torch.Tensor, delta_z: torch.Tensor
+        self,
+        x_ctrl: torch.Tensor,
+        cond_vec: torch.Tensor,
+        delta_z: torch.Tensor,
+        z_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self._build_generator_input(x_ctrl, cond_vec, delta_z)
+        x = self._build_generator_input(x_ctrl, cond_vec, delta_z, z_state=z_state)
         out = self.generator(x)
         if self.use_residual_head:
             return x_ctrl + out
@@ -426,6 +450,10 @@ class GeneratorNet(nn.Module):
     def forward_no_delta(self, x_ctrl: torch.Tensor, cond_vec: torch.Tensor) -> torch.Tensor:
         if self.input_mode != "full":
             raise RuntimeError("forward_no_delta is available only when gen input_mode=full")
+        if self.state_source != "compressor":
+            raise RuntimeError("forward_no_delta is available only when state_source=compressor")
+        if self.compressor is None:
+            raise RuntimeError("compressor is not initialized")
         state = self.compressor(x_ctrl)
         x = torch.cat([cond_vec, state], dim=1)
         out = self.generator_no_delta(x)
@@ -497,6 +525,7 @@ class TriShiftNet(nn.Module):
         shift_transformer_dropout: float = 0.0,
         shift_transformer_readout: str = "first",
         gen_input_mode: str = "full",
+        gen_state_source: str = "compressor",
         gen_use_residual_head: bool = False,
         shift_input_source: str = "latent_mu",
     ):
@@ -545,6 +574,7 @@ class TriShiftNet(nn.Module):
             shift_dim=self.shift.output_dim,
             hidden=gen_hidden,
             input_mode=gen_input_mode,
+            state_source=gen_state_source,
             dropout=dropout,
             encoder_hidden=gen_encoder_hidden,
             state_dim=resolved_gen_state_dim,
@@ -570,6 +600,8 @@ class TriShiftNet(nn.Module):
             return z_ctrl_mu
         if x_ctrl is None:
             raise RuntimeError("x_ctrl is required when shift_input_source=state")
+        if self.gen.compressor is None:
+            raise RuntimeError("shift_input_source=state requires generator compressor")
         return self.gen.compressor(x_ctrl)
 
     def predict_shift_repr(
@@ -592,9 +624,13 @@ class TriShiftNet(nn.Module):
         return self.predict_shift_repr(z_ctrl_mu, cond_vec, x_ctrl=x_ctrl)
 
     def predict_expr(
-        self, x_ctrl: torch.Tensor, cond_vec: torch.Tensor, delta_z: torch.Tensor
+        self,
+        x_ctrl: torch.Tensor,
+        cond_vec: torch.Tensor,
+        delta_z: torch.Tensor,
+        z_state: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        return self.gen(x_ctrl, cond_vec, delta_z)
+        return self.gen(x_ctrl, cond_vec, delta_z, z_state=z_state)
 
     def forward_joint(
         self,
@@ -606,7 +642,8 @@ class TriShiftNet(nn.Module):
         if z_ctrl_mu is None and self.shift_input_source == "latent_mu":
             z_ctrl_mu = self.encode_mu(x_ctrl)
         shift_repr = self.predict_shift_repr(z_ctrl_mu, cond_vec, x_ctrl=x_ctrl)
-        x_pred = self.predict_expr(x_ctrl, cond_vec, shift_repr)
+        z_state = z_ctrl_mu if self.gen.state_source == "latent_mu" else None
+        x_pred = self.predict_expr(x_ctrl, cond_vec, shift_repr, z_state=z_state)
         out = {"z_ctrl_mu": z_ctrl_mu, "shift_repr": shift_repr, "x_pred": x_pred}
         if self.shift.predict_delta:
             out["delta_z"] = shift_repr

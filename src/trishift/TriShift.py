@@ -493,6 +493,16 @@ class TriShift:
         ctrl_global_idx = np.array([all_idx_map[n] for n in ctrl_adata.obs_names], dtype=int)
         return ctrl_adata, ctrl_global_idx
 
+    def _require_cached_z_mu(self) -> np.ndarray:
+        """Return cached z_mu from adata_all.obsm or raise a clear error."""
+        z_mu = self.data.adata_all.obsm.get("z_mu")
+        if z_mu is None:
+            raise ValueError(
+                "z_mu cache missing for stage23 training. "
+                "Run stage1 training and encode_and_cache_mu() before stage23."
+            )
+        return np.asarray(z_mu)
+
     @staticmethod
     def _build_topk_loader(
         dataset,
@@ -600,6 +610,7 @@ class TriShift:
         cond_pool_mode: str = "sum",
         cond_l2_norm: bool = False,
         gen_use_residual_head: bool = False,
+        gen_state_source: str = "compressor",
         shift_input_source: str = "latent_mu",
     ):
         """Initialize the network modules and move them to the configured device."""
@@ -630,6 +641,7 @@ class TriShift:
             shift_transformer_ff_mult=shift_transformer_ff_mult,
             shift_transformer_dropout=shift_transformer_dropout,
             shift_transformer_readout=shift_transformer_readout,
+            gen_state_source=gen_state_source,
             gen_use_residual_head=gen_use_residual_head,
             shift_input_source=shift_input_source,
         ).to(self.device)
@@ -639,6 +651,7 @@ class TriShift:
         self.hparams["shift_transformer_readout"] = str(shift_transformer_readout)
         self.hparams["shift_input_source"] = str(shift_input_source)
         self.hparams["gen_input_mode"] = str(gen_input_mode)
+        self.hparams["gen_state_source"] = str(gen_state_source)
         return self
 
     def train_stage1_vae(
@@ -908,6 +921,7 @@ class TriShift:
         )
 
         base_seed = int(self.hparams.get("base_seed", 24))
+        z_mu_all = self._require_cached_z_mu()
         train_ctrl_adata, train_ctrl_global_idx = self._get_ctrl_pool_from_split(
             split_dict.get("train")
         )
@@ -952,7 +966,6 @@ class TriShift:
                 reuse_ot_cache=reuse_ot_cache,
                 cache_key=topk_cache_key,
             )
-        z_mu_all = self.data.adata_all.obsm["z_mu"]
         z_ctrl_mu_all = z_mu_all[train_ctrl_global_idx]
         all_idx_map = {n: i for i, n in enumerate(self.data.adata_all.obs_names)}
         pert_global_idx = np.array([all_idx_map[n] for n in pert_adata.obs_names])
@@ -1248,6 +1261,7 @@ class TriShift:
         )
 
         base_seed = int(self.hparams.get("base_seed", 24))
+        z_mu_all = self._require_cached_z_mu()
         train_ctrl_adata, train_ctrl_global_idx = self._get_ctrl_pool_from_split(
             split_dict.get("train")
         )
@@ -1270,7 +1284,6 @@ class TriShift:
         pert_mask = split_dict["train"].obs[self.data.label_key].astype(str) != self.data.ctrl_label
         pert_adata = split_dict["train"][pert_mask]
 
-        z_mu_all = self.data.adata_all.obsm["z_mu"]
         z_ctrl_mu_all = z_mu_all[train_ctrl_global_idx]
         all_idx_map = {n: i for i, n in enumerate(self.data.adata_all.obs_names)}
         pert_global_idx = np.array([all_idx_map[n] for n in pert_adata.obs_names])

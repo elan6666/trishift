@@ -173,6 +173,9 @@ def _init_model(
     stage1_model_cfg: dict,
     stage2_model_cfg: dict,
     model_cfg: dict,
+    *,
+    shift_input_source_override: str | None = None,
+    gen_state_source: str = "compressor",
 ) -> TriShift:
     """Initialize TriShift model and return it."""
     gen_encoder_hidden = model_cfg.get("encoder_hidden")
@@ -193,7 +196,11 @@ def _init_model(
     shift_transformer_ff_mult = int(stage2_model_cfg.get("transformer_ff_mult", 4))
     shift_transformer_dropout = float(stage2_model_cfg.get("transformer_dropout", 0.0))
     shift_transformer_readout = str(stage2_model_cfg.get("transformer_readout", "first"))
-    shift_input_source = str(stage2_model_cfg.get("shift_input_source", "latent_mu"))
+    shift_input_source = (
+        str(shift_input_source_override)
+        if shift_input_source_override is not None
+        else str(stage2_model_cfg.get("shift_input_source", "latent_mu"))
+    )
     cond_pool_mode = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
     cond_l2_norm = bool(stage2_model_cfg.get("cond_l2_norm", False))
     stage1_hidden_dim = int(stage1_model_cfg.get("hidden_dim", 1000))
@@ -228,6 +235,7 @@ def _init_model(
         shift_transformer_ff_mult=shift_transformer_ff_mult,
         shift_transformer_dropout=shift_transformer_dropout,
         shift_transformer_readout=shift_transformer_readout,
+        gen_state_source=gen_state_source,
         shift_input_source=shift_input_source,
         cond_pool_mode=cond_pool_mode,
         cond_l2_norm=cond_l2_norm,
@@ -478,6 +486,12 @@ def run_dataset(name: str, fast: bool = False) -> None:
     mode = defaults.get("matching_mode", "knn")
     k = int(defaults.get("k_topk", 5))
     train_mode = defaults.get("train_mode", "joint")
+    valid_train_modes = {"joint", "sequential", "stage3_only", "latent_decoder"}
+    if train_mode not in valid_train_modes:
+        raise ValueError(
+            f"Unsupported train_mode={train_mode}. "
+            f"Expected one of: {sorted(valid_train_modes)}"
+        )
     stage1_use_train_split = bool(ablation_cfg.get("stage1_use_train_split", False))
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
     sample_soft_ctrl = bool(ablation_cfg.get("sample_soft_ctrl", True))
@@ -499,6 +513,23 @@ def run_dataset(name: str, fast: bool = False) -> None:
     seq_joint_enable = bool(ablation_cfg.get("sequential_joint_finetune", False))
     seq_joint_epochs = int(ablation_cfg.get("joint_finetune_epochs", 6))
     seq_joint_lr_scale = float(ablation_cfg.get("joint_finetune_lr_scale", 0.2))
+    shift_input_source_cfg = str(stage2_model_cfg.get("shift_input_source", "latent_mu"))
+    shift_input_source_eff = shift_input_source_cfg
+    gen_state_source = "compressor"
+    if train_mode == "latent_decoder":
+        gen_state_source = "latent_mu"
+        if shift_input_source_cfg != "latent_mu":
+            print(
+                "[config] train_mode=latent_decoder ignores "
+                f"model.stage2.shift_input_source={shift_input_source_cfg}; "
+                "forcing latent_mu"
+            )
+        shift_input_source_eff = "latent_mu"
+        if seq_joint_enable:
+            print(
+                "[config] train_mode=latent_decoder ignores "
+                "ablation.sequential_joint_finetune settings"
+            )
     cache_dir = Path("artifacts") / "cache" / "topk"
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_dir = Path("artifacts") / "results" / name
@@ -563,6 +594,8 @@ def run_dataset(name: str, fast: bool = False) -> None:
             stage1_model_cfg,
             stage2_model_cfg,
             model_cfg,
+            shift_input_source_override=shift_input_source_eff,
+            gen_state_source=gen_state_source,
         )
         model.set_base_seed(base_seed)
 
@@ -643,6 +676,39 @@ def run_dataset(name: str, fast: bool = False) -> None:
                 lambda_dir_expr=loss.lambda_dir_expr,
                 deg_weight=loss.deg_weight,
                 lambda_expr_mse=loss.lambda_expr_mse,
+            )
+        elif train_mode == "latent_decoder":
+            train_logs["stage23_latent_decoder_joint"] = model.train_stage23_joint(
+                split_dict=split_dict,
+                emb_table=emb_table,
+                mode=mode,
+                k=k,
+                split_id=split_id,
+                epochs=stage23_epochs,
+                batch_size=int(stage23_cfg.get("batch_size", 64)),
+                lr=float(stage23_cfg.get("lr", 1e-3)),
+                sched_gamma=sched_stage23.sched_gamma,
+                patience=sched_stage23.patience,
+                min_delta=sched_stage23.min_delta,
+                amp=perf.amp,
+                num_workers=perf.num_workers,
+                pin_memory=perf.pin_memory,
+                grad_accum_steps=perf.grad_accum_steps,
+                cache_topk_path=str(cache_path),
+                gamma=loss.gamma,
+                lambda_dir=loss.lambda_dir,
+                lambda_dir_expr=loss.lambda_dir_expr,
+                lambda_dir_z=loss.lambda_dir_z,
+                lambda_z=loss.lambda_z,
+                deg_weight=loss.deg_weight,
+                topk_strategy=topk_strategy,
+                sample_soft_ctrl=sample_soft_ctrl,
+                latent_loss_type=latent_loss_type,
+                lambda_expr_mse=loss.lambda_expr_mse,
+                per_condition_ot=per_condition_ot,
+                disable_loss_z_supervision=disable_loss_z_supervision,
+                reuse_ot_cache=reuse_ot_cache,
+                topk_cache_key=topk_cache_key,
             )
         elif train_mode == "sequential":
             train_logs["stage23_sequential"] = model.train_stage23_sequential(

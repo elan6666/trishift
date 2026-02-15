@@ -4,9 +4,11 @@
 k_topk: 300
 # control/pert 匹配方式：knn | ot | knn_ot | soft_ot。
 matching_mode: ot
-# 训练模式：joint | sequential | stage3_only。
-# 注意：当 train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。
-train_mode: stage3_only
+# 训练模式：joint | sequential | stage3_only | latent_decoder。
+# 注意：
+# - train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。
+# - train_mode=latent_decoder 时，Stage23 走 joint 训练且不使用 Stage3 compressor。
+train_mode: latent_decoder
 # 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
 n_eval_ensemble: 300
 # 全局随机种子。
@@ -22,7 +24,7 @@ performance:
   # 混合精度；仅在 CUDA 可用时生效。
   amp: false
   # DataLoader worker 数量。
-  num_workers: 4
+  num_workers: 0
   # DataLoader pin_memory。
   pin_memory: true
   # 梯度累积步数。
@@ -49,7 +51,7 @@ train:
   stage23:
     # joint 模式下 Stage2+Stage3 的训练轮数。
     epochs: 40
-    # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里的 batch）。
+    # Stage2/3 的 batch size（joint/sequential/stage3_only/latent_decoder 都走这里）。
     batch_size: 256
     # joint 学习率。
     lr: 0.001
@@ -129,6 +131,7 @@ model:
     # Shift 输入来源：latent_mu | state。
     # - latent_mu: 使用 z_ctrl_mu
     # - state: 使用 Stage3 compressor(x_ctrl)
+    # 注意：train_mode=latent_decoder 时该项会被忽略并强制为 latent_mu。
     shift_input_source: latent_mu
     # 多基因条件 embedding 聚合方式：sum | mean。
     cond_pool_mode: sum
@@ -152,13 +155,18 @@ model:
     transformer_dropout: 0
   stage3:
     # Generator 输入模式：full | fusion_only | state_fusion。
+    # 语义：
+    # - 常规模式：full = cond + compressor(state) + shift；state_fusion = state + shift；fusion_only = shift
+    # - latent_decoder：full = z_state + cond + shift；state_fusion = z_state + shift；fusion_only = shift
     # 注意：train_mode=stage3_only 时必须是 full。
     input_mode: full
     # 控制状态编码器（compressor）隐层。
+    # 注意：train_mode=latent_decoder 时不使用 compressor，此项不生效。
     encoder_hidden:
     - 2048
     - 512
     # 状态维度；可写整数，或写 cond_dim 复用条件维度。
+    # 注意：train_mode=latent_decoder 时状态来自 stage1 z_mu（z_dim），此项不生效。
     state_dim: 64
     # 生成器解码器隐层。
     decoder_hidden:

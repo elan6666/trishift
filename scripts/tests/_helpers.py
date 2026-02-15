@@ -63,7 +63,10 @@ def make_embeddings_df(dim: int = 8) -> pd.DataFrame:
     return pd.DataFrame(data, index=["ctrl", "A", "B"])
 
 
-def make_data_and_model(seed: int = 0) -> tuple[TriShiftData, TriShift]:
+def make_data_and_model(
+    seed: int = 0,
+    model_init_overrides: dict | None = None,
+) -> tuple[TriShiftData, TriShift]:
     _utils.set_seeds(seed)
     adata = make_tiny_adata()
     embd_df = make_embeddings_df()
@@ -71,15 +74,20 @@ def make_data_and_model(seed: int = 0) -> tuple[TriShiftData, TriShift]:
     data.setup_embedding_index()
     data.build_or_load_degs()
     model = TriShift(data, device="cpu")
+    model_init_kwargs = {
+        "x_dim": adata.n_vars,
+        "z_dim": 8,
+        "cond_dim": embd_df.shape[1],
+        "vae_enc_hidden": [16],
+        "vae_dec_hidden": [16],
+        "shift_hidden": [16],
+        "gen_hidden": [16],
+        "dropout": 0.0,
+    }
+    if model_init_overrides:
+        model_init_kwargs.update(model_init_overrides)
     model.model_init(
-        x_dim=adata.n_vars,
-        z_dim=8,
-        cond_dim=embd_df.shape[1],
-        vae_enc_hidden=[16],
-        vae_dec_hidden=[16],
-        shift_hidden=[16],
-        gen_hidden=[16],
-        dropout=0.0,
+        **model_init_kwargs,
     )
     return data, model
 
