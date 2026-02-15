@@ -8,11 +8,15 @@ import pickle
 import random
 import json
 import hashlib
+import subprocess
+from datetime import datetime, timezone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import torch
 import pandas as pd
+import numpy as np
+import yaml
 
 from trishift._utils import (
     load_yaml,
@@ -164,6 +168,52 @@ def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
         lines.append(f"mean_{key}={val}\n")
 
     path.write_text("".join(lines), encoding="utf-8")
+
+
+def _safe_git_commit() -> str | None:
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        return None
+    return out.decode("utf-8", "replace").strip() or None
+
+
+def _dump_yaml(path: Path, obj: dict) -> None:
+    path.write_text(
+        yaml.safe_dump(obj, sort_keys=False, allow_unicode=False),
+        encoding="utf-8",
+    )
+
+
+def _load_z_mu_cache(cache_path: Path, n_obs: int) -> np.ndarray | None:
+    if not cache_path.exists():
+        return None
+    try:
+        cached = np.load(cache_path, allow_pickle=False)
+    except Exception as exc:
+        print(f"[z_mu] failed to load cache: {cache_path} ({exc})")
+        return None
+    if "z_mu" not in cached:
+        print(f"[z_mu] invalid cache payload (missing z_mu): {cache_path}")
+        return None
+    z_mu = np.asarray(cached["z_mu"])
+    if z_mu.ndim != 2 or z_mu.shape[0] != n_obs:
+        print(
+            f"[z_mu] cache shape mismatch; rebuilding: path={cache_path}, "
+            f"cached={z_mu.shape}, expected=({n_obs}, z_dim)"
+        )
+        return None
+    return z_mu
+
+
+def _save_z_mu_cache(cache_path: Path, z_mu: np.ndarray) -> None:
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(cache_path, z_mu=np.asarray(z_mu))
+    except Exception as exc:
+        print(f"[z_mu] failed to save cache: {cache_path} ({exc})")
 
 
 def _init_model(
@@ -426,13 +476,29 @@ def run_dataset(name: str, fast: bool = False) -> None:
         name: Dataset key from configs/paths.yaml.
         fast: If True, use minimal epochs/splits for quick validation.
     """
+    return run_dataset_with_paths(name=name, fast=fast)
+
+
+def run_dataset_with_paths(
+    *,
+    name: str,
+    fast: bool = False,
+    defaults_path: str = "configs/defaults.yaml",
+    paths_path: str = "configs/paths.yaml",
+    out_dir: str | None = None,
+) -> None:
+    """Run pipeline with explicit config paths and output directory.
+
+    Backward compatibility:
+    - run_dataset(name, fast) calls this with default paths.
+    """
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset name: {name}")
 
     dataset_cfg = DATASET_CONFIG[name]
     print("[run] load configs")
-    cfg = load_yaml("configs/paths.yaml")
-    defaults = load_yaml("configs/defaults.yaml")
+    cfg = load_yaml(paths_path)
+    defaults = load_yaml(defaults_path)
     base_seed = int(defaults.get("seed", 24))
     set_seeds(base_seed)
 
@@ -497,6 +563,7 @@ def run_dataset(name: str, fast: bool = False) -> None:
     sample_soft_ctrl = bool(ablation_cfg.get("sample_soft_ctrl", True))
     per_condition_ot = bool(ablation_cfg.get("per_condition_ot", False))
     reuse_ot_cache = bool(ablation_cfg.get("reuse_ot_cache", False))
+    reuse_z_mu_cache = bool(ablation_cfg.get("reuse_z_mu_cache", False))
     latent_loss_type = str(ablation_cfg.get("latent_loss_type", "gears"))
     shift_predict_delta_cfg = bool(stage2_model_cfg.get("predict_delta", True))
     legacy_disable_loss_z = bool(ablation_cfg.get("disable_loss_z_supervision", False))
@@ -532,8 +599,47 @@ def run_dataset(name: str, fast: bool = False) -> None:
             )
     cache_dir = Path("artifacts") / "cache" / "topk"
     cache_dir.mkdir(parents=True, exist_ok=True)
-    out_dir = Path("artifacts") / "results" / name
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir_path = Path(out_dir) if out_dir is not None else (Path("artifacts") / "results" / name)
+    out_dir_path.mkdir(parents=True, exist_ok=True)
+
+    # Snapshot the exact configs used for this run for reproducibility.
+    # Keep names stable for downstream scripts.
+    try:
+        _dump_yaml(out_dir_path / "defaults_used.yaml", defaults)
+        _dump_yaml(out_dir_path / "paths_used.yaml", cfg)
+    except Exception as exc:
+        print(f"[run] warning: failed to write config snapshots ({exc})")
+
+    try:
+        meta = {
+            "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "git_commit": _safe_git_commit(),
+            "dataset": name,
+            "defaults_path": str(defaults_path),
+            "paths_path": str(paths_path),
+            "out_dir": str(out_dir_path),
+            "fast": bool(fast),
+            "seed": int(base_seed),
+            "train_mode": str(train_mode),
+            "matching_mode": str(mode),
+            "k_topk": int(k),
+            "n_eval_ensemble": int(defaults.get("n_eval_ensemble", 300)),
+            "reuse_ot_cache": bool(reuse_ot_cache),
+            "reuse_z_mu_cache": bool(reuse_z_mu_cache),
+        }
+        meta_path = out_dir_path / "run_meta.json"
+        if meta_path.exists():
+            try:
+                existing = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    existing.update(meta)
+                    meta = existing
+            except Exception:
+                # Keep the new meta if existing cannot be parsed.
+                pass
+        meta_path.write_text(json.dumps(meta, indent=2, sort_keys=False), encoding="utf-8")
+    except Exception as exc:
+        print(f"[run] warning: failed to write run_meta.json ({exc})")
 
     defaults_epochs = dataset_cfg["defaults"]
     stage1_epochs = _get_cfg_or(stage1_cfg, "epochs", defaults_epochs["stage1"])
@@ -569,6 +675,8 @@ def run_dataset(name: str, fast: bool = False) -> None:
         base_seed=base_seed,
         perf=perf,
     )
+    z_mu_cache_dir = Path("artifacts") / "cache" / "z_mu"
+    z_mu_cache_dir.mkdir(parents=True, exist_ok=True)
     for split_id in range(1, n_splits + 1):
         print(f"[run] split {split_id}/{n_splits}")
         set_seeds(base_seed)
@@ -600,47 +708,62 @@ def run_dataset(name: str, fast: bool = False) -> None:
         model.set_base_seed(base_seed)
 
         if train_mode != "stage3_only":
-            print("[run] stage1")
-            if stage1_use_train_split:
-                # Scouter-like: train only on split train cells (ctrl + pert).
-                stage1_adata = split_dict["train"]
+            z_mu_cache_path = z_mu_cache_dir / (
+                f"{name}_split{split_id}_s1{stage1_cache_sig[:12]}.npz"
+            )
+            z_mu_cached = None
+            if reuse_z_mu_cache:
+                z_mu_cached = _load_z_mu_cache(z_mu_cache_path, data.adata_all.n_obs)
+            if z_mu_cached is not None:
+                data.set_latent_mu(z_mu_cached, key="z_mu")
+                print(f"[z_mu] loaded cache: {z_mu_cache_path}")
             else:
-                stage1_adata = data.adata_ctrl
-            stage1_val_adata = None
-            val_split = split_dict.get("val")
-            if val_split is not None:
+                print("[run] stage1")
                 if stage1_use_train_split:
-                    stage1_val_adata = val_split
+                    # Scouter-like: train only on split train cells (ctrl + pert).
+                    stage1_adata = split_dict["train"]
                 else:
-                    val_ctrl_mask = (
-                        val_split.obs[data.label_key].astype(str) == data.ctrl_label
-                    )
-                    if bool(val_ctrl_mask.any()):
-                        stage1_val_adata = val_split[val_ctrl_mask]
-            train_logs["stage1"] = model.train_stage1_vae(
-                adata_ctrl_pool=stage1_adata,
-                epochs=stage1_epochs,
-                batch_size=stage1_batch_size,
-                lr=stage1_lr,
-                beta=stage1_beta,
-                sched_gamma=sched_stage1.sched_gamma,
-                patience=sched_stage1.patience,
-                min_delta=sched_stage1.min_delta,
-                amp=perf.amp,
-                num_workers=perf.num_workers,
-                pin_memory=perf.pin_memory,
-                grad_accum_steps=perf.grad_accum_steps,
-                adata_val=stage1_val_adata,
-            )
+                    stage1_adata = data.adata_ctrl
+                stage1_val_adata = None
+                val_split = split_dict.get("val")
+                if val_split is not None:
+                    if stage1_use_train_split:
+                        stage1_val_adata = val_split
+                    else:
+                        val_ctrl_mask = (
+                            val_split.obs[data.label_key].astype(str) == data.ctrl_label
+                        )
+                        if bool(val_ctrl_mask.any()):
+                            stage1_val_adata = val_split[val_ctrl_mask]
+                train_logs["stage1"] = model.train_stage1_vae(
+                    adata_ctrl_pool=stage1_adata,
+                    epochs=stage1_epochs,
+                    batch_size=stage1_batch_size,
+                    lr=stage1_lr,
+                    beta=stage1_beta,
+                    sched_gamma=sched_stage1.sched_gamma,
+                    patience=sched_stage1.patience,
+                    min_delta=sched_stage1.min_delta,
+                    amp=perf.amp,
+                    num_workers=perf.num_workers,
+                    pin_memory=perf.pin_memory,
+                    grad_accum_steps=perf.grad_accum_steps,
+                    adata_val=stage1_val_adata,
+                )
 
-            print("[run] encode z_mu")
-            model.encode_and_cache_mu(
-                data.adata_all,
-                batch_size=stage1_batch_size,
-                amp=perf.amp,
-                num_workers=perf.num_workers,
-                pin_memory=perf.pin_memory,
-            )
+                print("[run] encode z_mu")
+                model.encode_and_cache_mu(
+                    data.adata_all,
+                    batch_size=stage1_batch_size,
+                    amp=perf.amp,
+                    num_workers=perf.num_workers,
+                    pin_memory=perf.pin_memory,
+                )
+                if reuse_z_mu_cache:
+                    z_mu_to_save = np.asarray(data.adata_all.obsm.get("z_mu"))
+                    if z_mu_to_save is not None and z_mu_to_save.ndim == 2:
+                        _save_z_mu_cache(z_mu_cache_path, z_mu_to_save)
+                        print(f"[z_mu] saved cache: {z_mu_cache_path}")
 
         topk_cache_key = (
             f"name={name}|mode={mode}|k={k}|split_id={split_id}|"
@@ -813,13 +936,13 @@ def run_dataset(name: str, fast: bool = False) -> None:
                 topk_cache_key=topk_cache_key,
             )
 
-        train_log_pkl = out_dir / f"train_logs_split{split_id}.pkl"
+        train_log_pkl = out_dir_path / f"train_logs_split{split_id}.pkl"
         with open(train_log_pkl, "wb") as f:
             pickle.dump(train_logs, f)
         train_records = _logs_to_records(split_id, train_logs)
         if train_records:
             pd.DataFrame(train_records).to_csv(
-                out_dir / f"train_loss_split{split_id}.csv", index=False
+                out_dir_path / f"train_loss_split{split_id}.csv", index=False
             )
 
         print("[run] evaluate")
@@ -836,23 +959,45 @@ def run_dataset(name: str, fast: bool = False) -> None:
             split_id=split_id,
             n_ensemble=n_eval_ensemble,
             base_seed=base_seed,
-            out_path=str(out_dir / f"trishift_{name}_{split_id}.pkl"),
+            out_path=str(out_dir_path / f"trishift_{name}_{split_id}.pkl"),
         )
         metrics_all.append(metrics_df)
 
     if metrics_all:
         metrics_df_all = pd.concat(metrics_all, ignore_index=True)
-        metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
-        _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
-    print(f"[run] saved metrics: {out_dir / 'metrics.csv'}")
+        metrics_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
+        _write_mean_metrics(out_dir_path / "mean_pearson.txt", metrics_df_all)
+    print(f"[run] saved metrics: {out_dir_path / 'metrics.csv'}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run TriShift on a dataset")
     parser.add_argument("--name", required=True, help="dataset name")
     parser.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
+    parser.add_argument(
+        "--defaults",
+        default="configs/defaults.yaml",
+        help="defaults yaml path (default: configs/defaults.yaml)",
+    )
+    parser.add_argument(
+        "--paths",
+        default="configs/paths.yaml",
+        help="paths yaml path (default: configs/paths.yaml)",
+    )
+    parser.add_argument(
+        "--out_dir",
+        default="",
+        help="output directory; if empty uses artifacts/results/<dataset>",
+    )
     args = parser.parse_args()
-    run_dataset(args.name, fast=args.fast)
+    out_dir = args.out_dir.strip() or None
+    run_dataset_with_paths(
+        name=args.name,
+        fast=bool(args.fast),
+        defaults_path=str(args.defaults),
+        paths_path=str(args.paths),
+        out_dir=out_dir,
+    )
 
 
 if __name__ == "__main__":
