@@ -412,7 +412,7 @@ class GeneratorNet(nn.Module):
         state = self.compressor(x_ctrl)
         if self.input_mode == "state_fusion":
             return torch.cat([state, delta_z], dim=1)
-        return torch.cat([cond_vec, state, delta_z], dim=1)
+        return torch.cat([state, cond_vec, delta_z], dim=1)
 
     def forward(
         self, x_ctrl: torch.Tensor, cond_vec: torch.Tensor, delta_z: torch.Tensor
@@ -427,7 +427,7 @@ class GeneratorNet(nn.Module):
         if self.input_mode != "full":
             raise RuntimeError("forward_no_delta is available only when gen input_mode=full")
         state = self.compressor(x_ctrl)
-        x = torch.cat([cond_vec, state], dim=1)
+        x = torch.cat([state, cond_vec], dim=1)
         out = self.generator_no_delta(x)
         if self.use_residual_head:
             return x_ctrl + out

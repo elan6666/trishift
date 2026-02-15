@@ -16,15 +16,15 @@ run:
   # 是否做多随机划分评估。
   multi_split: true
   # 划分次数（multi_split=true 时生效）。
-  n_splits: 1
+  n_splits: 5
 
 performance:
   # 混合精度；仅在 CUDA 可用时生效。
   amp: false
   # DataLoader worker 数量。
-  num_workers: 0
+  num_workers: 4
   # DataLoader pin_memory。
-  pin_memory: false
+  pin_memory: true
   # 梯度累积步数。
   grad_accum_steps: 1
   # 大矩阵计算分块大小（用于内存控制）。
@@ -33,9 +33,9 @@ performance:
 train:
   stage1:
     # Stage1 (VAE) 训练轮数。
-    epochs: 80
+    epochs: 100
     # Stage1 batch size。
-    batch_size: 128
+    batch_size: 512
     # Stage1 学习率。
     lr: 0.0005
     # Stage1 KL 系数（额外乘以 model.stage1.kl_weight）。
@@ -50,7 +50,7 @@ train:
     # joint 模式下 Stage2+Stage3 的训练轮数。
     epochs: 40
     # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里的 batch）。
-    batch_size: 256
+    batch_size: 1024
     # joint 学习率。
     lr: 0.001
     sched_gamma: 0.9
@@ -99,7 +99,7 @@ ablation:
   # top-k 采样策略：random | weighted | expand | weighted_sample。
   topk_strategy: random
   # 软权重场景下是否按分布采样 control（否则取 argmax）。
-  sample_soft_ctrl: true
+  sample_soft_ctrl: false
   # OT 是否按 perturbation 条件分组计算（更细粒度，通常更慢）。
   per_condition_ot: false
   # 是否允许复用 OT/soft_ot/knn_ot 的 top-k 缓存（knn 一直可复用）。
@@ -111,9 +111,9 @@ ablation:
 model:
   stage1:
     # VAE latent 维度。
-    z_dim: 64
+    z_dim: 100
     # VAE 主干隐层宽度。
-    hidden_dim: 1024
+    hidden_dim: 1000
     # 输入噪声注入比例。
     noise_rate: 0.1
     # VAE KL 权重（与 train.stage1.beta 相乘）。
