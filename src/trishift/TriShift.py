@@ -325,18 +325,70 @@ class TriShift:
     def _build_cond_vec_batch(self, emb_table: torch.Tensor, idx_list) -> torch.Tensor:
         """Build a batch of condition embeddings from index lists."""
         cond_mode, cond_norm = self._get_cond_pool_cfg()
-        return torch.stack(
-            [
-                aggregate_cond_embedding(
-                    emb_table,
-                    idxs,
-                    mode=cond_mode,
-                    normalize=cond_norm,
-                )
-                for idxs in idx_list
-            ],
-            dim=0,
-        )
+        # Scouter-style vectorized path: gather all pert indices in one tensor and reduce once.
+        # Falls back to per-sample aggregation if unexpected index format is encountered.
+        try:
+            seqs: list[torch.Tensor] = []
+            max_len = 0
+            for idxs in idx_list:
+                if torch.is_tensor(idxs):
+                    t = idxs.to(device=emb_table.device, dtype=torch.long).view(-1)
+                elif isinstance(idxs, np.ndarray):
+                    t = torch.as_tensor(idxs, device=emb_table.device, dtype=torch.long).view(-1)
+                elif isinstance(idxs, (list, tuple, pd.Series)):
+                    t = torch.tensor(list(idxs), device=emb_table.device, dtype=torch.long).view(-1)
+                elif idxs is None:
+                    t = torch.empty(0, device=emb_table.device, dtype=torch.long)
+                else:
+                    t = torch.tensor([int(idxs)], device=emb_table.device, dtype=torch.long)
+                seqs.append(t)
+                if t.numel() > max_len:
+                    max_len = int(t.numel())
+
+            batch_size = len(seqs)
+            if batch_size == 0:
+                return emb_table.new_zeros((0, emb_table.shape[1]))
+            if max_len == 0:
+                out = emb_table.new_zeros((batch_size, emb_table.shape[1]))
+                if cond_norm:
+                    out = F.normalize(out, p=2, dim=1, eps=1e-12)
+                return out
+
+            padded = torch.zeros((batch_size, max_len), device=emb_table.device, dtype=torch.long)
+            mask = torch.zeros(
+                (batch_size, max_len), device=emb_table.device, dtype=emb_table.dtype
+            )
+            for i, t in enumerate(seqs):
+                n = int(t.numel())
+                if n == 0:
+                    continue
+                padded[i, :n] = t
+                mask[i, :n] = 1.0
+
+            selected = emb_table.index_select(0, padded.reshape(-1)).view(batch_size, max_len, -1)
+            out = (selected * mask.unsqueeze(-1)).sum(dim=1)
+            if cond_mode == "mean":
+                denom = mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+                out = out / denom
+            elif cond_mode != "sum":
+                raise ValueError("mode must be one of: sum, mean")
+
+            if cond_norm:
+                out = F.normalize(out, p=2, dim=1, eps=1e-12)
+            return out
+        except Exception:
+            return torch.stack(
+                [
+                    aggregate_cond_embedding(
+                        emb_table,
+                        idxs,
+                        mode=cond_mode,
+                        normalize=cond_norm,
+                    )
+                    for idxs in idx_list
+                ],
+                dim=0,
+            )
 
     def _predict_expr_from_ctrl(
         self,

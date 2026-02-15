@@ -6,7 +6,7 @@ k_topk: 300
 matching_mode: ot
 # 训练模式：joint | sequential | stage3_only。
 # 注意：当 train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。
-train_mode: joint
+train_mode: stage3_only
 # 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
 n_eval_ensemble: 300
 # 全局随机种子。
@@ -35,7 +35,7 @@ train:
     # Stage1 (VAE) 训练轮数。
     epochs: 100
     # Stage1 batch size。
-    batch_size: 512
+    batch_size: 128
     # Stage1 学习率。
     lr: 0.0005
     # Stage1 KL 系数（额外乘以 model.stage1.kl_weight）。
@@ -50,7 +50,7 @@ train:
     # joint 模式下 Stage2+Stage3 的训练轮数。
     epochs: 40
     # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里的 batch）。
-    batch_size: 1024
+    batch_size: 256
     # joint 学习率。
     lr: 0.001
     sched_gamma: 0.9

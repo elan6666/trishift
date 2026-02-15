@@ -45,6 +45,49 @@ class ScouterDatasetConfig:
     norman_split: bool = False
 
 
+def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
+    """Write mean pearson and other averaged numeric metrics to text file.
+
+    Backward compatibility:
+    - First line remains plain mean pearson float for old readers.
+    """
+    numeric_means = metrics_df.mean(numeric_only=True)
+    mean_pearson = float(numeric_means.get("pearson", float("nan")))
+
+    preferred_order = [
+        "pearson",
+        "nmse",
+        "systema_corr_all_allpert",
+        "systema_corr_20de_allpert",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
+        "scpram_r2_degs_mean_mean",
+        "scpram_r2_degs_var_mean",
+        "scpram_r2_all_mean_std",
+        "scpram_r2_all_var_std",
+        "scpram_r2_degs_mean_std",
+        "scpram_r2_degs_var_std",
+        "scpram_wasserstein_all_sum",
+        "scpram_wasserstein_degs_sum",
+    ]
+    exclude_keys = {"split_id", "n_ensemble"}
+    keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
+    keys.extend(
+        [
+            k
+            for k in numeric_means.index
+            if k not in exclude_keys and k not in keys
+        ]
+    )
+
+    lines = [f"{mean_pearson}\n"]
+    for key in keys:
+        val = float(numeric_means[key])
+        lines.append(f"mean_{key}={val}\n")
+
+    path.write_text("".join(lines), encoding="utf-8")
+
+
 def set_seeds(seed: int = 24) -> None:
     np.random.seed(seed)
     random.seed(seed)
@@ -432,9 +475,7 @@ def run_scouter_eval(
 
     metrics_df_all = pd.concat(metrics_all, ignore_index=True)
     metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
-    mean_pearson = metrics_df_all["pearson"].mean()
-    with open(out_dir / "mean_pearson.txt", "w", encoding="utf-8") as f:
-        f.write(f"{mean_pearson}\n")
+    _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
     print(f"[scouter] saved metrics: {out_dir / 'metrics.csv'}")
 
 
