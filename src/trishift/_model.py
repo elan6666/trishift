@@ -287,7 +287,7 @@ class ShiftNet(nn.Module):
         return fused.squeeze(1)
 
     def _forward_mlp_only(self, z_ctrl_mu: torch.Tensor, cond_vec: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([z_ctrl_mu, cond_vec], dim=1)
+        x = torch.cat([cond_vec, z_ctrl_mu], dim=1)
         if self.predict_delta:
             return self.net(x)
         if self.context_fallback is None:
@@ -301,7 +301,7 @@ class ShiftNet(nn.Module):
         z_fused: torch.Tensor,
     ) -> torch.Tensor:
         if self.predict_delta:
-            x = torch.cat([z_ctrl_mu, cond_vec, z_fused], dim=1)
+            x = torch.cat([cond_vec, z_ctrl_mu, z_fused], dim=1)
             return self.net(x)
         return z_fused
 

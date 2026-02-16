@@ -8,7 +8,7 @@ matching_mode: ot
 # 注意：
 # - train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。
 # - train_mode=latent_decoder 时，Stage23 走 joint 训练且不使用 Stage3 compressor。
-train_mode: latent_decoder
+train_mode: joint
 # 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
 n_eval_ensemble: 300
 # 全局随机种子。
@@ -18,7 +18,7 @@ run:
   # 是否做多随机划分评估。
   multi_split: true
   # 划分次数（multi_split=true 时生效）。
-  n_splits: 5
+  n_splits: 3
 
 performance:
   # 混合精度；仅在 CUDA 可用时生效。
@@ -178,4 +178,4 @@ model:
     # Stage3 dropout。
     dropout: 0.0
     # 残差头：x_pred = x_ctrl + delta_x。
-    use_residual_head: false
+    use_residual_head: true
