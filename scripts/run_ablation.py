@@ -115,6 +115,17 @@ def _parse_run_ids(run_ids_raw: str, max_idx: int) -> list[int]:
     return sorted(set(out))
 
 
+def _parse_tri_flag(name: str, raw: str) -> bool | None:
+    s = str(raw).strip().lower()
+    if s == "inherit":
+        return None
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    raise ValueError(f"--{name} must be one of: true, false, inherit")
+
+
 @dataclass(frozen=True)
 class RunSpec:
     idx: int
@@ -180,6 +191,18 @@ def main() -> None:
     parser.add_argument("--stage23_epochs", type=int, default=30)
     parser.add_argument("--stage2_epochs", type=int, default=30)
     parser.add_argument("--stage3_epochs", type=int, default=30)
+    parser.add_argument(
+        "--reuse_z_mu_cache",
+        type=str,
+        default="inherit",
+        help="reuse_z_mu_cache override: true | false | inherit",
+    )
+    parser.add_argument(
+        "--reuse_ot_cache",
+        type=str,
+        default="inherit",
+        help="reuse_ot_cache override: true | false | inherit",
+    )
     args = parser.parse_args()
 
     dataset = str(args.dataset)
@@ -194,6 +217,23 @@ def main() -> None:
     base_paths_path = repo_root / "configs" / "paths.yaml"
     base_defaults = yaml.safe_load(base_defaults_path.read_text(encoding="utf-8")) or {}
     base_paths = yaml.safe_load(base_paths_path.read_text(encoding="utf-8")) or {}
+    base_ablation = (
+        base_defaults.get("ablation", {})
+        if isinstance(base_defaults.get("ablation", {}), dict)
+        else {}
+    )
+    req_reuse_z_mu_cache = _parse_tri_flag("reuse_z_mu_cache", args.reuse_z_mu_cache)
+    req_reuse_ot_cache = _parse_tri_flag("reuse_ot_cache", args.reuse_ot_cache)
+    eff_reuse_z_mu_cache = (
+        bool(base_ablation.get("reuse_z_mu_cache", False))
+        if req_reuse_z_mu_cache is None
+        else bool(req_reuse_z_mu_cache)
+    )
+    eff_reuse_ot_cache = (
+        bool(base_ablation.get("reuse_ot_cache", False))
+        if req_reuse_ot_cache is None
+        else bool(req_reuse_ot_cache)
+    )
 
     runs = _build_runs()
     if len(runs) != 15:
@@ -237,8 +277,16 @@ def main() -> None:
             "train.stage3.epochs": int(args.stage3_epochs),
             "n_eval_ensemble": 300,
             "performance.num_workers": 4,
-            "ablation.reuse_ot_cache": True,
-            "ablation.reuse_z_mu_cache": True,
+            "ablation.reuse_ot_cache": bool(eff_reuse_ot_cache),
+            "ablation.reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
+        },
+        "cache_reuse_request": {
+            "reuse_ot_cache": str(args.reuse_ot_cache),
+            "reuse_z_mu_cache": str(args.reuse_z_mu_cache),
+        },
+        "cache_reuse_effective": {
+            "reuse_ot_cache": bool(eff_reuse_ot_cache),
+            "reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
         },
     }
     (sweep_root / "sweep_meta.json").write_text(
@@ -311,7 +359,10 @@ def main() -> None:
                 },
                 "n_eval_ensemble": 300,
                 "performance": {"num_workers": 4},
-                "ablation": {"reuse_ot_cache": True, "reuse_z_mu_cache": True},
+                "ablation": {
+                    "reuse_ot_cache": bool(eff_reuse_ot_cache),
+                    "reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
+                },
             },
         )
         _deep_update(defaults_run, spec.overrides)
@@ -329,6 +380,8 @@ def main() -> None:
             "selection_mode": selection_mode,
             "dataset": dataset,
             "git_commit": _safe_git_commit(repo_root),
+            "reuse_ot_cache": bool(eff_reuse_ot_cache),
+            "reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
             "defaults_path": str(defaults_path),
             "paths_path": str(paths_path),
             "run_dir": str(run_dir),
