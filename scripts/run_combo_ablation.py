@@ -108,6 +108,34 @@ def _ensure_constraints(defaults_run: dict) -> tuple[dict, list[str]]:
     return defaults_run, notes
 
 
+def _parse_tri_flag(name: str, raw: str) -> bool | None:
+    s = str(raw).strip().lower()
+    if s == "inherit":
+        return None
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    raise ValueError(f"--{name} must be one of: true, false, inherit")
+
+
+def _parse_exclude_codes(raw: str) -> set[str]:
+    out: set[str] = set()
+    for tok in str(raw).split(","):
+        s = tok.strip()
+        if not s:
+            continue
+        if s.isdigit():
+            out.add(s.zfill(2))
+        else:
+            # allow passing "03_A2_xxx" etc
+            if len(s) >= 2 and s[0:2].isdigit():
+                out.add(s[0:2])
+            else:
+                out.add(s)
+    return out
+
+
 @dataclass(frozen=True)
 class ModuleSpec:
     code: str
@@ -196,51 +224,114 @@ COMBO_CODE_PAIRS: list[tuple[str, str]] = [
 ]
 
 
-def _load_score_table(source_root: Path) -> dict[tuple[str, str], dict[str, float]]:
-    score_path = source_root / "top_combos_computed.csv"
-    if not score_path.exists():
-        return {}
-    label_to_code = {m.label: m.code for m in MODULES.values()}
-    out: dict[tuple[str, str], dict[str, float]] = {}
-    with score_path.open("r", newline="", encoding="utf-8") as f:
+def _read_combo_source_csv(
+    path: Path, *, top_k: int, exclude_codes: set[str]
+) -> tuple[list[tuple[str, str]], dict[tuple[str, str], dict[str, float]]]:
+    """
+    Read combo pairs from CSV in file order.
+
+    Supported formats (best-effort):
+    - i,j as numeric run indices (e.g. 5,15) -> codes '05','15'
+    - code_i,code_j as 2-digit codes
+    - run_i,run_j as '03_xxx' -> codes from first 2 chars
+    """
+    pairs: list[tuple[str, str]] = []
+    extra: dict[tuple[str, str], dict[str, float]] = {}
+    if not path.exists():
+        return pairs, extra
+
+    with path.open("r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            li = str(row.get("run_i", "")).strip()
-            lj = str(row.get("run_j", "")).strip()
-            ci = ""
-            cj = ""
-            if len(li) >= 2 and li[0:2].isdigit():
-                ci = li[0:2]
-            if len(lj) >= 2 and lj[0:2].isdigit():
-                cj = lj[0:2]
-            if not ci:
-                ci = label_to_code.get(li, "")
-            if not cj:
-                cj = label_to_code.get(lj, "")
-            if not ci or not cj:
+            if row is None:
                 continue
-            key = (ci, cj)
-            parsed = {}
+
+            def get_code(prefix: str) -> str:
+                v = str(row.get(prefix, "") or "").strip()
+                if not v:
+                    return ""
+                if len(v) >= 2 and v[0:2].isdigit():
+                    return v[0:2]
+                if v.isdigit():
+                    return v.zfill(2)
+                return ""
+
+            code_i = ""
+            code_j = ""
+            if "i" in row and "j" in row:
+                code_i = get_code("i")
+                code_j = get_code("j")
+            if not code_i and "code_i" in row and "code_j" in row:
+                code_i = get_code("code_i")
+                code_j = get_code("code_j")
+            if not code_i and "run_i" in row and "run_j" in row:
+                code_i = get_code("run_i")
+                code_j = get_code("run_j")
+
+            if not code_i or not code_j:
+                continue
+            if code_i in exclude_codes or code_j in exclude_codes:
+                continue
+            if code_i not in MODULES or code_j not in MODULES:
+                continue
+            key = (code_i, code_j)
+            if key in pairs:
+                continue
+
+            parsed: dict[str, float] = {}
             for k in ("score", "potential", "coverage", "corr"):
-                v = row.get(k)
-                if v is None or str(v).strip() == "":
+                if k not in row:
+                    continue
+                v = str(row.get(k, "") or "").strip()
+                if not v:
                     continue
                 try:
                     parsed[k] = float(v)
                 except Exception:
                     continue
-            out[key] = parsed
-    return out
+            if parsed:
+                extra[key] = parsed
+
+            pairs.append(key)
+            if len(pairs) >= int(top_k):
+                break
+
+    return pairs, extra
 
 
-def _build_combo_specs(source_root: Path, top_k: int) -> list[ComboSpec]:
-    score_table = _load_score_table(source_root)
+def _build_combo_specs(
+    *,
+    source_root: Path,
+    top_k: int,
+    combo_source_csv: Path,
+    exclude_codes: set[str],
+) -> tuple[list[ComboSpec], dict]:
+    used_source = "builtin"
+    pairs: list[tuple[str, str]] = []
+    extra: dict[tuple[str, str], dict[str, float]] = {}
+
+    csv_pairs, csv_extra = _read_combo_source_csv(
+        combo_source_csv, top_k=top_k, exclude_codes=exclude_codes
+    )
+    if csv_pairs:
+        used_source = "csv"
+        pairs = csv_pairs
+        extra = csv_extra
+    else:
+        # Filter builtin pairs with exclusions, and fill up to top_k in order.
+        for a, b in COMBO_CODE_PAIRS:
+            if a in exclude_codes or b in exclude_codes:
+                continue
+            pairs.append((a, b))
+            if len(pairs) >= int(top_k):
+                break
+
     specs: list[ComboSpec] = []
-    for idx, (code_i, code_j) in enumerate(COMBO_CODE_PAIRS[:top_k], start=1):
+    for idx, (code_i, code_j) in enumerate(pairs[:top_k], start=1):
         mod_i = MODULES[code_i]
         mod_j = MODULES[code_j]
         merged, conflicts = _merge_overrides(mod_i.overrides, mod_j.overrides)
-        score_info = score_table.get((code_i, code_j), {})
+        score_info = extra.get((code_i, code_j), {})
         specs.append(
             ComboSpec(
                 idx=idx,
@@ -256,7 +347,14 @@ def _build_combo_specs(source_root: Path, top_k: int) -> list[ComboSpec]:
                 corr=score_info.get("corr"),
             )
         )
-    return specs
+
+    meta = {
+        "combo_source": used_source,
+        "combo_source_csv": str(combo_source_csv),
+        "exclude_codes": sorted(exclude_codes),
+        "pairs_total": int(len(specs)),
+    }
+    return specs, meta
 
 
 def _write_combo_candidates(root: Path, combo_specs: list[ComboSpec]) -> None:
@@ -345,6 +443,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run TriShift combo ablation sweep")
     parser.add_argument("--dataset", required=True, help="dataset name (only adamson supported)")
     parser.add_argument("--source_root", required=True, help="source single-ablation root path")
+    parser.add_argument(
+        "--combo_source_csv",
+        default="",
+        help=(
+            "CSV path providing combo pairs in order. "
+            "If omitted, defaults to <source_root>/top20_combo_candidates_excl03.csv"
+        ),
+    )
+    parser.add_argument(
+        "--exclude_codes",
+        default="",
+        help="comma-separated 2-digit module codes to exclude (e.g. 03). Applied to CSV/builtin pairs.",
+    )
     parser.add_argument("--top_k", type=int, default=20, help="number of fixed combos to run")
     parser.add_argument("--num_batches", type=int, default=4)
     parser.add_argument("--batch_idx", type=int, required=True, help="1-based batch index")
@@ -355,6 +466,18 @@ def main() -> None:
     parser.add_argument("--stage23_epochs", type=int, default=40)
     parser.add_argument("--stage2_epochs", type=int, default=40)
     parser.add_argument("--stage3_epochs", type=int, default=40)
+    parser.add_argument(
+        "--reuse_z_mu_cache",
+        type=str,
+        default="inherit",
+        help="reuse_z_mu_cache override: true | false | inherit",
+    )
+    parser.add_argument(
+        "--reuse_ot_cache",
+        type=str,
+        default="inherit",
+        help="reuse_ot_cache override: true | false | inherit",
+    )
     args = parser.parse_args()
 
     dataset = str(args.dataset)
@@ -365,9 +488,8 @@ def main() -> None:
     if not source_root.exists():
         raise FileNotFoundError(f"source_root not found: {source_root}")
 
-    max_k = len(COMBO_CODE_PAIRS)
-    if args.top_k <= 0 or args.top_k > max_k:
-        raise ValueError(f"--top_k must be in [1, {max_k}]")
+    if args.top_k <= 0:
+        raise ValueError("--top_k must be positive")
     if args.num_batches <= 0:
         raise ValueError("--num_batches must be positive")
     if args.batch_idx <= 0 or args.batch_idx > args.num_batches:
@@ -378,7 +500,42 @@ def main() -> None:
     base_defaults = yaml.safe_load(base_defaults_path.read_text(encoding="utf-8")) or {}
     base_paths = yaml.safe_load(base_paths_path.read_text(encoding="utf-8")) or {}
 
-    combo_specs = _build_combo_specs(source_root=source_root, top_k=args.top_k)
+    base_ablation = (
+        base_defaults.get("ablation", {})
+        if isinstance(base_defaults.get("ablation", {}), dict)
+        else {}
+    )
+    req_reuse_z_mu_cache = _parse_tri_flag("reuse_z_mu_cache", args.reuse_z_mu_cache)
+    req_reuse_ot_cache = _parse_tri_flag("reuse_ot_cache", args.reuse_ot_cache)
+    eff_reuse_z_mu_cache = (
+        bool(base_ablation.get("reuse_z_mu_cache", False))
+        if req_reuse_z_mu_cache is None
+        else bool(req_reuse_z_mu_cache)
+    )
+    eff_reuse_ot_cache = (
+        bool(base_ablation.get("reuse_ot_cache", False))
+        if req_reuse_ot_cache is None
+        else bool(req_reuse_ot_cache)
+    )
+
+    exclude_codes = _parse_exclude_codes(args.exclude_codes)
+    # Default: exclude nothing unless explicitly passed, except common need: if user provides CSV name
+    # top20_combo_candidates_excl03.csv, we still honor exclude_codes only (CSV already excludes 03).
+
+    combo_source_csv = (
+        Path(str(args.combo_source_csv))
+        if str(args.combo_source_csv).strip()
+        else (source_root / "top20_combo_candidates_excl03.csv")
+    )
+
+    combo_specs, combo_meta = _build_combo_specs(
+        source_root=source_root,
+        top_k=int(args.top_k),
+        combo_source_csv=combo_source_csv,
+        exclude_codes=exclude_codes,
+    )
+    if not combo_specs:
+        raise ValueError("No combos found after applying combo source / exclusions.")
     batch_size = math.ceil(len(combo_specs) / args.num_batches)
     start = (args.batch_idx - 1) * batch_size
     end = min(start + batch_size, len(combo_specs))
@@ -403,6 +560,9 @@ def main() -> None:
         "git_commit": _safe_git_commit(repo_root),
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
         "source_root": str(source_root),
+        "combo_source_csv": str(combo_source_csv),
+        "combo_source": combo_meta.get("combo_source"),
+        "exclude_codes": combo_meta.get("exclude_codes", []),
         "num_batches": int(args.num_batches),
         "runs_total": int(len(combo_specs)),
         "fixed_pairs": [f"{c.code_i}+{c.code_j}" for c in combo_specs],
@@ -415,8 +575,16 @@ def main() -> None:
             "train.stage3.epochs": int(args.stage3_epochs),
             "n_eval_ensemble": 300,
             "performance.num_workers": 4,
-            "ablation.reuse_ot_cache": True,
-            "ablation.reuse_z_mu_cache": True,
+            "ablation.reuse_ot_cache": bool(eff_reuse_ot_cache),
+            "ablation.reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
+        },
+        "cache_reuse_request": {
+            "reuse_ot_cache": str(args.reuse_ot_cache),
+            "reuse_z_mu_cache": str(args.reuse_z_mu_cache),
+        },
+        "cache_reuse_effective": {
+            "reuse_ot_cache": bool(eff_reuse_ot_cache),
+            "reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
         },
     }
     (sweep_root / "sweep_meta.json").write_text(
@@ -508,7 +676,10 @@ def main() -> None:
                 },
                 "n_eval_ensemble": 300,
                 "performance": {"num_workers": 4},
-                "ablation": {"reuse_ot_cache": True, "reuse_z_mu_cache": True},
+                "ablation": {
+                    "reuse_ot_cache": bool(eff_reuse_ot_cache),
+                    "reuse_z_mu_cache": bool(eff_reuse_z_mu_cache),
+                },
             },
         )
         _deep_update(defaults_run, spec.merged_overrides)
