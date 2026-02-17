@@ -287,7 +287,8 @@ class ShiftNet(nn.Module):
         return fused.squeeze(1)
 
     def _forward_mlp_only(self, z_ctrl_mu: torch.Tensor, cond_vec: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([cond_vec, z_ctrl_mu], dim=1)
+        # Keep shift input (latent/state) before condition embedding for consistency with generator input order.
+        x = torch.cat([z_ctrl_mu, cond_vec], dim=1)
         if self.predict_delta:
             return self.net(x)
         if self.context_fallback is None:
@@ -301,7 +302,7 @@ class ShiftNet(nn.Module):
         z_fused: torch.Tensor,
     ) -> torch.Tensor:
         if self.predict_delta:
-            x = torch.cat([cond_vec, z_ctrl_mu, z_fused], dim=1)
+            x = torch.cat([z_ctrl_mu, cond_vec, z_fused], dim=1)
             return self.net(x)
         return z_fused
 
@@ -432,7 +433,8 @@ class GeneratorNet(nn.Module):
             state = z_state
         if self.input_mode == "state_fusion":
             return torch.cat([state, delta_z], dim=1)
-        return torch.cat([cond_vec, state, delta_z], dim=1)
+        # Put state before condition embedding to make the generator input layout stable across modes.
+        return torch.cat([state, cond_vec, delta_z], dim=1)
 
     def forward(
         self,
@@ -455,7 +457,7 @@ class GeneratorNet(nn.Module):
         if self.compressor is None:
             raise RuntimeError("compressor is not initialized")
         state = self.compressor(x_ctrl)
-        x = torch.cat([cond_vec, state], dim=1)
+        x = torch.cat([state, cond_vec], dim=1)
         out = self.generator_no_delta(x)
         if self.use_residual_head:
             return x_ctrl + out

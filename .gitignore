@@ -13,6 +13,10 @@ __pycache__/
 *.pyd
 *.egg-info/
 .pytest_cache/
+.pytest_cache
+
+# Windows reserved device name accidentally created by bash redirections (e.g. `2>nul`).
+nul
 .mypy_cache/
 .ipynb_checkpoints/
 
@@ -28,6 +32,7 @@ csv_output/
 external/
 
 # Local datasets / embeddings (too large for git)
+src/data/
 src/data/**/*.h5ad
 src/data/**/*.pickle
 

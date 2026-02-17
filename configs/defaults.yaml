@@ -37,7 +37,7 @@ train:
     # Stage1 (VAE) 训练轮数。
     epochs: 100
     # Stage1 batch size。
-    batch_size: 128
+    batch_size: 256
     # Stage1 学习率。
     lr: 0.0005
     # Stage1 KL 系数（额外乘以 model.stage1.kl_weight）。
@@ -45,7 +45,7 @@ train:
     # 指数学习率衰减系数（1 表示不衰减）。
     sched_gamma: 1
     # 早停耐心。
-    patience: 10
+    patience: 5
     # 早停最小提升阈值。
     min_delta: 0.001
   stage23:
@@ -107,15 +107,17 @@ ablation:
   # 是否允许复用 OT/soft_ot/knn_ot 的 top-k 缓存（knn 一直可复用）。
   # 注意：缓存文件名和校验键已包含 matching_mode 与 stage1 配置指纹，避免误复用。
   reuse_ot_cache: true
+  # 是否复用 Stage1 编码得到的 z_mu 磁盘缓存。
+  reuse_z_mu_cache: false
   # latent 损失类型：gears | mse | smooth_l1。
   latent_loss_type: gears
 
 model:
   stage1:
     # VAE latent 维度。
-    z_dim: 100
+    z_dim: 32
     # VAE 主干隐层宽度。
-    hidden_dim: 1000
+    hidden_dim: 1024
     # 输入噪声注入比例。
     noise_rate: 0.1
     # VAE KL 权重（与 train.stage1.beta 相乘）。
@@ -127,7 +129,7 @@ model:
     - 2048
     # 是否预测显式 delta_z（false 则输出 shift 表征）。
     # 注意：false 时 latent supervision 会自动关闭。
-    predict_delta: true
+    predict_delta: false
     # Shift 输入来源：latent_mu | state。
     # - latent_mu: 使用 z_ctrl_mu
     # - state: 使用 Stage3 compressor(x_ctrl)
@@ -146,9 +148,9 @@ model:
     # transformer block（与 cross-attention 互斥）。
     use_transformer_block: false
     # transformer token 读出：first | mean | concat。
-    transformer_readout: first
+    transformer_readout: concat
     # transformer encoder 层数。
-    transformer_layers: 2
+    transformer_layers: 1
     # transformer FFN 扩展倍率。
     transformer_ff_mult: 4
     # transformer dropout。
@@ -156,7 +158,7 @@ model:
   stage3:
     # Generator 输入模式：full | fusion_only | state_fusion。
     # 语义：
-    # - 常规模式：full = cond + compressor(state) + shift；state_fusion = state + shift；fusion_only = shift
+    # - 常规模式：full = state + cond + shift；state_fusion = state + shift；fusion_only = shift
     # - latent_decoder：full = z_state + cond + shift；state_fusion = z_state + shift；fusion_only = shift
     # 注意：train_mode=stage3_only 时必须是 full。
     input_mode: full
@@ -178,4 +180,4 @@ model:
     # Stage3 dropout。
     dropout: 0.0
     # 残差头：x_pred = x_ctrl + delta_x。
-    use_residual_head: true
+    use_residual_head: false
