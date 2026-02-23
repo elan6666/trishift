@@ -29,36 +29,6 @@ def test_aggregate_cond_embedding_empty_and_mean() -> None:
     assert torch.allclose(out_mean, expected)
 
 
-def test_aggregate_cond_embedding_concat_and_padding() -> None:
-    emb_table = torch.tensor(
-        [
-            [1.0, 2.0],
-            [3.0, 4.0],
-            [0.0, 0.0],
-        ],
-        dtype=torch.float32,
-    )
-    out_concat = aggregate_cond_embedding(emb_table, [0, 1], mode="concat", concat_slots=2)
-    assert torch.allclose(out_concat, torch.tensor([1.0, 2.0, 3.0, 4.0], dtype=torch.float32))
-
-    out_pad = aggregate_cond_embedding(emb_table, [0], mode="concat", concat_slots=2)
-    assert torch.allclose(out_pad, torch.tensor([1.0, 2.0, 0.0, 0.0], dtype=torch.float32))
-
-    out_norm = aggregate_cond_embedding(
-        emb_table, [0], mode="concat", concat_slots=2, normalize=True
-    )
-    assert torch.allclose(out_norm.norm(p=2), torch.tensor(1.0), atol=1e-6)
-
-
-def test_aggregate_cond_embedding_concat_overflow_raises() -> None:
-    emb_table = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=torch.float32)
-    try:
-        aggregate_cond_embedding(emb_table, [0, 1, 2], mode="concat", concat_slots=2)
-        raise AssertionError("expected overflow error")
-    except ValueError as exc:
-        assert "concat_slots" in str(exc)
-
-
 def test_shift_net_output_dims() -> None:
     batch = 4
     model_dim = 8
@@ -203,8 +173,6 @@ def test_trishiftnet_latent_state_source_supports_all_input_modes() -> None:
 
 def main() -> None:
     test_aggregate_cond_embedding_empty_and_mean()
-    test_aggregate_cond_embedding_concat_and_padding()
-    test_aggregate_cond_embedding_concat_overflow_raises()
     test_shift_net_output_dims()
     test_shift_net_transformer_concat_repr_dim()
     test_trishiftnet_state_source_resolution_and_forward_keys()

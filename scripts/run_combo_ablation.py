@@ -91,13 +91,6 @@ def _ensure_constraints(defaults_run: dict) -> tuple[dict, list[str]]:
         )
 
     train_mode = str(defaults_run.get("train_mode", "joint"))
-    if train_mode == "latent_decoder":
-        cur_src = str(stage2.get("shift_input_source", "latent_mu"))
-        if cur_src != "latent_mu":
-            stage2["shift_input_source"] = "latent_mu"
-            notes.append(
-                "train_mode=latent_decoder forces model.stage2.shift_input_source=latent_mu"
-            )
     if train_mode == "stage3_only":
         input_mode = str(stage3.get("input_mode", "full"))
         if input_mode != "full":
@@ -166,7 +159,6 @@ MODULES: dict[str, ModuleSpec] = {
     "01": ModuleSpec("01", "B0_baseline", {}),
     "02": ModuleSpec("02", "A1_train_mode_sequential", {"train_mode": "sequential"}),
     "03": ModuleSpec("03", "A2_train_mode_stage3_only", {"train_mode": "stage3_only"}),
-    "04": ModuleSpec("04", "A3_train_mode_latent_decoder", {"train_mode": "latent_decoder"}),
     "05": ModuleSpec("05", "T1_topk_weighted_sample", {"ablation": {"topk_strategy": "weighted_sample"}}),
     "06": ModuleSpec("06", "L1_latent_loss_mse", {"ablation": {"latent_loss_type": "mse"}}),
     "07": ModuleSpec(

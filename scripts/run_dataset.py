@@ -199,29 +199,13 @@ def _resolve_cond_dims_for_pool_mode(
     data: TriShiftData,
     embd_df: pd.DataFrame,
     cond_pool_mode: str,
-) -> tuple[int, int]:
-    """Resolve condition vector dimension and concat slots from pool mode."""
+) -> int:
+    """Resolve condition vector dimension from pool mode."""
     emb_dim = int(embd_df.shape[1])
     mode = str(cond_pool_mode)
     if mode in {"sum", "mean"}:
-        return emb_dim, 0
-    if mode == "concat":
-        if "embd_index" not in data.adata_all.obs.columns:
-            raise ValueError("embd_index is missing; call setup_embedding_index() before concat mode")
-        max_len = 0
-        for v in data.adata_all.obs["embd_index"].tolist():
-            if v is None:
-                n = 0
-            elif isinstance(v, (list, tuple, np.ndarray, pd.Series)):
-                n = len(v)
-            else:
-                n = 1
-            if n > max_len:
-                max_len = int(n)
-        if max_len <= 0:
-            max_len = 1
-        return emb_dim * max_len, int(max_len)
-    raise ValueError("cond_pool_mode must be one of: sum, mean, concat")
+        return emb_dim
+    raise ValueError("cond_pool_mode must be one of: sum, mean")
 
 
 def _load_z_mu_cache(cache_path: Path, n_obs: int) -> np.ndarray | None:
@@ -290,7 +274,7 @@ def _init_model(
     )
     cond_pool_mode = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
     cond_l2_norm = bool(stage2_model_cfg.get("cond_l2_norm", False))
-    cond_dim_eff, cond_concat_slots = _resolve_cond_dims_for_pool_mode(
+    cond_dim_eff = _resolve_cond_dims_for_pool_mode(
         data=data,
         embd_df=embd_df,
         cond_pool_mode=cond_pool_mode,
@@ -331,7 +315,6 @@ def _init_model(
         shift_input_source=shift_input_source,
         cond_pool_mode=cond_pool_mode,
         cond_l2_norm=cond_l2_norm,
-        cond_concat_slots=cond_concat_slots,
         gen_use_residual_head=gen_use_residual_head,
     )
     return model
@@ -636,14 +619,34 @@ def run_dataset_with_paths(
     mode = defaults.get("matching_mode", "knn")
     k = int(defaults.get("k_topk", 5))
     train_mode = defaults.get("train_mode", "joint")
-    valid_train_modes = {"joint", "sequential", "stage3_only", "latent_decoder"}
+    valid_train_modes = {"joint", "sequential", "stage3_only"}
     if train_mode not in valid_train_modes:
         raise ValueError(
             f"Unsupported train_mode={train_mode}. "
             f"Expected one of: {sorted(valid_train_modes)}"
         )
+    removed_seq_keys = [
+        k
+        for k in (
+            "sequential_joint_finetune",
+            "joint_finetune_epochs",
+            "joint_finetune_lr_scale",
+        )
+        if k in ablation_cfg
+    ]
+    if removed_seq_keys:
+        raise ValueError(
+            "ablation sequential joint finetune has been removed. "
+            "Remove these keys from config: "
+            + ", ".join(removed_seq_keys)
+        )
     stage1_use_train_split = bool(ablation_cfg.get("stage1_use_train_split", False))
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
+    if topk_strategy not in {"random", "weighted_sample"}:
+        raise ValueError(
+            f"Unsupported ablation.topk_strategy={topk_strategy}. "
+            "Supported: random, weighted_sample"
+        )
     sample_soft_ctrl = bool(ablation_cfg.get("sample_soft_ctrl", True))
     per_condition_ot = bool(ablation_cfg.get("per_condition_ot", False))
     reuse_ot_cache = bool(ablation_cfg.get("reuse_ot_cache", False))
@@ -661,26 +664,15 @@ def run_dataset_with_paths(
         stage2_model_cfg["predict_delta"] = False
         shift_predict_delta_cfg = False
     disable_loss_z_supervision = not shift_predict_delta_cfg
-    seq_joint_enable = bool(ablation_cfg.get("sequential_joint_finetune", False))
-    seq_joint_epochs = int(ablation_cfg.get("joint_finetune_epochs", 6))
-    seq_joint_lr_scale = float(ablation_cfg.get("joint_finetune_lr_scale", 0.2))
+    cond_pool_mode_cfg = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
+    if cond_pool_mode_cfg not in {"sum", "mean"}:
+        raise ValueError(
+            f"Unsupported model.stage2.cond_pool_mode={cond_pool_mode_cfg}. "
+            "Supported: sum, mean"
+        )
     shift_input_source_cfg = str(stage2_model_cfg.get("shift_input_source", "latent_mu"))
     shift_input_source_eff = shift_input_source_cfg
     gen_state_source = "compressor"
-    if train_mode == "latent_decoder":
-        gen_state_source = "latent_mu"
-        if shift_input_source_cfg != "latent_mu":
-            print(
-                "[config] train_mode=latent_decoder ignores "
-                f"model.stage2.shift_input_source={shift_input_source_cfg}; "
-                "forcing latent_mu"
-            )
-        shift_input_source_eff = "latent_mu"
-        if seq_joint_enable:
-            print(
-                "[config] train_mode=latent_decoder ignores "
-                "ablation.sequential_joint_finetune settings"
-            )
     cache_dir = Path("artifacts") / "cache" / "topk"
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_dir_path = Path(out_dir) if out_dir is not None else (Path("artifacts") / "results" / name)
@@ -887,39 +879,6 @@ def run_dataset_with_paths(
                 deg_weight=loss.deg_weight,
                 lambda_expr_mse=loss.lambda_expr_mse,
             )
-        elif train_mode == "latent_decoder":
-            train_logs["stage23_latent_decoder_joint"] = model.train_stage23_joint(
-                split_dict=split_dict,
-                emb_table=emb_table,
-                mode=mode,
-                k=k,
-                split_id=split_id,
-                epochs=stage23_epochs,
-                batch_size=int(stage23_cfg.get("batch_size", 64)),
-                lr=float(stage23_cfg.get("lr", 1e-3)),
-                sched_gamma=sched_stage23.sched_gamma,
-                patience=sched_stage23.patience,
-                min_delta=sched_stage23.min_delta,
-                amp=perf.amp,
-                num_workers=perf.num_workers,
-                pin_memory=perf.pin_memory,
-                grad_accum_steps=perf.grad_accum_steps,
-                cache_topk_path=str(cache_path),
-                gamma=loss.gamma,
-                lambda_dir=loss.lambda_dir,
-                lambda_dir_expr=loss.lambda_dir_expr,
-                lambda_dir_z=loss.lambda_dir_z,
-                lambda_z=loss.lambda_z,
-                deg_weight=loss.deg_weight,
-                topk_strategy=topk_strategy,
-                sample_soft_ctrl=sample_soft_ctrl,
-                latent_loss_type=latent_loss_type,
-                lambda_expr_mse=loss.lambda_expr_mse,
-                per_condition_ot=per_condition_ot,
-                disable_loss_z_supervision=disable_loss_z_supervision,
-                reuse_ot_cache=reuse_ot_cache,
-                topk_cache_key=topk_cache_key,
-            )
         elif train_mode == "sequential":
             train_logs["stage23_sequential"] = model.train_stage23_sequential(
                 split_dict=split_dict,
@@ -955,40 +914,6 @@ def run_dataset_with_paths(
                 reuse_ot_cache=reuse_ot_cache,
                 topk_cache_key=topk_cache_key,
             )
-            if seq_joint_enable and seq_joint_epochs > 0:
-                finetune_lr = float(stage23_cfg.get("lr", 1e-3)) * seq_joint_lr_scale
-                train_logs["stage23_joint_finetune"] = model.train_stage23_joint(
-                    split_dict=split_dict,
-                    emb_table=emb_table,
-                    mode=mode,
-                    k=k,
-                    split_id=split_id,
-                    epochs=seq_joint_epochs,
-                    batch_size=int(stage23_cfg.get("batch_size", 64)),
-                    lr=finetune_lr,
-                    sched_gamma=sched_stage23.sched_gamma,
-                    patience=sched_stage23.patience,
-                    min_delta=sched_stage23.min_delta,
-                    amp=perf.amp,
-                    num_workers=perf.num_workers,
-                    pin_memory=perf.pin_memory,
-                    grad_accum_steps=perf.grad_accum_steps,
-                    cache_topk_path=str(cache_path),
-                    gamma=loss.gamma,
-                    lambda_dir=loss.lambda_dir,
-                    lambda_dir_expr=loss.lambda_dir_expr,
-                    lambda_dir_z=loss.lambda_dir_z,
-                    lambda_z=loss.lambda_z,
-                    deg_weight=loss.deg_weight,
-                    topk_strategy=topk_strategy,
-                    sample_soft_ctrl=sample_soft_ctrl,
-                    latent_loss_type=latent_loss_type,
-                    lambda_expr_mse=loss.lambda_expr_mse,
-                    per_condition_ot=per_condition_ot,
-                    disable_loss_z_supervision=disable_loss_z_supervision,
-                    reuse_ot_cache=reuse_ot_cache,
-                    topk_cache_key=topk_cache_key,
-                )
         else:
             train_logs["stage23_joint"] = model.train_stage23_joint(
                 split_dict=split_dict,

@@ -143,7 +143,6 @@ def _build_runs() -> list[RunSpec]:
     add("B0_baseline", {})
     add("A1_train_mode_sequential", {"train_mode": "sequential"})
     add("A2_train_mode_stage3_only", {"train_mode": "stage3_only"})
-    add("A3_train_mode_latent_decoder", {"train_mode": "latent_decoder"})
     add("T1_topk_weighted_sample", {"ablation": {"topk_strategy": "weighted_sample"}})
 
     # Batch 2

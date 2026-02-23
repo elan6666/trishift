@@ -193,7 +193,6 @@ def _build_runs() -> list[RunSpec]:
         "TM1_stage3_only_plus_residual",
         {"train_mode": "stage3_only", "model": {"stage3": {"use_residual_head": True}}},
     )
-    add("TM2_train_mode_latent_decoder", {"train_mode": "latent_decoder"})
     add("MM1_matching_mode_soft_ot", {"matching_mode": "soft_ot"})
     add("K1_k_topk_200", {"k_topk": 200})
     add("T1_topk_strategy_weighted_sample", {"ablation": {"topk_strategy": "weighted_sample"}})
@@ -211,8 +210,8 @@ def _build_runs() -> list[RunSpec]:
     add("Z1_z_dim_64", {"model": {"stage1": {"z_dim": 64}}})
     add("S4_shift_input_source_state", {"model": {"stage2": {"shift_input_source": "state"}}})
 
-    if len(runs) != 20:
-        raise RuntimeError(f"Expected 20 runs, got {len(runs)}")
+    if len(runs) != 19:
+        raise RuntimeError(f"Expected 19 runs, got {len(runs)}")
     return runs
 
 
