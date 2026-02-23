@@ -34,6 +34,33 @@ def _fmt(x: float | int | None, nd: int = 6) -> str:
     return f"{float(x):.{nd}f}"
 
 
+def _df_to_markdown(df: pd.DataFrame, index: bool = False) -> str:
+    """Render markdown table without requiring optional 'tabulate' dependency."""
+    try:
+        return df.to_markdown(index=index)
+    except Exception:
+        # Fallback: build a simple GitHub-style markdown table.
+        if index:
+            df_use = df.copy()
+        else:
+            df_use = df.reset_index(drop=True)
+        cols = [str(c) for c in df_use.columns]
+        rows = []
+        for _, row in df_use.iterrows():
+            vals = []
+            for c in df_use.columns:
+                v = row[c]
+                if pd.isna(v):
+                    vals.append("")
+                else:
+                    vals.append(str(v))
+            rows.append(vals)
+        header = "| " + " | ".join(cols) + " |"
+        sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+        body = ["| " + " | ".join(r) + " |" for r in rows]
+        return "\n".join([header, sep] + body)
+
+
 def _discover_runs(sweep_root: Path) -> list[RunRow]:
     runs: list[RunRow] = []
     for p in sorted(sweep_root.iterdir()):
@@ -86,11 +113,15 @@ def _write_md_full(
     lines.append("")
     lines.append("## 2. 所有指标绝对值对比（全表）")
     lines.append("")
-    lines.append(mean_df.to_markdown(index=False))
+    lines.append(_df_to_markdown(mean_df, index=False))
     lines.append("")
     lines.append("## 3. 相对 Baseline 增益/退化对比（全表）")
     lines.append("")
-    lines.append(delta_df.to_markdown(index=False))
+    # Match the user's expected naming convention: prefix delta_ for each metric.
+    delta_view = delta_df.copy()
+    rename = {m: f"delta_{m}" for m in metrics}
+    delta_view = delta_view.rename(columns=rename)
+    lines.append(_df_to_markdown(delta_view, index=False))
     lines.append("")
 
     # Best run per metric (direction-aware).
@@ -115,7 +146,7 @@ def _write_md_full(
     best_df = pd.DataFrame(best_rows)
     if not best_df.empty:
         best_df["best_value"] = best_df["best_value"].map(lambda x: _fmt(x))
-    lines.append(best_df.to_markdown(index=False))
+    lines.append(_df_to_markdown(best_df, index=False))
     lines.append("")
 
     # Top3 per metric (direction-aware).
@@ -136,10 +167,11 @@ def _write_md_full(
             {"metric": m, "direction": direction, "top1": vals[0], "top2": vals[1], "top3": vals[2]}
         )
     top3_df = pd.DataFrame(top3_rows)
-    lines.append(top3_df.to_markdown(index=False))
+    lines.append(_df_to_markdown(top3_df, index=False))
     lines.append("")
 
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Use UTF-8 BOM to reduce mojibake risk on Windows editors.
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     return out_path
 
 
@@ -156,7 +188,7 @@ def _write_md_brief(
         df = mean_df.sort_values(metric, ascending=lower_better).head(topn)[["run", metric]].copy()
         df.insert(0, "rank", range(1, len(df) + 1))
         df[metric] = df[metric].map(lambda x: _fmt(x))
-        return df.to_markdown(index=False)
+        return _df_to_markdown(df, index=False)
 
     lines: list[str] = []
     lines.append("# Adamson 单因子消融结果整理与分析（中文）")
@@ -203,11 +235,10 @@ def _write_md_brief(
                 "第3名": vals[2],
             }
         )
-    pd.DataFrame(rows).to_markdown(index=False)
-    lines.append(pd.DataFrame(rows).to_markdown(index=False))
+    lines.append(_df_to_markdown(pd.DataFrame(rows), index=False))
     lines.append("")
 
-    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8-sig")
     return out_path
 
 
@@ -252,8 +283,8 @@ def main() -> None:
         delta_df[c] = delta_df[c] - float(base_vals.get(c, 0.0))
 
     # Persist CSVs (common artifacts used by downstream scripts).
-    mean_df.to_csv(sweep_root / "all_runs_mean_metrics.csv", index=False)
-    delta_df.to_csv(sweep_root / "all_runs_delta_vs_baseline.csv", index=False)
+    mean_df.to_csv(sweep_root / "all_runs_mean_metrics.csv", index=False, encoding="utf-8-sig")
+    delta_df.to_csv(sweep_root / "all_runs_delta_vs_baseline.csv", index=False, encoding="utf-8-sig")
 
     _write_md_brief(sweep_root, mean_df, baseline_run, out_name="analysis_results_cn.md")
     _write_md_full(

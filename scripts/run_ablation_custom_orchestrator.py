@@ -24,6 +24,11 @@ def main() -> None:
     ap.add_argument("--reuse_root", default="", help="reuse existing sweep root")
     ap.add_argument("--keep_going", action="store_true")
     ap.add_argument(
+        "--gpu_lock",
+        default="gpu0",
+        help="Pass through to run_ablation_custom.py --gpu_lock (use 'none' for no mutex).",
+    )
+    ap.add_argument(
         "--batchA",
         default="2,4,6,8,10,12,14,16,18,20",
         help="comma-separated run ids for batch A",
@@ -44,7 +49,16 @@ def main() -> None:
         root = repo_root / "artifacts" / "ablation" / "adamson" / f"{_ts_local()}_custom_sweep_pdFalse_base"
     root.mkdir(parents=True, exist_ok=True)
 
-    base_cmd = [sys.executable, str(runner), "--dataset", "adamson", "--reuse_root", str(root)]
+    base_cmd = [
+        sys.executable,
+        str(runner),
+        "--dataset",
+        "adamson",
+        "--reuse_root",
+        str(root),
+        "--gpu_lock",
+        str(args.gpu_lock),
+    ]
     if args.keep_going:
         base_cmd.append("--keep_going")
 
@@ -97,4 +111,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

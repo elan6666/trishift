@@ -18,7 +18,7 @@ run:
   # 是否做多随机划分评估。
   multi_split: true
   # 划分次数（multi_split=true 时生效）。
-  n_splits: 3
+  n_splits: 5
 
 performance:
   # 混合精度；仅在 CUDA 可用时生效。
@@ -54,9 +54,9 @@ train:
     # Stage2/3 的 batch size（joint/sequential/stage3_only/latent_decoder 都走这里）。
     batch_size: 256
     # joint 学习率。
-    lr: 0.001
-    sched_gamma: 0.9
-    patience: 5
+    lr: 0.0005
+    sched_gamma: 0.95
+    patience: 10
     min_delta: 0.001
   stage2:
     # sequential 模式 Phase A (Stage2) 轮数/学习率。
@@ -77,15 +77,15 @@ loss:
   # GEARS 风格 autofocus 指数；0 表示退化为平方误差型项。
   gamma: 0
   # 方向损失通用权重（当 *_expr / *_z 未单独指定时使用）。
-  lambda_dir: 0.01
+  lambda_dir: 0.05
   # 表达空间方向损失权重。
-  lambda_dir_expr: 0.01
+  lambda_dir_expr: 0.05
   # latent 空间方向损失权重（latent_loss_type=gears 时用到）。
   lambda_dir_z: 0.05
   # latent 监督损失权重（仅 predict_delta=true 生效）。
   lambda_z: 1
   # DE 基因加权倍率（=1 表示不加权）。
-  deg_weight: 1
+  deg_weight: 2
   # 额外表达 MSE 权重（0 表示关闭）。
   lambda_expr_mse: 0
 
@@ -136,6 +136,7 @@ model:
     # 注意：train_mode=latent_decoder 时该项会被忽略并强制为 latent_mu。
     shift_input_source: latent_mu
     # 多基因条件 embedding 聚合方式：sum | mean。
+    # cond embedding 聚合方式: sum | mean | concat（concat=固定槽位拼接；stage3_only 下会忽略并强制 sum）
     cond_pool_mode: sum
     # 条件向量是否做 L2 归一化。
     cond_l2_norm: false
@@ -146,13 +147,13 @@ model:
     # cross-attention dropout。
     cross_attn_dropout: 0
     # transformer block（与 cross-attention 互斥）。
-    use_transformer_block: false
+    use_transformer_block: true
     # transformer token 读出：first | mean | concat。
     transformer_readout: concat
     # transformer encoder 层数。
     transformer_layers: 1
     # transformer FFN 扩展倍率。
-    transformer_ff_mult: 4
+    transformer_ff_mult: 8
     # transformer dropout。
     transformer_dropout: 0
   stage3:
@@ -180,4 +181,4 @@ model:
     # Stage3 dropout。
     dropout: 0.0
     # 残差头：x_pred = x_ctrl + delta_x。
-    use_residual_head: false
+    use_residual_head: true

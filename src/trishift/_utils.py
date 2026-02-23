@@ -68,6 +68,15 @@ def apply_alias_mapping(embd_df: pd.DataFrame, dataset_name: str) -> pd.DataFram
             "PRELID3B": "SLMO2",
         }
         return embd_df.rename(index=mapping)
+    if dataset_name == "norman":
+        mapping = {
+            "MAP3K21": "KIAA1804",
+            "FOXL2NB": "C3orf72",
+            "RHOXF2B": "RHOXF2BB",
+            "MIDEAS": "ELMSAN1",
+            "CBARP": "C19orf26",
+        }
+        return embd_df.rename(index=mapping)
     if dataset_name == "replogle_k562_essential":
         mapping = {
             "AARS1": "AARS",

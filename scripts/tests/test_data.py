@@ -34,6 +34,7 @@ def test_build_or_load_degs_precomputed():
     data.build_or_load_degs()
     uns = data.adata_all.uns
     assert "top20_degs_final" in uns
+    assert "degs_meta" in uns
     assert "gene_idx_non_dropout" in uns
     assert "gene_idx_non_zeros" in uns
 
@@ -51,6 +52,8 @@ def test_build_or_load_degs_compute():
     data.build_or_load_degs(prefer_key="missing_key")
     uns = data.adata_all.uns
     assert "top20_degs_final" in uns
+    assert "degs_meta" in uns
+    assert uns["degs_meta"]["rank_genes_groups_method"] == "t-test"
     assert "gene_idx_non_dropout" in uns
     assert "gene_idx_non_zeros" in uns
 

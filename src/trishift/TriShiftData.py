@@ -44,6 +44,24 @@ class TriShiftData:
         non_dropouts = np.concatenate((non_zero, true_zeros))
         return non_zero, non_dropouts
 
+    def _build_degs_meta(
+        self,
+        *,
+        method: str,
+        reference: str = "ctrl",
+        rankby_abs: bool = True,
+        generator: str = "TriShiftData.build_or_load_degs",
+        version: int = 1,
+    ) -> dict:
+        """Return DEG provenance metadata for cache validation."""
+        return {
+            "rank_genes_groups_method": str(method),
+            "rank_genes_groups_reference": str(reference),
+            "rankby_abs": bool(rankby_abs),
+            "generator": str(generator),
+            "version": int(version),
+        }
+
     def _refresh_condition_cache(self) -> None:
         """Refresh condition-derived caches after adata changes."""
         cond_series = self.adata_all.obs[self.label_key].astype(str)
@@ -120,6 +138,7 @@ class TriShiftData:
         uns = self.adata_all.uns
         if prefer_key not in uns and "top20_degs" not in uns:
             print("[degs] computing with scanpy")
+            deg_method = "t-test"
             var_names_backup = None
             if self.var_gene_key in self.adata_all.var.columns:
                 var_names_backup = self.adata_all.var_names.copy()
@@ -132,7 +151,7 @@ class TriShiftData:
                 reference=self.ctrl_label,
                 rankby_abs=True,
                 n_genes=self.adata_all.n_vars,
-                method="wilcoxon",
+                method=deg_method,
             )
             names_df = pd.DataFrame(self.adata_all.uns["rank_genes_groups"]["names"])
             gene_dict = {g: names_df[g].tolist() for g in names_df.columns}
@@ -184,6 +203,11 @@ class TriShiftData:
             self.adata_all.uns["top20_degs_non_dropout"] = top_non_dropout_de_20
             self.adata_all.uns["gene_idx_non_dropout"] = non_dropout_gene_idx
             self.adata_all.uns["gene_idx_non_zeros"] = non_zeros_gene_idx
+            self.adata_all.uns["degs_meta"] = self._build_degs_meta(
+                method=deg_method,
+                reference=self.ctrl_label,
+                rankby_abs=True,
+            )
             print("[degs] scanpy degs ready")
 
         if prefer_key in uns:
@@ -195,6 +219,14 @@ class TriShiftData:
 
         if degs_src:
             print(f"[degs] using precomputed degs: key={prefer_key}")
+            if "degs_meta" not in self.adata_all.uns or not isinstance(self.adata_all.uns.get("degs_meta"), dict):
+                # Keep provenance explicit when precomputed keys are injected without metadata.
+                self.adata_all.uns["degs_meta"] = self._build_degs_meta(
+                    method="unknown",
+                    reference=self.ctrl_label,
+                    rankby_abs=True,
+                    generator="TriShiftData.build_or_load_degs(precomputed_without_meta)",
+                )
             degs_final = {}
             for cond in self.conditions_pert:
                 if cond not in degs_src:
@@ -543,6 +575,21 @@ class TriShiftData:
                 z_ctrl_local: torch.Tensor,
                 z_pert_local: torch.Tensor,
             ) -> tuple[torch.Tensor, torch.Tensor]:
+                # Avoid obvious CUDA OOM for very large OT matrices by running Sinkhorn on CPU directly.
+                # Pair count threshold is conservative for typical single-GPU training environments.
+                pair_count = int(z_ctrl_local.shape[0]) * int(z_pert_local.shape[0])
+                if z_ctrl_local.device.type == "cuda" and pair_count > 30_000_000:
+                    print(
+                        "[topk] large ot matrix on cuda "
+                        f"(ctrl={z_ctrl_local.shape[0]}, pert={z_pert_local.shape[0]}, pairs={pair_count}); "
+                        "using cpu for ot"
+                    )
+                    return _compute_ot_topk(
+                        z_ctrl_local.detach().cpu(),
+                        z_pert_local.detach().cpu(),
+                        reg,
+                        k,
+                    )
                 try:
                     return _compute_ot_topk(z_ctrl_local, z_pert_local, reg, k)
                 except RuntimeError as exc:
@@ -550,7 +597,11 @@ class TriShiftData:
                     if z_ctrl_local.device.type != "cuda" or not oom:
                         raise
                     print("[topk] cuda oom in ot; falling back to cpu")
-                    torch.cuda.empty_cache()
+                    try:
+                        torch.cuda.empty_cache()
+                    except RuntimeError as cache_exc:
+                        # CUDA can be in an error state after OOM; continue CPU fallback anyway.
+                        print(f"[topk] warning: empty_cache failed after oom: {cache_exc}")
                     return _compute_ot_topk(
                         z_ctrl_local.detach().cpu(),
                         z_pert_local.detach().cpu(),

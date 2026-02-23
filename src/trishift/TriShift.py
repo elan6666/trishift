@@ -266,7 +266,18 @@ class TriShift:
 
     def _get_degs_idx_dict(self) -> dict:
         """Return DE gene indices per condition from adata.uns if available."""
-        return self.data.adata_all.uns.get("top20_degs_final", {})
+        degs_src = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
+        if not isinstance(degs_src, dict):
+            return {}
+        # Align with Scouter source while preserving TriShift behavior of excluding perturbed genes.
+        degs_filtered = {}
+        for cond, degs in degs_src.items():
+            deg_idx = np.asarray(degs, dtype=int).reshape(-1)
+            remove_idx = np.asarray(self.data.cond_to_gene_idx.get(cond, []), dtype=int)
+            if remove_idx.size > 0 and deg_idx.size > 0:
+                deg_idx = np.setdiff1d(deg_idx, remove_idx)
+            degs_filtered[cond] = deg_idx
+        return degs_filtered
 
     @staticmethod
     def _select_dense(X, rows) -> np.ndarray:
@@ -292,13 +303,14 @@ class TriShift:
         ctrl_idx = rng.choice(n_ctrl, size=n_ensemble, replace=True)
         return self._select_dense(X_ctrl, ctrl_idx)
 
-    def _get_cond_pool_cfg(self) -> tuple[str, bool]:
+    def _get_cond_pool_cfg(self) -> tuple[str, bool, int]:
         if self.hparams.get("stage3_only", False):
             # Strict Scouter-style condition construction for stage3_only.
-            return "sum", False
+            return "sum", False, 0
         return (
             str(self.hparams.get("cond_pool_mode", "sum")),
             bool(self.hparams.get("cond_l2_norm", False)),
+            int(self.hparams.get("cond_concat_slots", 0)),
         )
 
     def _get_gene_names(self) -> np.ndarray:
@@ -313,18 +325,19 @@ class TriShift:
         n_ensemble: int,
     ) -> torch.Tensor:
         """Build a condition embedding matrix repeated for an ensemble."""
-        cond_mode, cond_norm = self._get_cond_pool_cfg()
+        cond_mode, cond_norm, cond_concat_slots = self._get_cond_pool_cfg()
         cond_vec = aggregate_cond_embedding(
             emb_table,
             embd_idx_list,
             mode=cond_mode,
+            concat_slots=cond_concat_slots if cond_mode == "concat" else None,
             normalize=cond_norm,
         )
         return cond_vec.unsqueeze(0).repeat(n_ensemble, 1)
 
     def _build_cond_vec_batch(self, emb_table: torch.Tensor, idx_list) -> torch.Tensor:
         """Build a batch of condition embeddings from index lists."""
-        cond_mode, cond_norm = self._get_cond_pool_cfg()
+        cond_mode, cond_norm, cond_concat_slots = self._get_cond_pool_cfg()
         # Scouter-style vectorized path: gather all pert indices in one tensor and reduce once.
         # Falls back to per-sample aggregation if unexpected index format is encountered.
         try:
@@ -346,13 +359,26 @@ class TriShift:
                     max_len = int(t.numel())
 
             batch_size = len(seqs)
+            out_dim = int(emb_table.shape[1]) * (
+                int(cond_concat_slots) if cond_mode == "concat" else 1
+            )
             if batch_size == 0:
-                return emb_table.new_zeros((0, emb_table.shape[1]))
+                return emb_table.new_zeros((0, out_dim))
             if max_len == 0:
-                out = emb_table.new_zeros((batch_size, emb_table.shape[1]))
+                out = emb_table.new_zeros((batch_size, out_dim))
                 if cond_norm:
                     out = F.normalize(out, p=2, dim=1, eps=1e-12)
                 return out
+
+            if cond_mode == "concat":
+                if int(cond_concat_slots) <= 0:
+                    raise ValueError("concat mode requires cond_concat_slots > 0")
+                if max_len > int(cond_concat_slots):
+                    raise ValueError(
+                        f"concat mode received sequence length {max_len} > "
+                        f"cond_concat_slots={int(cond_concat_slots)}"
+                    )
+                max_len = int(cond_concat_slots)
 
             padded = torch.zeros((batch_size, max_len), device=emb_table.device, dtype=torch.long)
             mask = torch.zeros(
@@ -366,12 +392,15 @@ class TriShift:
                 mask[i, :n] = 1.0
 
             selected = emb_table.index_select(0, padded.reshape(-1)).view(batch_size, max_len, -1)
-            out = (selected * mask.unsqueeze(-1)).sum(dim=1)
+            if cond_mode == "concat":
+                out = (selected * mask.unsqueeze(-1)).reshape(batch_size, -1)
+            else:
+                out = (selected * mask.unsqueeze(-1)).sum(dim=1)
             if cond_mode == "mean":
                 denom = mask.sum(dim=1, keepdim=True).clamp_min(1.0)
                 out = out / denom
-            elif cond_mode != "sum":
-                raise ValueError("mode must be one of: sum, mean")
+            elif cond_mode not in {"sum", "concat"}:
+                raise ValueError("mode must be one of: sum, mean, concat")
 
             if cond_norm:
                 out = F.normalize(out, p=2, dim=1, eps=1e-12)
@@ -383,6 +412,7 @@ class TriShift:
                         emb_table,
                         idxs,
                         mode=cond_mode,
+                        concat_slots=cond_concat_slots if cond_mode == "concat" else None,
                         normalize=cond_norm,
                     )
                     for idxs in idx_list
@@ -609,6 +639,7 @@ class TriShift:
         shift_transformer_readout: str = "first",
         cond_pool_mode: str = "sum",
         cond_l2_norm: bool = False,
+        cond_concat_slots: int = 0,
         gen_use_residual_head: bool = False,
         gen_state_source: str = "compressor",
         shift_input_source: str = "latent_mu",
@@ -647,6 +678,7 @@ class TriShift:
         ).to(self.device)
         self.hparams["cond_pool_mode"] = str(cond_pool_mode)
         self.hparams["cond_l2_norm"] = bool(cond_l2_norm)
+        self.hparams["cond_concat_slots"] = int(cond_concat_slots)
         self.hparams["shift_predict_delta"] = bool(shift_predict_delta)
         self.hparams["shift_transformer_readout"] = str(shift_transformer_readout)
         self.hparams["shift_input_source"] = str(shift_input_source)
@@ -1804,7 +1836,6 @@ class TriShift:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
 
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
-        degs_final = self.data.adata_all.uns.get("top20_degs_final", {})
         train_adata = split_dict.get("train", None)
         if train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
@@ -1835,10 +1866,10 @@ class TriShift:
             if np.isnan(pred_mean).any():
                 print(f"[eval] invalid pred_mean: {cond}")
 
-            if cond in degs_non_dropout:
-                deg_idx = np.asarray(degs_non_dropout.get(cond, []), dtype=int)
-            else:
-                deg_idx = np.asarray(degs_final.get(cond, []), dtype=int)
+            if cond not in degs_non_dropout:
+                print(f"[eval] skip condition without top20_degs_non_dropout: {cond}")
+                continue
+            deg_idx = np.asarray(degs_non_dropout.get(cond, []), dtype=int)
             remove_idx = np.asarray(self.data.cond_to_gene_idx.get(cond, []), dtype=int)
             if remove_idx.size > 0:
                 deg_idx = np.setdiff1d(deg_idx, remove_idx)
@@ -1919,6 +1950,7 @@ class TriShift:
         cond_series = self.data.adata_all.obs[self.data.label_key].astype(str).values
 
         gene_names = self._get_gene_names()
+        degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
 
         for cond in conds:
             cond_mask = cond_series == cond
@@ -1931,12 +1963,13 @@ class TriShift:
             cond_vec = self._build_cond_vec(emb_table, embd_idx_list, n_ensemble)
             x_pred = self._predict_expr_from_ctrl(ctrl_expr, cond_vec)
 
-            deg_idx = self.data.adata_all.uns["top20_degs_final"].get(
-                cond, np.array([], dtype=int)
-            )
+            deg_idx = degs_non_dropout.get(cond, np.array([], dtype=int))
             if deg_idx is None:
                 deg_idx = np.array([], dtype=int)
             deg_idx = np.asarray(deg_idx, dtype=int)
+            remove_idx = np.asarray(self.data.cond_to_gene_idx.get(cond, []), dtype=int)
+            if remove_idx.size > 0 and deg_idx.size > 0:
+                deg_idx = np.setdiff1d(deg_idx, remove_idx)
             deg_names = gene_names[deg_idx] if deg_idx.size > 0 else np.array([], dtype=gene_names.dtype)
 
             results[cond] = {

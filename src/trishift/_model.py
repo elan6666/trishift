@@ -134,16 +134,38 @@ def aggregate_cond_embedding(
     emb_table: torch.Tensor,
     idx_list: list[int] | torch.Tensor,
     mode: str = "sum",
+    concat_slots: int | None = None,
     normalize: bool = False,
     eps: float = 1e-12,
 ) -> torch.Tensor:
+    if mode == "concat":
+        if concat_slots is None or int(concat_slots) <= 0:
+            raise ValueError("concat mode requires concat_slots > 0")
+        concat_slots = int(concat_slots)
+        emb_dim = int(emb_table.size(1))
+    else:
+        concat_slots = None
+        emb_dim = int(emb_table.size(1))
+
     if isinstance(idx_list, list):
         if len(idx_list) == 0:
+            if mode == "concat":
+                return torch.zeros(
+                    concat_slots * emb_dim,
+                    device=emb_table.device,
+                    dtype=emb_table.dtype,
+                )
             return _zero_cond_vec(emb_table)
         idx = torch.tensor(idx_list, device=emb_table.device, dtype=torch.long)
     else:
         idx = idx_list.to(device=emb_table.device, dtype=torch.long).view(-1)
         if idx.numel() == 0:
+            if mode == "concat":
+                return torch.zeros(
+                    concat_slots * emb_dim,
+                    device=emb_table.device,
+                    dtype=emb_table.dtype,
+                )
             return _zero_cond_vec(emb_table)
 
     selected = emb_table.index_select(0, idx)
@@ -151,8 +173,22 @@ def aggregate_cond_embedding(
         out = selected.sum(dim=0)
     elif mode == "mean":
         out = selected.mean(dim=0)
+    elif mode == "concat":
+        n = int(selected.shape[0])
+        if n > concat_slots:
+            raise ValueError(
+                f"concat mode received {n} indices but concat_slots={concat_slots}"
+            )
+        if n < concat_slots:
+            pad = torch.zeros(
+                (concat_slots - n, emb_dim),
+                device=selected.device,
+                dtype=selected.dtype,
+            )
+            selected = torch.cat([selected, pad], dim=0)
+        out = selected.reshape(-1)
     else:
-        raise ValueError("mode must be one of: sum, mean")
+        raise ValueError("mode must be one of: sum, mean, concat")
     if normalize:
         out = F.normalize(out, p=2, dim=0, eps=eps)
     return out

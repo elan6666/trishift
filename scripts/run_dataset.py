@@ -34,30 +34,38 @@ DATASET_CONFIG = {
         "emb_key": "emb_b",
         "defaults": {"stage1": 10, "stage23": 6, "stage2": 3, "stage3": 3},
         "multi_split_default": 5,
+        "test_ratio": 0.2,
     },
     "dixit": {
         "emb_key": "emb_c",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 10,
+        # Align split policy with Scouter for Dixit.
+        "test_ratio": 0.1,
     },
     "norman": {
         "emb_key": "emb_a",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 5,
+        "test_ratio": 0.2,
     },
     "replogle_k562_essential": {
         "emb_key": "emb_c",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 5,
+        "test_ratio": 0.2,
     },
     "replogle_rpe1_essential": {
         "emb_key": "emb_b",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 5,
+        "test_ratio": 0.2,
     },
 }
 
-DEGS_CACHE_KEYS = ("top20_degs_non_dropout", "top20_degs_non_zero", "top20_degs")
+DEGS_CACHE_KEYS = ("top20_degs_non_dropout", "top20_degs_non_zero", "top20_degs", "degs_meta")
+DEGS_CONDITION_KEYS = ("top20_degs_non_dropout", "top20_degs_non_zero", "top20_degs")
+DEGS_EXPECTED_METHOD = "t-test"
 
 
 @dataclass(frozen=True)
@@ -187,6 +195,35 @@ def _dump_yaml(path: Path, obj: dict) -> None:
     )
 
 
+def _resolve_cond_dims_for_pool_mode(
+    data: TriShiftData,
+    embd_df: pd.DataFrame,
+    cond_pool_mode: str,
+) -> tuple[int, int]:
+    """Resolve condition vector dimension and concat slots from pool mode."""
+    emb_dim = int(embd_df.shape[1])
+    mode = str(cond_pool_mode)
+    if mode in {"sum", "mean"}:
+        return emb_dim, 0
+    if mode == "concat":
+        if "embd_index" not in data.adata_all.obs.columns:
+            raise ValueError("embd_index is missing; call setup_embedding_index() before concat mode")
+        max_len = 0
+        for v in data.adata_all.obs["embd_index"].tolist():
+            if v is None:
+                n = 0
+            elif isinstance(v, (list, tuple, np.ndarray, pd.Series)):
+                n = len(v)
+            else:
+                n = 1
+            if n > max_len:
+                max_len = int(n)
+        if max_len <= 0:
+            max_len = 1
+        return emb_dim * max_len, int(max_len)
+    raise ValueError("cond_pool_mode must be one of: sum, mean, concat")
+
+
 def _load_z_mu_cache(cache_path: Path, n_obs: int) -> np.ndarray | None:
     if not cache_path.exists():
         return None
@@ -253,6 +290,11 @@ def _init_model(
     )
     cond_pool_mode = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
     cond_l2_norm = bool(stage2_model_cfg.get("cond_l2_norm", False))
+    cond_dim_eff, cond_concat_slots = _resolve_cond_dims_for_pool_mode(
+        data=data,
+        embd_df=embd_df,
+        cond_pool_mode=cond_pool_mode,
+    )
     stage1_hidden_dim = int(stage1_model_cfg.get("hidden_dim", 1000))
     stage1_noise_rate = float(stage1_model_cfg.get("noise_rate", 0.1))
     stage1_kl_weight = float(stage1_model_cfg.get("kl_weight", 5e-4))
@@ -261,7 +303,7 @@ def _init_model(
     model.model_init(
         x_dim=adata.shape[1],
         z_dim=int(stage1_model_cfg.get("z_dim", 100)),
-        cond_dim=embd_df.shape[1],
+        cond_dim=cond_dim_eff,
         vae_enc_hidden=stage1_model_cfg.get("enc_hidden", [512, 256]),
         vae_dec_hidden=stage1_model_cfg.get("dec_hidden", [256, 512]),
         shift_hidden=shift_hidden,
@@ -289,6 +331,7 @@ def _init_model(
         shift_input_source=shift_input_source,
         cond_pool_mode=cond_pool_mode,
         cond_l2_norm=cond_l2_norm,
+        cond_concat_slots=cond_concat_slots,
         gen_use_residual_head=gen_use_residual_head,
     )
     return model
@@ -320,6 +363,21 @@ def _save_degs_cache(cache_path: Path, uns: dict) -> None:
             pickle.dump(payload, f)
     except Exception as exc:
         print(f"[degs] failed to save cache: {cache_path} ({exc})")
+
+
+def _degs_cache_meta_ok(uns: dict) -> tuple[bool, str]:
+    """Validate DEG cache metadata against Scouter-aligned settings."""
+    meta = uns.get("degs_meta")
+    if not isinstance(meta, dict):
+        return False, "missing degs_meta"
+    method = str(meta.get("rank_genes_groups_method", "")).strip()
+    if method != DEGS_EXPECTED_METHOD:
+        return False, f"method={method or '<missing>'} != {DEGS_EXPECTED_METHOD}"
+    if str(meta.get("rank_genes_groups_reference", "")).strip() != "ctrl":
+        return False, "reference!=ctrl"
+    if bool(meta.get("rankby_abs", False)) is not True:
+        return False, "rankby_abs!=True"
+    return True, "ok"
 
 
 def _logs_to_records(split_id: int, train_logs: dict) -> list[dict]:
@@ -523,6 +581,32 @@ def run_dataset_with_paths(
     print("[run] init data")
     data = TriShiftData(adata, embd_df)
     data.setup_embedding_index()
+    if degs_cache:
+        meta_ok, meta_msg = _degs_cache_meta_ok(adata.uns)
+        if not meta_ok:
+            print(f"[degs] cache {meta_msg}; recomputing DEGs")
+            for key in (*DEGS_CACHE_KEYS, "rank_genes_groups", "top20_degs_final"):
+                adata.uns.pop(key, None)
+            degs_cache = None
+        else:
+            print(f"[degs] cache method={DEGS_EXPECTED_METHOD} (ok)")
+    if degs_cache:
+        # Guard against stale cache after condition/alias changes (e.g., Norman gene alias updates).
+        required_conds = set(data.conditions_pert)
+        cached_conds = set()
+        for key in DEGS_CONDITION_KEYS:
+            obj = adata.uns.get(key, {})
+            if isinstance(obj, dict):
+                cached_conds |= set(obj.keys())
+        missing = sorted(required_conds - cached_conds)
+        if missing:
+            print(
+                "[degs] cache missing conditions "
+                f"({len(missing)}); recomputing DEGs. examples={missing[:5]}"
+            )
+            for key in (*DEGS_CACHE_KEYS, "rank_genes_groups", "top20_degs_final"):
+                adata.uns.pop(key, None)
+            degs_cache = None
     data.build_or_load_degs()
     if not degs_cache:
         _save_degs_cache(degs_cache_path, adata.uns)
@@ -691,7 +775,10 @@ def run_dataset_with_paths(
                 seed=split_id, test_conds=test_conds, val_conds=val_conds
             )
         else:
-            split_dict = data.split_by_condition(seed=split_id)
+            split_dict = data.split_by_condition(
+                seed=split_id,
+                test_ratio=float(dataset_cfg.get("test_ratio", 0.2)),
+            )
         train_logs: dict = {"split_id": split_id, "train_mode": train_mode}
 
         print("[run] init model")
