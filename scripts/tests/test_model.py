@@ -81,6 +81,87 @@ def test_shift_net_transformer_concat_repr_dim() -> None:
     assert out.shape == (batch, model_dim * 2)
 
 
+def test_shift_net_custom_repr_dim_mlp_cross_transformer() -> None:
+    batch = 3
+    model_dim = 8
+    cond_dim = 8
+    z_ctrl = torch.randn(batch, model_dim)
+    cond = torch.randn(batch, cond_dim)
+
+    net_mlp = ShiftNet(
+        z_dim=model_dim,
+        cond_dim=cond_dim,
+        hidden=[16],
+        predict_delta=False,
+        repr_out_dim=12,
+    )
+    assert net_mlp.output_dim == 12
+    assert net_mlp(z_ctrl, cond).shape == (batch, 12)
+
+    net_cross = ShiftNet(
+        z_dim=model_dim,
+        cond_dim=cond_dim,
+        hidden=[16],
+        predict_delta=False,
+        use_cross_attention=True,
+        cross_attn_heads=4,
+        repr_out_dim=13,
+    )
+    assert net_cross.output_dim == 13
+    assert net_cross(z_ctrl, cond).shape == (batch, 13)
+
+    net_tr = ShiftNet(
+        z_dim=model_dim,
+        cond_dim=cond_dim,
+        hidden=[16],
+        predict_delta=False,
+        use_transformer_block=True,
+        transformer_readout="concat",
+        transformer_layers=1,
+        cross_attn_heads=4,
+        repr_out_dim=11,
+    )
+    assert net_tr.output_dim == 11
+    assert net_tr(z_ctrl, cond).shape == (batch, 11)
+
+
+def test_shift_repr_dim_rejected_when_predict_delta_true() -> None:
+    try:
+        ShiftNet(
+            z_dim=8,
+            cond_dim=8,
+            hidden=[16],
+            predict_delta=True,
+            repr_out_dim=12,
+        )
+        raise AssertionError("expected ValueError when repr_out_dim is set with predict_delta=true")
+    except ValueError as exc:
+        assert "predict_delta=false" in str(exc)
+
+
+def test_trishiftnet_custom_shift_repr_dim_flows_into_generator() -> None:
+    model = TriShiftNet(
+        x_dim=10,
+        z_dim=6,
+        cond_dim=8,
+        vae_enc_hidden=[16],
+        vae_dec_hidden=[16],
+        shift_hidden=[16],
+        gen_hidden=[16],
+        shift_predict_delta=False,
+        shift_repr_dim=12,
+        shift_input_source="latent_mu",
+    )
+    x_ctrl = torch.randn(4, 10)
+    cond_vec = torch.randn(4, 8)
+    z_ctrl_mu = torch.randn(4, 6)
+    out = model.forward_joint(x_ctrl=x_ctrl, cond_vec=cond_vec, z_ctrl_mu=z_ctrl_mu)
+    assert out["shift_repr"].shape == (4, 12)
+    assert model.shift.output_dim == 12
+    assert model.gen.z_dim == 12
+    assert out["x_pred"].shape == (4, 10)
+
+
 def test_trishiftnet_state_source_resolution_and_forward_keys() -> None:
     model = TriShiftNet(
         x_dim=10,
@@ -175,6 +256,9 @@ def main() -> None:
     test_aggregate_cond_embedding_empty_and_mean()
     test_shift_net_output_dims()
     test_shift_net_transformer_concat_repr_dim()
+    test_shift_net_custom_repr_dim_mlp_cross_transformer()
+    test_shift_repr_dim_rejected_when_predict_delta_true()
+    test_trishiftnet_custom_shift_repr_dim_flows_into_generator()
     test_trishiftnet_state_source_resolution_and_forward_keys()
     test_trishiftnet_state_requires_gen_state_dim()
     test_trishiftnet_latent_state_source_supports_all_input_modes()

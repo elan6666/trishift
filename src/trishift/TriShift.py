@@ -603,6 +603,7 @@ class TriShift:
         shift_transformer_ff_mult: int = 4,
         shift_transformer_dropout: float = 0.0,
         shift_transformer_readout: str = "first",
+        shift_repr_dim: int | None = None,
         cond_pool_mode: str = "sum",
         cond_l2_norm: bool = False,
         gen_use_residual_head: bool = False,
@@ -637,6 +638,7 @@ class TriShift:
             shift_transformer_ff_mult=shift_transformer_ff_mult,
             shift_transformer_dropout=shift_transformer_dropout,
             shift_transformer_readout=shift_transformer_readout,
+            shift_repr_dim=shift_repr_dim,
             gen_state_source=gen_state_source,
             gen_use_residual_head=gen_use_residual_head,
             shift_input_source=shift_input_source,
@@ -644,6 +646,7 @@ class TriShift:
         self.hparams["cond_pool_mode"] = str(cond_pool_mode)
         self.hparams["cond_l2_norm"] = bool(cond_l2_norm)
         self.hparams["shift_predict_delta"] = bool(shift_predict_delta)
+        self.hparams["shift_repr_dim"] = None if shift_repr_dim is None else int(shift_repr_dim)
         self.hparams["shift_transformer_readout"] = str(shift_transformer_readout)
         self.hparams["shift_input_source"] = str(shift_input_source)
         self.hparams["gen_input_mode"] = str(gen_input_mode)

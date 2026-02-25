@@ -175,6 +175,7 @@ class ShiftNet(nn.Module):
         transformer_dropout: float = 0.0,
         transformer_readout: str = "first",
         delta_out_dim: int | None = None,
+        repr_out_dim: int | None = None,
     ):
         super().__init__()
         self.predict_delta = bool(predict_delta)
@@ -193,6 +194,7 @@ class ShiftNet(nn.Module):
         transformer_fused_dim = (
             self.model_dim * 2 if self.transformer_readout == "concat" else self.model_dim
         )
+        default_repr_dim = transformer_fused_dim if self.use_transformer_block else self.model_dim
         in_dim = self.model_dim + self.cond_dim
         self.cond_proj: nn.Module = nn.Identity()
         if self.use_transformer_block:
@@ -226,12 +228,21 @@ class ShiftNet(nn.Module):
             )
             in_dim += self.model_dim
         self.context_fallback = None
+        self.repr_proj: nn.Module = nn.Identity()
         if self.predict_delta:
+            if repr_out_dim is not None:
+                raise ValueError("shift_repr_dim only works when predict_delta=false")
             self.output_dim = self.delta_out_dim
-        elif self.use_transformer_block:
-            self.output_dim = transformer_fused_dim
         else:
-            self.output_dim = self.model_dim
+            if repr_out_dim is None:
+                target_repr_dim = int(default_repr_dim)
+            else:
+                target_repr_dim = int(repr_out_dim)
+                if target_repr_dim <= 0:
+                    raise ValueError("shift_repr_dim must be a positive integer")
+            self.output_dim = target_repr_dim
+            if target_repr_dim != int(default_repr_dim):
+                self.repr_proj = nn.Linear(int(default_repr_dim), target_repr_dim)
         if self.predict_delta:
             self.net = MLP(
                 in_dim=in_dim,
@@ -248,7 +259,7 @@ class ShiftNet(nn.Module):
                 self.context_fallback = MLP(
                     in_dim=self.model_dim + self.cond_dim,
                     hidden_dims=hidden,
-                    out_dim=self.model_dim,
+                    out_dim=int(default_repr_dim),
                     dropout=dropout,
                     activation="selu",
                     use_batchnorm=True,
@@ -293,7 +304,7 @@ class ShiftNet(nn.Module):
             return self.net(x)
         if self.context_fallback is None:
             raise RuntimeError("context_fallback is not initialized")
-        return self.context_fallback(x)
+        return self.repr_proj(self.context_fallback(x))
 
     def _forward_with_fused(
         self,
@@ -304,7 +315,7 @@ class ShiftNet(nn.Module):
         if self.predict_delta:
             x = torch.cat([z_ctrl_mu, cond_vec, z_fused], dim=1)
             return self.net(x)
-        return z_fused
+        return self.repr_proj(z_fused)
 
     def forward(self, z_ctrl_mu: torch.Tensor, cond_vec: torch.Tensor) -> torch.Tensor:
         if self.use_transformer_block:
@@ -526,6 +537,7 @@ class TriShiftNet(nn.Module):
         shift_transformer_ff_mult: int = 4,
         shift_transformer_dropout: float = 0.0,
         shift_transformer_readout: str = "first",
+        shift_repr_dim: int | None = None,
         gen_input_mode: str = "full",
         gen_state_source: str = "compressor",
         gen_use_residual_head: bool = False,
@@ -568,6 +580,7 @@ class TriShiftNet(nn.Module):
             transformer_dropout=shift_transformer_dropout,
             transformer_readout=shift_transformer_readout,
             delta_out_dim=int(z_dim) if shift_predict_delta else None,
+            repr_out_dim=shift_repr_dim,
         )
         self.gen = GeneratorNet(
             x_dim=x_dim,

@@ -259,6 +259,22 @@ def _init_model(
     gen_use_residual_head = bool(model_cfg.get("use_residual_head", False))
     shift_hidden = [int(h) for h in stage2_model_cfg.get("shift_hidden", [256, 256])]
     shift_predict_delta = bool(stage2_model_cfg.get("predict_delta", True))
+    shift_repr_dim_raw = stage2_model_cfg.get("shift_repr_dim", None)
+    if shift_repr_dim_raw is None:
+        shift_repr_dim = None
+    else:
+        try:
+            shift_repr_dim = int(shift_repr_dim_raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "model.stage2.shift_repr_dim must be a positive integer or null"
+            ) from exc
+        if shift_repr_dim <= 0:
+            raise ValueError("model.stage2.shift_repr_dim must be a positive integer")
+    if shift_predict_delta and shift_repr_dim is not None:
+        raise ValueError(
+            "model.stage2.shift_repr_dim is only valid when model.stage2.predict_delta=false"
+        )
     shift_use_cross_attention = bool(stage2_model_cfg.get("use_cross_attention", False))
     shift_cross_attn_heads = int(stage2_model_cfg.get("cross_attn_heads", 4))
     shift_cross_attn_dropout = float(stage2_model_cfg.get("cross_attn_dropout", 0.0))
@@ -311,6 +327,7 @@ def _init_model(
         shift_transformer_ff_mult=shift_transformer_ff_mult,
         shift_transformer_dropout=shift_transformer_dropout,
         shift_transformer_readout=shift_transformer_readout,
+        shift_repr_dim=shift_repr_dim,
         gen_state_source=gen_state_source,
         shift_input_source=shift_input_source,
         cond_pool_mode=cond_pool_mode,
