@@ -1,0 +1,7 @@
+﻿dataset: replogle_k562_essential
+task_args:
+  splits: [1, 2, 3, 4, 5]
+  out_root: artifacts/results
+  align_strategy: auto
+  align_metrics_csv: null
+  align_to_run: null

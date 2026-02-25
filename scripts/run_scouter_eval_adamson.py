@@ -1,12 +1,11 @@
-try:
-    from scripts.scouter_eval import run_scouter_eval
-except ModuleNotFoundError:
-    from scouter_eval import run_scouter_eval
+﻿from pathlib import Path
+import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-def main() -> None:
-    run_scouter_eval("adamson", export_notebook_pkl=True)
+from scripts.scouter.adamson.run_scouter_adamson import *  # noqa: F401,F403
 
 
 if __name__ == "__main__":
     main()
+

@@ -1,0 +1,5 @@
+﻿dataset: replogle_rpe1_essential
+task_args:
+  n_ensemble: 300
+  seed: 24
+  export_notebook_pkl: false

@@ -1,0 +1,10 @@
+﻿dataset: adamson
+task_args:
+  sweep_dir: null
+  out_root: null
+  splits: [1, 2, 3]
+  umap: true
+  umap_pca_dim: 50
+  umap_n_neighbors: 15
+  umap_min_dist: 0.3
+  umap_random_state: 0
