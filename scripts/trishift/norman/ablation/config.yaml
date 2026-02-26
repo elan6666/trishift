@@ -1,0 +1,13 @@
+dataset: norman
+
+sweep:
+  n_splits: 3
+  gpu_lock: none
+  analyze_after_run: true
+  output_root: artifacts/ablation/norman
+  output_suffix: custom_sweep_pdFalse_base_no_mutex_n3
+
+baseline:
+  defaults: configs/defaults.yaml
+  paths: configs/paths.yaml
+

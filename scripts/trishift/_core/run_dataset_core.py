@@ -141,15 +141,7 @@ def _extract_schedule(cfg: dict) -> StageSchedule:
     )
 
 
-def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
-    """Write mean pearson and other averaged numeric metrics to text file.
-
-    Backward compatibility:
-    - First line remains plain mean pearson float for old readers.
-    """
-    numeric_means = metrics_df.mean(numeric_only=True)
-    mean_pearson = float(numeric_means.get("pearson", float("nan")))
-
+def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
     preferred_order = [
         "pearson",
         "nmse",
@@ -175,11 +167,75 @@ def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
             if k not in exclude_keys and k not in keys
         ]
     )
+    return keys
+
+
+def _append_subgroup_mean_lines(lines: list[str], metrics_df: pd.DataFrame, keys: list[str]) -> None:
+    if "subgroup" not in metrics_df.columns:
+        return
+    subgroup_series = metrics_df["subgroup"]
+    if subgroup_series.isna().all():
+        return
+
+    ordered = ["single", "seen0", "seen1", "seen2"]
+    present = set(subgroup_series.dropna().astype(str).tolist())
+    subgroup_names = [g for g in ordered if g in present]
+    if "unknown" in present:
+        subgroup_names.append("unknown")
+    if not subgroup_names:
+        return
+
+    lines.append("# subgroup_means_row_weighted\n")
+    lines.append("subgroup_order=single,seen0,seen1,seen2\n")
+    lines.append("\n")
+
+    for g in subgroup_names:
+        sub_df = metrics_df[metrics_df["subgroup"].astype(str) == g]
+        lines.append(f"subgroup_{g}_n_rows={int(len(sub_df))}\n")
+        sub_numeric_means = sub_df.mean(numeric_only=True)
+        for key in keys:
+            if key not in sub_numeric_means.index:
+                continue
+            val = float(sub_numeric_means[key])
+            lines.append(f"subgroup_{g}_mean_{key}={val}\n")
+        lines.append("\n")
+
+
+def _attach_subgroup_column(
+    metrics_df: pd.DataFrame,
+    subgroup_df: pd.DataFrame | None,
+) -> pd.DataFrame:
+    if subgroup_df is None or "condition" not in metrics_df.columns:
+        return metrics_df
+    if "subgroup" not in subgroup_df.columns:
+        return metrics_df
+
+    out = metrics_df.copy()
+    if "subgroup" in out.columns:
+        out = out.drop(columns=["subgroup"])
+    subgroup_map = subgroup_df["subgroup"].astype(str).to_dict()
+    subgroup_vals = out["condition"].astype(str).map(subgroup_map).fillna("unknown")
+    insert_at = list(out.columns).index("condition") + 1
+    out.insert(insert_at, "subgroup", subgroup_vals)
+    return out
+
+
+def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
+    """Write mean pearson and other averaged numeric metrics to text file.
+
+    Backward compatibility:
+    - First line remains plain mean pearson float for old readers.
+    """
+    numeric_means = metrics_df.mean(numeric_only=True)
+    mean_pearson = float(numeric_means.get("pearson", float("nan")))
+
+    keys = _resolve_mean_metric_keys(numeric_means)
 
     lines = [f"{mean_pearson}\n"]
     for key in keys:
         val = float(numeric_means[key])
         lines.append(f"mean_{key}={val}\n")
+    _append_subgroup_mean_lines(lines, metrics_df, keys)
 
     path.write_text("".join(lines), encoding="utf-8")
 
@@ -702,6 +758,7 @@ def run_dataset_with_paths(
     for split_id in range(1, n_splits + 1):
         print(f"[run] split {split_id}/{n_splits}")
         set_seeds(base_seed)
+        subgroup_df = None
         if name == "norman":
             subgroup_df = _norman_subgroup(
                 list(adata.obs["condition"].astype(str).unique()),
@@ -911,6 +968,7 @@ def run_dataset_with_paths(
             n_ensemble=n_eval_ensemble,
             base_seed=base_seed,
         )
+        metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
         model.export_predictions(
             split_dict=split_dict,
             emb_table=emb_table,

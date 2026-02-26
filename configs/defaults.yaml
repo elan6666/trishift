@@ -53,9 +53,9 @@ train:
     # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里）。
     batch_size: 256
     # joint 学习率。
-    lr: 0.0005
-    sched_gamma: 0.98
-    patience: 5
+    lr: 0.001
+    sched_gamma: 0.95
+    patience: 10
     min_delta: 0.001
   stage2:
     # sequential 模式 Phase A (Stage2) 轮数/学习率。
@@ -82,7 +82,7 @@ loss:
   # latent 空间方向损失权重（latent_loss_type=gears 时用到）。
   lambda_dir_z: 0.05
   # latent 监督损失权重（仅 predict_delta=true 生效）。
-  lambda_z: 0.3
+  lambda_z: 1
   # DE 基因加权倍率（=1 表示不加权）。
   deg_weight: 1
   # 额外表达 MSE 权重（0 表示关闭）。
@@ -125,7 +125,7 @@ model:
     predict_delta: false
     # predict_delta=false 时的 shift 表征维度（可选）；未设置时使用默认输出维度。
     # 注意：predict_delta=true 时不允许设置该项。
-    shift_repr_dim: null
+    shift_repr_dim: 8
     # Shift 输入来源：latent_mu | state。
     # - latent_mu: 使用 z_ctrl_mu
     # - state: 使用 Stage3 compressor(x_ctrl)
@@ -138,19 +138,19 @@ model:
     # cross-attention（与 transformer block 互斥）。
     use_cross_attention: false
     # 注意力头数（需整除 model_dim）。
-    cross_attn_heads: 2
+    cross_attn_heads: 4
     # cross-attention dropout。
-    cross_attn_dropout: 0.1
+    cross_attn_dropout: 0
     # transformer block（与 cross-attention 互斥）。
     use_transformer_block: true
     # transformer token 读出：first | mean | concat。
     transformer_readout: concat
     # transformer encoder 层数。
-    transformer_layers: 2
+    transformer_layers: 1
     # transformer FFN 扩展倍率。
     transformer_ff_mult: 4
     # transformer dropout。
-    transformer_dropout: 0.1
+    transformer_dropout: 0
   stage3:
     # Generator 输入模式：full | fusion_only | state_fusion。
     # 语义：
