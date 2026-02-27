@@ -88,6 +88,8 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
     preferred_order = [
         "pearson",
         "nmse",
+        "mse_pred",
+        "mse_ctrl",
         "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
         "scpram_r2_all_mean_mean",
@@ -387,8 +389,9 @@ def _compute_metrics_and_export_payload(
         pred_vec = pred[:, degs].mean(axis=0)
         ctrl_vec = ctrl[:, degs].mean(axis=0)
         true_vec = true[:, degs].mean(axis=0)
-        denom = mse(true_vec, ctrl_vec)
-        nmse_val = float(mse(true_vec, pred_vec) / denom) if denom > 0 else np.nan
+        mse_ctrl_val = float(mse(true_vec, ctrl_vec))
+        mse_pred_val = float(mse(true_vec, pred_vec))
+        nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
         pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
         systema_metrics = pearson_delta_reference_metrics(
             X_true=true.mean(axis=0),
@@ -407,6 +410,8 @@ def _compute_metrics_and_export_payload(
         results.append(
             {
                 "condition": cond,
+                "mse_pred": mse_pred_val,
+                "mse_ctrl": mse_ctrl_val,
                 "nmse": nmse_val,
                 "pearson": pearson_val,
                 "systema_corr_all_allpert": float(systema_metrics["corr_all_allpert"]),

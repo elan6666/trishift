@@ -1,0 +1,12 @@
+dataset: norman
+
+sweep:
+  n_splits: 5
+  gpu_lock: none
+  analyze_after_run: true
+  output_root: artifacts/ablation/norman
+  output_suffix: custom_sweep_scpram_ot_pd_ktopk_n5
+
+baseline:
+  defaults: configs/defaults.yaml
+  paths: configs/paths.yaml

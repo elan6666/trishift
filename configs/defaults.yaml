@@ -2,8 +2,9 @@
 
 # 每个 pert 细胞匹配的 top-k control 邻居数。
 k_topk: 300
-# control/pert 匹配方式：knn | ot | knn_ot | soft_ot。
+# control/pert 匹配方式：knn | ot | knn_ot | soft_ot | scpram_ot。
 matching_mode: ot
+# matching_mode options: knn | ot (Sinkhorn OT) | knn_ot | soft_ot | scpram_ot (EMD / POT ot.emd)
 # 训练模式：joint | sequential | stage3_only。
 # 注意：
 # - train_mode=stage3_only 时，model.stage3.input_mode 必须是 full。

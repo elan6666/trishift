@@ -145,6 +145,8 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
     preferred_order = [
         "pearson",
         "nmse",
+        "mse_pred",
+        "mse_ctrl",
         "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
         "scpram_r2_all_mean_mean",
@@ -618,7 +620,7 @@ def run_dataset_with_paths(
     model_cfg = model_root.get("stage3", {})
 
     emb_table = torch.tensor(embd_df.values, dtype=torch.float32)
-    mode = defaults.get("matching_mode", "knn")
+    mode = str(defaults.get("matching_mode", "knn"))
     k = int(defaults.get("k_topk", 5))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
@@ -643,6 +645,12 @@ def run_dataset_with_paths(
             + ", ".join(removed_seq_keys)
         )
     stage1_use_train_split = bool(ablation_cfg.get("stage1_use_train_split", False))
+    valid_matching_modes = {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}
+    if mode not in valid_matching_modes:
+        raise ValueError(
+            f"Unsupported matching_mode={mode}. "
+            f"Supported: {sorted(valid_matching_modes)}"
+        )
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
     if topk_strategy not in {"random", "weighted_sample"}:
         raise ValueError(
@@ -679,6 +687,14 @@ def run_dataset_with_paths(
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_dir_path = Path(out_dir) if out_dir is not None else (Path("artifacts") / "results" / name)
     out_dir_path.mkdir(parents=True, exist_ok=True)
+    if mode == "scpram_ot":
+        msg = (
+            f"[run] matching_mode=scpram_ot (EMD hard-match semantics; "
+            f"k_topk={k}, per_condition_ot={per_condition_ot})"
+        )
+        if k > 1:
+            msg += " [top-k extension of scPRAM OT]"
+        print(msg)
 
     # Snapshot the exact configs used for this run for reproducibility.
     # Keep names stable for downstream scripts.

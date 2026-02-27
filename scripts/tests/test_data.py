@@ -80,6 +80,27 @@ def test_topk_map_modes():
         assert topk.min() >= 0
         assert topk.max() < len(data.ctrl_indices)
 
+    try:
+        import ot as _  # noqa: F401
+    except Exception:
+        print("test_topk_map_modes: SKIP scpram_ot (POT missing)")
+        return
+
+    topk_scpram, w_scpram = data.build_or_load_topk_map(
+        split_adata=data.adata_all,
+        mode="scpram_ot",
+        k=3,
+        seed=1,
+        candidates=5,
+        cache_path=None,
+        return_weights=True,
+    )
+    assert topk_scpram.shape[1] == 3
+    assert w_scpram.shape == topk_scpram.shape
+    assert topk_scpram.min() >= 0
+    assert topk_scpram.max() < len(data.ctrl_indices)
+    np.testing.assert_allclose(w_scpram.sum(axis=1), 1.0, atol=1e-5)
+
 
 def main():
     test_setup_embedding_index_filters_missing()

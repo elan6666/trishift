@@ -404,7 +404,7 @@ class TriShift:
     @staticmethod
     def _need_topk_weights(mode: str, topk_strategy: str) -> bool:
         return mode == "soft_ot" or (
-            mode == "ot" and topk_strategy == "weighted_sample"
+            mode in {"ot", "scpram_ot"} and topk_strategy == "weighted_sample"
         )
 
     def _derive_disable_loss_z_supervision(
@@ -879,7 +879,7 @@ class TriShift:
         Args:
             split_dict: Dict containing train/val/test splits.
             emb_table: Condition embedding table tensor.
-            mode: Matching mode (knn/ot/knn_ot/soft_ot).
+            mode: Matching mode (knn/ot/knn_ot/soft_ot/scpram_ot).
             k: Top-k controls per perturbed cell.
             split_id: Split id for seeding.
             epochs: Training epochs.
@@ -1216,7 +1216,7 @@ class TriShift:
         Args:
             split_dict: Dict containing train/val/test splits.
             emb_table: Condition embedding table tensor.
-            mode: Matching mode (knn/ot/knn_ot/soft_ot).
+            mode: Matching mode (knn/ot/knn_ot/soft_ot/scpram_ot).
             k: Top-k controls per perturbed cell.
             split_id: Split id for seeding.
             epochs_stage2: Shift predictor epochs.
@@ -1847,8 +1847,9 @@ class TriShift:
             pred_vec = pred_mean[:, deg_idx].reshape(-1)
             true_vec = true_mean[:, deg_idx].reshape(-1)
             ctrl_vec = ctrl_mean_all[:, deg_idx].reshape(-1)
-            denom = mse(true_vec, ctrl_vec)
-            nmse_val = float(mse(true_vec, pred_vec) / denom) if denom > 0 else np.nan
+            mse_ctrl_val = float(mse(true_vec, ctrl_vec))
+            mse_pred_val = float(mse(true_vec, pred_vec))
+            nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
             pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
             if not np.isfinite(nmse_val) or not np.isfinite(pearson_val):
                 print(f"[eval] non-finite metrics: {cond} nmse={nmse_val} pearson={pearson_val}")
@@ -1871,6 +1872,8 @@ class TriShift:
             results.append(
                 {
                     "condition": cond,
+                    "mse_pred": mse_pred_val,
+                    "mse_ctrl": mse_ctrl_val,
                     "nmse": nmse_val,
                     "pearson": pearson_val,
                     "systema_corr_all_allpert": float(systema_metrics["corr_all_allpert"]),

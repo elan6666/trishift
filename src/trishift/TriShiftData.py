@@ -399,13 +399,13 @@ class TriShiftData:
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Build or load top-k control indices for pert cells in split_adata.
 
-        Supports knn, ot (Sinkhorn), knn_ot, and soft_ot modes.
+        Supports knn, ot (Sinkhorn), knn_ot, soft_ot, and scpram_ot (EMD) modes.
         """
-        if mode not in {"knn", "ot", "knn_ot", "soft_ot"}:
-            raise ValueError("mode must be one of: knn, ot, knn_ot, soft_ot")
+        if mode not in {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}:
+            raise ValueError("mode must be one of: knn, ot, knn_ot, soft_ot, scpram_ot")
         # Reuse KNN cache by default; OT-family cache reuse is opt-in.
         reuse_topk_cache = mode == "knn" or (
-            bool(reuse_ot_cache) and mode in {"ot", "soft_ot", "knn_ot"}
+            bool(reuse_ot_cache) and mode in {"ot", "soft_ot", "knn_ot", "scpram_ot"}
         )
         cache_path_eff = cache_path if reuse_topk_cache else None
         if cache_path is not None and cache_path_eff is None:
@@ -649,6 +649,109 @@ class TriShiftData:
                     weights = vals / weight_sum
                     topk_weights = weights.cpu().numpy().astype(np.float32)
 
+        elif mode == "scpram_ot":
+            print("[topk] computing scpram_ot (EMD)")
+            need_weights = bool(return_weights)
+
+            def _emd_topk_from_coupling(
+                coupling_local: np.ndarray,
+                k_local: int,
+                need_weights_local: bool,
+            ) -> tuple[np.ndarray, np.ndarray | None]:
+                # coupling_local shape: (n_ctrl, n_pert)
+                if coupling_local.ndim != 2:
+                    raise ValueError(
+                        f"EMD coupling must be 2D, got shape={coupling_local.shape}"
+                    )
+                n_ctrl_local, n_pert_local = coupling_local.shape
+                if n_ctrl_local <= 0:
+                    raise ValueError("EMD coupling has no ctrl rows")
+                k_eff_local = min(k_local, n_ctrl_local)
+                # Sort ctrl indices by descending coupling for each perturbed cell.
+                sorted_idx = np.argsort(coupling_local, axis=0)[::-1, :]
+                topk_idx_local = np.ascontiguousarray(
+                    sorted_idx[:k_eff_local, :].T.astype(np.int64, copy=False)
+                )
+                weights_local = None
+                if need_weights_local:
+                    col_idx = np.arange(n_pert_local)[None, :]
+                    topk_vals = coupling_local[sorted_idx[:k_eff_local, :], col_idx].T
+                    topk_vals = np.asarray(topk_vals, dtype=np.float64)
+                    row_sum = topk_vals.sum(axis=1, keepdims=True)
+                    safe = row_sum > 0
+                    weights_local = np.zeros_like(topk_vals, dtype=np.float32)
+                    if np.any(safe):
+                        weights_local[safe[:, 0]] = (
+                            topk_vals[safe[:, 0]] / row_sum[safe[:, 0]]
+                        ).astype(np.float32, copy=False)
+                    if np.any(~safe[:, 0]):
+                        fill = 1.0 / max(k_eff_local, 1)
+                        weights_local[~safe[:, 0]] = fill
+
+                if k_eff_local < k_local:
+                    pad_idx = np.repeat(topk_idx_local[:, -1:], k_local - k_eff_local, axis=1)
+                    topk_idx_local = np.concatenate([topk_idx_local, pad_idx], axis=1)
+                    if need_weights_local and weights_local is not None:
+                        pad_w = np.repeat(weights_local[:, -1:], k_local - k_eff_local, axis=1)
+                        weights_local = np.concatenate([weights_local, pad_w], axis=1)
+                        row_sum = weights_local.sum(axis=1, keepdims=True)
+                        row_sum = np.clip(row_sum, 1e-12, None)
+                        weights_local = (weights_local / row_sum).astype(np.float32, copy=False)
+
+                return topk_idx_local.astype(int, copy=False), weights_local
+
+            def _compute_emd_coupling(
+                z_ctrl_local: np.ndarray,
+                z_pert_local: np.ndarray,
+                num_itermax: int = 100000,
+            ) -> np.ndarray:
+                try:
+                    import ot as pot_ot
+                except Exception as exc:  # pragma: no cover - dependency/runtime guard
+                    raise ImportError(
+                        "matching_mode=scpram_ot requires POT (`import ot`). "
+                        "Install with `pip install pot`."
+                    ) from exc
+
+                z_ctrl_arr = np.asarray(z_ctrl_local, dtype=np.float64)
+                z_pert_arr = np.asarray(z_pert_local, dtype=np.float64)
+                n_ctrl_local = z_ctrl_arr.shape[0]
+                n_pert_local = z_pert_arr.shape[0]
+                if n_ctrl_local == 0 or n_pert_local == 0:
+                    return np.zeros((n_ctrl_local, n_pert_local), dtype=np.float64)
+                a_local = np.full(n_ctrl_local, 1.0 / n_ctrl_local, dtype=np.float64)
+                b_local = np.full(n_pert_local, 1.0 / n_pert_local, dtype=np.float64)
+                cost_local = pot_ot.dist(z_ctrl_arr, z_pert_arr, metric="euclidean")
+                coupling_local = pot_ot.emd(
+                    a_local,
+                    b_local,
+                    cost_local,
+                    numItermax=int(num_itermax),
+                )
+                return np.asarray(coupling_local, dtype=np.float64)
+
+            z_ctrl_np = np.asarray(z_ctrl.detach().cpu().numpy(), dtype=np.float64)
+            z_pert_np = np.asarray(z_pert.detach().cpu().numpy(), dtype=np.float64)
+
+            if per_condition_ot:
+                split_pert_cond = split_cond[split_pert_mask]
+                unique_conds = pd.unique(split_pert_cond)
+                topk_map = np.zeros((n_pert, k), dtype=int)
+                if need_weights:
+                    topk_weights = np.zeros((n_pert, k), dtype=np.float32)
+                for cond in unique_conds:
+                    cond_local_idx = np.where(split_pert_cond == cond)[0]
+                    if cond_local_idx.size == 0:
+                        continue
+                    coupling_cond = _compute_emd_coupling(z_ctrl_np, z_pert_np[cond_local_idx])
+                    idx_np, w_np = _emd_topk_from_coupling(coupling_cond, k, need_weights)
+                    topk_map[cond_local_idx] = idx_np
+                    if need_weights and w_np is not None:
+                        topk_weights[cond_local_idx] = w_np
+            else:
+                coupling = _compute_emd_coupling(z_ctrl_np, z_pert_np)
+                topk_map, topk_weights = _emd_topk_from_coupling(coupling, k, need_weights)
+
         else:
             print("[topk] computing knn_ot")
             reg = 0.05
@@ -681,6 +784,6 @@ class TriShiftData:
                 save_kwargs["topk_weights"] = topk_weights
             np.savez(cache_path_eff, **save_kwargs)
             print(f"[topk] saved cache: {cache_path_eff}")
-        if mode in {"ot", "soft_ot"} and return_weights:
+        if mode in {"ot", "soft_ot", "scpram_ot"} and return_weights:
             return topk_map, topk_weights
         return topk_map
