@@ -11,6 +11,12 @@ matching_mode: ot
 train_mode: joint
 # 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
 n_eval_ensemble: 300
+# 评估 control 采样模式：
+# - random_train_ctrl: 随机 train ctrl 池采样（采样数 n_eval_ensemble）
+# - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 k_topk）
+eval_ctrl_pool_mode: random_train_ctrl
+# 最近 condition 距离：cosine | l2 | both（both 会输出两套结果）
+eval_genept_distance: both
 # 全局随机种子。
 seed: 24
 

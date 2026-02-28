@@ -13,6 +13,7 @@ def main() -> int:
         "test_model.py",
         "test_train.py",
         "test_eval.py",
+        "test_eval_ctrl_pool.py",
     ]
     for name in tests:
         path = root / name

@@ -287,6 +287,207 @@ class TriShift:
         ctrl_idx = rng.choice(n_ctrl, size=n_ensemble, replace=True)
         return self._select_dense(X_ctrl, ctrl_idx)
 
+    def _sample_ctrl_expr_from_index_pool(
+        self,
+        X_ctrl,
+        pool_idx,
+        sample_size: int,
+        rng: np.random.RandomState,
+    ) -> np.ndarray:
+        """Sample control expressions from a precomputed index pool."""
+        pool_arr = np.asarray(pool_idx, dtype=int).reshape(-1)
+        if pool_arr.size == 0:
+            raise ValueError("pool_idx is empty")
+        if sample_size <= 0:
+            raise ValueError("sample_size must be positive")
+        n_ctrl = int(X_ctrl.shape[0])
+        valid = pool_arr[(pool_arr >= 0) & (pool_arr < n_ctrl)]
+        if valid.size == 0:
+            raise ValueError("pool_idx has no valid indices for current ctrl pool")
+        pick = rng.choice(valid.shape[0], size=sample_size, replace=True)
+        ctrl_idx = valid[pick]
+        return self._select_dense(X_ctrl, ctrl_idx)
+
+    def _build_condition_embedding_map(
+        self,
+        adata_subset,
+        emb_table: torch.Tensor,
+        include_conds: list[str] | None = None,
+    ) -> dict[str, np.ndarray]:
+        """Build condition->embedding map for conditions present in adata_subset."""
+        if adata_subset is None or getattr(adata_subset, "n_obs", 0) <= 0:
+            return {}
+        cond_mode, cond_norm = self._get_cond_pool_cfg()
+        cond_series = adata_subset.obs[self.data.label_key].astype(str)
+        if include_conds is None:
+            conds = sorted(c for c in cond_series.unique().tolist() if c != self.data.ctrl_label)
+        else:
+            include_set = {str(c) for c in include_conds}
+            conds = sorted(
+                c for c in cond_series.unique().tolist() if c != self.data.ctrl_label and c in include_set
+            )
+        out: dict[str, np.ndarray] = {}
+        for cond in conds:
+            cond_rows = cond_series == cond
+            if not bool(cond_rows.any()):
+                continue
+            idx = cond_series.index[cond_rows][0]
+            embd_idx_list = adata_subset.obs["embd_index"].loc[idx]
+            cond_vec = aggregate_cond_embedding(
+                emb_table,
+                embd_idx_list,
+                mode=cond_mode,
+                normalize=cond_norm,
+            )
+            out[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
+        return out
+
+    def _nearest_train_condition(
+        self,
+        test_cond: str,
+        train_map: dict[str, np.ndarray],
+        metric: str,
+        test_map: dict[str, np.ndarray] | None = None,
+    ) -> str | None:
+        """Find nearest train condition to test_cond by cosine or L2 distance."""
+        if metric not in {"cosine", "l2"}:
+            raise ValueError("metric must be one of: cosine, l2")
+        if not train_map:
+            return None
+        if test_map is None or test_cond not in test_map:
+            return None
+
+        test_vec = np.asarray(test_map[test_cond], dtype=np.float32).reshape(-1)
+        if test_vec.size == 0:
+            return None
+
+        scores: list[tuple[str, float]] = []
+        if metric == "cosine":
+            t_norm = float(np.linalg.norm(test_vec))
+            for cond, vec in train_map.items():
+                train_vec = np.asarray(vec, dtype=np.float32).reshape(-1)
+                denom = t_norm * float(np.linalg.norm(train_vec))
+                if denom <= 1e-12:
+                    score = -np.inf
+                else:
+                    score = float(np.dot(test_vec, train_vec) / denom)
+                scores.append((str(cond), score))
+            if not scores:
+                return None
+            best = max(s for _, s in scores)
+            cands = sorted(c for c, s in scores if abs(s - best) <= 1e-12)
+            return cands[0] if cands else None
+
+        for cond, vec in train_map.items():
+            train_vec = np.asarray(vec, dtype=np.float32).reshape(-1)
+            dist = float(np.linalg.norm(test_vec - train_vec))
+            scores.append((str(cond), dist))
+        if not scores:
+            return None
+        best = min(s for _, s in scores)
+        cands = sorted(c for c, s in scores if abs(s - best) <= 1e-12)
+        return cands[0] if cands else None
+
+    def _build_eval_pert_rows_by_condition(self, split_train_adata) -> dict[str, np.ndarray]:
+        """Map train condition -> perturbed-row indices in train topk_map row space."""
+        if split_train_adata is None or getattr(split_train_adata, "n_obs", 0) <= 0:
+            return {}
+        cond_arr = split_train_adata.obs[self.data.label_key].astype(str).values
+        pert_mask = cond_arr != self.data.ctrl_label
+        pert_conds = cond_arr[pert_mask]
+        rows: dict[str, list[int]] = {}
+        for row_idx, cond in enumerate(pert_conds):
+            rows.setdefault(str(cond), []).append(int(row_idx))
+        return {k: np.asarray(v, dtype=int) for k, v in rows.items()}
+
+    def _build_eval_ctrl_pool_from_topk(
+        self,
+        nearest_train_cond: str,
+        topk_map: np.ndarray,
+        pert_rows_by_cond: dict[str, np.ndarray],
+    ) -> np.ndarray:
+        """Build control index pool for evaluation from train topk_map (without dedup)."""
+        rows = np.asarray(pert_rows_by_cond.get(str(nearest_train_cond), []), dtype=int).reshape(-1)
+        if rows.size == 0:
+            return np.asarray([], dtype=int)
+        rows = rows[(rows >= 0) & (rows < int(topk_map.shape[0]))]
+        if rows.size == 0:
+            return np.asarray([], dtype=int)
+        return np.asarray(topk_map[rows, :], dtype=int).reshape(-1)
+
+    def build_eval_ctrl_strategy(
+        self,
+        split_dict: dict,
+        emb_table: torch.Tensor,
+        topk_map: np.ndarray,
+        distance_metric: str,
+        sample_size: int,
+    ) -> dict:
+        """Build eval control strategy based on nearest train condition in GenePT space."""
+        if distance_metric not in {"cosine", "l2"}:
+            raise ValueError("distance_metric must be one of: cosine, l2")
+        if int(sample_size) <= 0:
+            raise ValueError("sample_size must be positive")
+
+        train_adata = split_dict.get("train")
+        test_adata = split_dict.get("test")
+        test_conds = [str(c) for c in split_dict.get("test_conds", [])]
+
+        train_map = self._build_condition_embedding_map(train_adata, emb_table)
+        test_map = self._build_condition_embedding_map(test_adata, emb_table, include_conds=test_conds)
+
+        if test_conds:
+            cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
+            cond_mode, cond_norm = self._get_cond_pool_cfg()
+            for cond in test_conds:
+                if cond in test_map:
+                    continue
+                cond_mask = cond_series_all == cond
+                if not np.any(cond_mask):
+                    continue
+                embd_idx_list = self._get_cond_embd_idx(cond_mask)
+                cond_vec = aggregate_cond_embedding(
+                    emb_table,
+                    embd_idx_list,
+                    mode=cond_mode,
+                    normalize=cond_norm,
+                )
+                test_map[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
+
+        pert_rows_by_cond = self._build_eval_pert_rows_by_condition(train_adata)
+        pool_map: dict[str, np.ndarray] = {}
+        nearest_map: dict[str, str] = {}
+        for cond in test_conds:
+            nearest = self._nearest_train_condition(
+                test_cond=cond,
+                train_map=train_map,
+                metric=distance_metric,
+                test_map=test_map,
+            )
+            if nearest is None:
+                continue
+            pool_idx = self._build_eval_ctrl_pool_from_topk(
+                nearest_train_cond=nearest,
+                topk_map=topk_map,
+                pert_rows_by_cond=pert_rows_by_cond,
+            )
+            if pool_idx.size == 0:
+                continue
+            pool_map[cond] = pool_idx
+            nearest_map[cond] = nearest
+
+        print(
+            "[eval] built nearest_genept_ot_pool strategy: "
+            f"metric={distance_metric}, mapped={len(pool_map)}/{len(test_conds)}, sample_size={int(sample_size)}"
+        )
+        return {
+            "mode": "nearest_genept_ot_pool",
+            "distance_metric": str(distance_metric),
+            "sample_size": int(sample_size),
+            "pool_idx_by_test_cond": pool_map,
+            "nearest_train_cond_by_test_cond": nearest_map,
+        }
+
     def _get_cond_pool_cfg(self) -> tuple[str, bool]:
         if self.hparams.get("stage3_only", False):
             # Strict Scouter-style condition construction for stage3_only.
@@ -1774,6 +1975,7 @@ class TriShift:
         split_id: int,
         n_ensemble: int = 300,
         base_seed: int = 24,
+        eval_ctrl_strategy: dict | None = None,
     ) -> pd.DataFrame:
         """Evaluate per condition with ensemble control sampling.
 
@@ -1792,6 +1994,18 @@ class TriShift:
         rng = np.random.RandomState(eval_seed)
         conds = split_dict["test_conds"]
         results = []
+        use_eval_pool = (
+            isinstance(eval_ctrl_strategy, dict)
+            and str(eval_ctrl_strategy.get("mode", "")) == "nearest_genept_ot_pool"
+        )
+        pool_map = (
+            eval_ctrl_strategy.get("pool_idx_by_test_cond", {})
+            if use_eval_pool
+            else {}
+        )
+        pool_sample_size = int(eval_ctrl_strategy.get("sample_size", n_ensemble)) if use_eval_pool else int(
+            n_ensemble
+        )
 
         train_ctrl_adata, _ = self._get_ctrl_pool_from_split(split_dict.get("train"))
         X_ctrl = train_ctrl_adata.X
@@ -1820,14 +2034,32 @@ class TriShift:
                 print(f"[eval] skip missing condition: {cond}")
                 continue
             embd_idx_list = self._get_cond_embd_idx(cond_mask)
-            ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
+            ensemble_size = int(n_ensemble)
+            if use_eval_pool:
+                pool_idx = pool_map.get(str(cond))
+                if pool_idx is not None and np.asarray(pool_idx).size > 0:
+                    ctrl_expr = self._sample_ctrl_expr_from_index_pool(
+                        X_ctrl,
+                        pool_idx=pool_idx,
+                        sample_size=pool_sample_size,
+                        rng=rng,
+                    )
+                    ensemble_size = int(pool_sample_size)
+                else:
+                    print(
+                        f"[eval] warning: missing OT pool for condition={cond}; "
+                        "falling back to random train ctrl sampling"
+                    )
+                    ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
+            else:
+                ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
 
             true_expr = self._select_dense(X_all, cond_mask)
             true_mean = true_expr.mean(axis=0, keepdims=True)
             if true_expr.size == 0 or np.isnan(true_mean).any():
                 print(f"[eval] empty/invalid true_mean: {cond}")
 
-            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, n_ensemble)
+            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, ensemble_size)
             x_pred = self._predict_expr_from_ctrl(ctrl_expr, cond_vec)
             pred_mean = x_pred.mean(axis=0, keepdims=True)
             if np.isnan(pred_mean).any():
@@ -1880,7 +2112,7 @@ class TriShift:
                     "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
                     **scpram_metrics,
                     "split_id": split_id,
-                    "n_ensemble": n_ensemble,
+                    "n_ensemble": ensemble_size,
                 }
             )
 
@@ -1895,6 +2127,7 @@ class TriShift:
         n_ensemble: int = 300,
         base_seed: int = 24,
         out_path: str | None = None,
+        eval_ctrl_strategy: dict | None = None,
     ) -> dict:
         """Export per-condition predictions for downstream plotting.
 
@@ -1913,6 +2146,18 @@ class TriShift:
         rng = np.random.RandomState(eval_seed)
         conds = split_dict["test_conds"]
         results = {}
+        use_eval_pool = (
+            isinstance(eval_ctrl_strategy, dict)
+            and str(eval_ctrl_strategy.get("mode", "")) == "nearest_genept_ot_pool"
+        )
+        pool_map = (
+            eval_ctrl_strategy.get("pool_idx_by_test_cond", {})
+            if use_eval_pool
+            else {}
+        )
+        pool_sample_size = int(eval_ctrl_strategy.get("sample_size", n_ensemble)) if use_eval_pool else int(
+            n_ensemble
+        )
 
         train_ctrl_adata, _ = self._get_ctrl_pool_from_split(split_dict.get("train"))
         X_ctrl = train_ctrl_adata.X
@@ -1927,10 +2172,28 @@ class TriShift:
             if not np.any(cond_mask):
                 continue
             embd_idx_list = self._get_cond_embd_idx(cond_mask)
-            ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
+            ensemble_size = int(n_ensemble)
+            if use_eval_pool:
+                pool_idx = pool_map.get(str(cond))
+                if pool_idx is not None and np.asarray(pool_idx).size > 0:
+                    ctrl_expr = self._sample_ctrl_expr_from_index_pool(
+                        X_ctrl,
+                        pool_idx=pool_idx,
+                        sample_size=pool_sample_size,
+                        rng=rng,
+                    )
+                    ensemble_size = int(pool_sample_size)
+                else:
+                    print(
+                        f"[export] warning: missing OT pool for condition={cond}; "
+                        "falling back to random train ctrl sampling"
+                    )
+                    ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
+            else:
+                ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
             true_expr = self._select_dense(X_all, cond_mask)
 
-            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, n_ensemble)
+            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, ensemble_size)
             x_pred = self._predict_expr_from_ctrl(ctrl_expr, cond_vec)
 
             deg_idx = degs_non_dropout.get(cond, np.array([], dtype=int))

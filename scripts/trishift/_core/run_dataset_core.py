@@ -622,6 +622,8 @@ def run_dataset_with_paths(
     emb_table = torch.tensor(embd_df.values, dtype=torch.float32)
     mode = str(defaults.get("matching_mode", "knn"))
     k = int(defaults.get("k_topk", 5))
+    eval_ctrl_pool_mode = str(defaults.get("eval_ctrl_pool_mode", "random_train_ctrl"))
+    eval_genept_distance = str(defaults.get("eval_genept_distance", "both"))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
     if train_mode not in valid_train_modes:
@@ -650,6 +652,18 @@ def run_dataset_with_paths(
         raise ValueError(
             f"Unsupported matching_mode={mode}. "
             f"Supported: {sorted(valid_matching_modes)}"
+        )
+    valid_eval_pool_modes = {"random_train_ctrl", "nearest_genept_ot_pool"}
+    if eval_ctrl_pool_mode not in valid_eval_pool_modes:
+        raise ValueError(
+            f"Unsupported eval_ctrl_pool_mode={eval_ctrl_pool_mode}. "
+            f"Supported: {sorted(valid_eval_pool_modes)}"
+        )
+    valid_eval_distances = {"cosine", "l2", "both"}
+    if eval_genept_distance not in valid_eval_distances:
+        raise ValueError(
+            f"Unsupported eval_genept_distance={eval_genept_distance}. "
+            f"Supported: {sorted(valid_eval_distances)}"
         )
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
     if topk_strategy not in {"random", "weighted_sample"}:
@@ -695,6 +709,11 @@ def run_dataset_with_paths(
         if k > 1:
             msg += " [top-k extension of scPRAM OT]"
         print(msg)
+    if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
+        print(
+            "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
+            f"(sample_size=k_topk={k}, distance={eval_genept_distance})"
+        )
 
     # Snapshot the exact configs used for this run for reproducibility.
     # Keep names stable for downstream scripts.
@@ -718,6 +737,11 @@ def run_dataset_with_paths(
             "matching_mode": str(mode),
             "k_topk": int(k),
             "n_eval_ensemble": int(defaults.get("n_eval_ensemble", 300)),
+            "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
+            "eval_genept_distance": str(eval_genept_distance),
+            "eval_ctrl_sample_size_source": (
+                "k_topk" if eval_ctrl_pool_mode == "nearest_genept_ot_pool" else "n_eval_ensemble"
+            ),
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
         }
@@ -744,7 +768,7 @@ def run_dataset_with_paths(
     stage1_lr = float(stage1_cfg.get("lr", 1e-3))
     stage1_beta = float(stage1_cfg.get("beta", 1.0))
 
-    metrics_all = []
+    metrics_all_by_tag: dict[str, list[pd.DataFrame]] = {}
     n_splits = (
         int(run_cfg.get("n_splits", dataset_cfg["multi_split_default"]))
         if run_cfg.get("multi_split", False)
@@ -977,28 +1001,104 @@ def run_dataset_with_paths(
             )
 
         print("[run] evaluate")
-        metrics_df = model.evaluate(
-            split_dict=split_dict,
-            emb_table=emb_table,
-            split_id=split_id,
-            n_ensemble=n_eval_ensemble,
-            base_seed=base_seed,
-        )
-        metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
-        model.export_predictions(
-            split_dict=split_dict,
-            emb_table=emb_table,
-            split_id=split_id,
-            n_ensemble=n_eval_ensemble,
-            base_seed=base_seed,
-            out_path=str(out_dir_path / f"trishift_{name}_{split_id}.pkl"),
-        )
-        metrics_all.append(metrics_df)
+        if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
+            train_split = split_dict.get("train")
+            if train_split is None:
+                raise ValueError("split_dict['train'] is required for nearest_genept_ot_pool")
+            split_train_cond = train_split.obs[data.label_key].astype(str).values
+            split_train_pert = train_split[split_train_cond != data.ctrl_label]
+            _, train_ctrl_global_idx = model._get_ctrl_pool_from_split(train_split)
+            eval_topk_map = data.build_or_load_topk_map(
+                split_adata=split_train_pert,
+                mode=mode,
+                k=k,
+                seed=split_id,
+                candidates=100,
+                cache_path=str(cache_path),
+                per_condition_ot=per_condition_ot,
+                reuse_ot_cache=reuse_ot_cache,
+                cache_key=topk_cache_key,
+                ctrl_global_indices=train_ctrl_global_idx,
+            )
+            eval_distances = (
+                ["cosine", "l2"] if eval_genept_distance == "both" else [eval_genept_distance]
+            )
+            for dist_tag in eval_distances:
+                eval_strategy = model.build_eval_ctrl_strategy(
+                    split_dict=split_dict,
+                    emb_table=emb_table,
+                    topk_map=eval_topk_map,
+                    distance_metric=dist_tag,
+                    sample_size=int(k),
+                )
+                metrics_df = model.evaluate(
+                    split_dict=split_dict,
+                    emb_table=emb_table,
+                    split_id=split_id,
+                    n_ensemble=int(k),
+                    base_seed=base_seed,
+                    eval_ctrl_strategy=eval_strategy,
+                )
+                metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
+                metrics_all_by_tag.setdefault(dist_tag, []).append(metrics_df)
 
-    if metrics_all:
-        metrics_df_all = pd.concat(metrics_all, ignore_index=True)
-        metrics_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
-        _write_mean_metrics(out_dir_path / "mean_pearson.txt", metrics_df_all)
+                if eval_genept_distance == "both":
+                    out_pkl = out_dir_path / f"trishift_{name}_{split_id}_{dist_tag}.pkl"
+                else:
+                    out_pkl = out_dir_path / f"trishift_{name}_{split_id}.pkl"
+                preds = model.export_predictions(
+                    split_dict=split_dict,
+                    emb_table=emb_table,
+                    split_id=split_id,
+                    n_ensemble=int(k),
+                    base_seed=base_seed,
+                    out_path=str(out_pkl),
+                    eval_ctrl_strategy=eval_strategy,
+                )
+                if eval_genept_distance == "both" and dist_tag == "cosine":
+                    with open(out_dir_path / f"trishift_{name}_{split_id}.pkl", "wb") as f:
+                        pickle.dump(preds, f)
+        else:
+            metrics_df = model.evaluate(
+                split_dict=split_dict,
+                emb_table=emb_table,
+                split_id=split_id,
+                n_ensemble=n_eval_ensemble,
+                base_seed=base_seed,
+            )
+            metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
+            model.export_predictions(
+                split_dict=split_dict,
+                emb_table=emb_table,
+                split_id=split_id,
+                n_ensemble=n_eval_ensemble,
+                base_seed=base_seed,
+                out_path=str(out_dir_path / f"trishift_{name}_{split_id}.pkl"),
+            )
+            metrics_all_by_tag.setdefault("main", []).append(metrics_df)
+
+    if metrics_all_by_tag:
+        if eval_ctrl_pool_mode == "nearest_genept_ot_pool" and eval_genept_distance == "both":
+            cosine_df_all = None
+            for dist_tag in ("cosine", "l2"):
+                if dist_tag not in metrics_all_by_tag:
+                    continue
+                metrics_df_all = pd.concat(metrics_all_by_tag[dist_tag], ignore_index=True)
+                metrics_df_all.to_csv(out_dir_path / f"metrics_{dist_tag}.csv", index=False)
+                _write_mean_metrics(out_dir_path / f"mean_pearson_{dist_tag}.txt", metrics_df_all)
+                if dist_tag == "cosine":
+                    cosine_df_all = metrics_df_all
+            if cosine_df_all is not None:
+                cosine_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
+                _write_mean_metrics(out_dir_path / "mean_pearson.txt", cosine_df_all)
+        else:
+            if "main" in metrics_all_by_tag:
+                main_tag = "main"
+            else:
+                main_tag = next(iter(metrics_all_by_tag.keys()))
+            metrics_df_all = pd.concat(metrics_all_by_tag[main_tag], ignore_index=True)
+            metrics_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
+            _write_mean_metrics(out_dir_path / "mean_pearson.txt", metrics_df_all)
     print(f"[run] saved metrics: {out_dir_path / 'metrics.csv'}")
 
 
