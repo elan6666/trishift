@@ -17,6 +17,10 @@ n_eval_ensemble: 300
 eval_ctrl_pool_mode: nearest_genept_ot_pool
 # 最近 condition 距离：cosine | l2 | both（both 会输出两套结果）
 eval_genept_distance: both
+# nearest_genept_ot_pool 下的 GenePT 比较策略：
+# - aggregate_cond: 先按条件聚合后比较（当前默认行为）
+# - per_gene_nearest_cond: 每个基因 token 分别找最近 train condition，再拼接其 OT 池（不去重）
+eval_genept_compare_mode: per_gene_nearest_cond
 # 全局随机种子。
 seed: 24
 

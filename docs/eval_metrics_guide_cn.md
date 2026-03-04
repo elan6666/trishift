@@ -351,6 +351,9 @@ $$
 - `eval_ctrl_pool_mode=nearest_genept_ot_pool`：先用 GenePT 找到最近训练 condition，再复用该 condition 的训练 OT 控制池进行采样。
 - `eval_genept_distance`：`cosine | l2 | both`。
   - `both` 时会额外输出两套文件：`*_cosine` 与 `*_l2`，并保留主文件（默认使用 `cosine`）。
+- `eval_genept_compare_mode`（仅在 `nearest_genept_ot_pool` 下生效）：
+  - `aggregate_cond`：先把 condition 聚合成一个向量，再找最近 train condition（旧行为）。
+  - `per_gene_nearest_cond`：对每个基因 token 分别找最近 train condition，再把这些 condition 的 OT 池直接拼接（不去重）。
 
 ## 3. 聚合指标（多条件）
 

@@ -342,6 +342,45 @@ class TriShift:
             out[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
         return out
 
+    def _condition_tokens_no_ctrl(self, cond: str) -> list[str]:
+        """Split condition string to gene tokens and remove ctrl token."""
+        cond_norm = _utils.normalize_condition(str(cond))
+        return [tok for tok in cond_norm.split("+") if tok and tok != self.data.ctrl_label]
+
+    def _build_condition_token_embedding_map(
+        self,
+        adata_subset,
+        emb_table: torch.Tensor,
+        include_conds: list[str] | None = None,
+    ) -> dict[str, list[np.ndarray]]:
+        """Build condition->token-embedding list map (ctrl token excluded)."""
+        if adata_subset is None or getattr(adata_subset, "n_obs", 0) <= 0:
+            return {}
+        cond_series = adata_subset.obs[self.data.label_key].astype(str)
+        if include_conds is None:
+            conds = sorted(c for c in cond_series.unique().tolist() if c != self.data.ctrl_label)
+        else:
+            include_set = {str(c) for c in include_conds}
+            conds = sorted(
+                c for c in cond_series.unique().tolist() if c != self.data.ctrl_label and c in include_set
+            )
+        embd_lookup = {str(g): i for i, g in enumerate(self.data.embd_df.index.astype(str))}
+        out: dict[str, list[np.ndarray]] = {}
+        for cond in conds:
+            vecs: list[np.ndarray] = []
+            for tok in self._condition_tokens_no_ctrl(cond):
+                tok_idx = embd_lookup.get(str(tok), None)
+                if tok_idx is None:
+                    continue
+                i = int(tok_idx)
+                if i < 0 or i >= int(emb_table.shape[0]):
+                    continue
+                vec = emb_table[i].detach().cpu().numpy().astype(np.float32).reshape(-1)
+                vecs.append(vec)
+            if vecs:
+                out[cond] = vecs
+        return out
+
     def _nearest_train_condition(
         self,
         test_cond: str,
@@ -388,6 +427,56 @@ class TriShift:
         cands = sorted(c for c, s in scores if abs(s - best) <= 1e-12)
         return cands[0] if cands else None
 
+    def _nearest_train_condition_for_token(
+        self,
+        test_token_vec: np.ndarray,
+        train_token_map: dict[str, list[np.ndarray]],
+        metric: str,
+    ) -> str | None:
+        """Find nearest train condition for a single token vector."""
+        if metric not in {"cosine", "l2"}:
+            raise ValueError("metric must be one of: cosine, l2")
+        if not train_token_map:
+            return None
+        test_vec = np.asarray(test_token_vec, dtype=np.float32).reshape(-1)
+        if test_vec.size == 0:
+            return None
+
+        scores: list[tuple[str, float]] = []
+        if metric == "cosine":
+            t_norm = float(np.linalg.norm(test_vec))
+            for cond, vecs in train_token_map.items():
+                best_score = -np.inf
+                for v in vecs:
+                    train_vec = np.asarray(v, dtype=np.float32).reshape(-1)
+                    denom = t_norm * float(np.linalg.norm(train_vec))
+                    if denom <= 1e-12:
+                        score = -np.inf
+                    else:
+                        score = float(np.dot(test_vec, train_vec) / denom)
+                    if score > best_score:
+                        best_score = score
+                scores.append((str(cond), float(best_score)))
+            if not scores:
+                return None
+            best = max(s for _, s in scores)
+            cands = sorted(c for c, s in scores if abs(s - best) <= 1e-12)
+            return cands[0] if cands else None
+
+        for cond, vecs in train_token_map.items():
+            best_dist = np.inf
+            for v in vecs:
+                train_vec = np.asarray(v, dtype=np.float32).reshape(-1)
+                dist = float(np.linalg.norm(test_vec - train_vec))
+                if dist < best_dist:
+                    best_dist = dist
+            scores.append((str(cond), float(best_dist)))
+        if not scores:
+            return None
+        best = min(s for _, s in scores)
+        cands = sorted(c for c, s in scores if abs(s - best) <= 1e-12)
+        return cands[0] if cands else None
+
     def _build_eval_pert_rows_by_condition(self, split_train_adata) -> dict[str, np.ndarray]:
         """Map train condition -> perturbed-row indices in train topk_map row space."""
         if split_train_adata is None or getattr(split_train_adata, "n_obs", 0) <= 0:
@@ -415,6 +504,26 @@ class TriShift:
             return np.asarray([], dtype=int)
         return np.asarray(topk_map[rows, :], dtype=int).reshape(-1)
 
+    def _build_eval_ctrl_pool_from_many_topk(
+        self,
+        nearest_train_conds: list[str],
+        topk_map: np.ndarray,
+        pert_rows_by_cond: dict[str, np.ndarray],
+    ) -> np.ndarray:
+        """Build control pool from multiple nearest train conditions (concat, no dedup)."""
+        pieces: list[np.ndarray] = []
+        for cond in nearest_train_conds:
+            pool = self._build_eval_ctrl_pool_from_topk(
+                nearest_train_cond=cond,
+                topk_map=topk_map,
+                pert_rows_by_cond=pert_rows_by_cond,
+            )
+            if pool.size > 0:
+                pieces.append(pool)
+        if not pieces:
+            return np.asarray([], dtype=int)
+        return np.concatenate(pieces, axis=0).astype(int, copy=False)
+
     def build_eval_ctrl_strategy(
         self,
         split_dict: dict,
@@ -422,70 +531,132 @@ class TriShift:
         topk_map: np.ndarray,
         distance_metric: str,
         sample_size: int,
+        compare_mode: str = "aggregate_cond",
     ) -> dict:
         """Build eval control strategy based on nearest train condition in GenePT space."""
         if distance_metric not in {"cosine", "l2"}:
             raise ValueError("distance_metric must be one of: cosine, l2")
         if int(sample_size) <= 0:
             raise ValueError("sample_size must be positive")
+        if compare_mode not in {"aggregate_cond", "per_gene_nearest_cond"}:
+            raise ValueError("compare_mode must be one of: aggregate_cond, per_gene_nearest_cond")
 
         train_adata = split_dict.get("train")
         test_adata = split_dict.get("test")
         test_conds = [str(c) for c in split_dict.get("test_conds", [])]
 
-        train_map = self._build_condition_embedding_map(train_adata, emb_table)
-        test_map = self._build_condition_embedding_map(test_adata, emb_table, include_conds=test_conds)
-
-        if test_conds:
-            cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
-            cond_mode, cond_norm = self._get_cond_pool_cfg()
-            for cond in test_conds:
-                if cond in test_map:
-                    continue
-                cond_mask = cond_series_all == cond
-                if not np.any(cond_mask):
-                    continue
-                embd_idx_list = self._get_cond_embd_idx(cond_mask)
-                cond_vec = aggregate_cond_embedding(
-                    emb_table,
-                    embd_idx_list,
-                    mode=cond_mode,
-                    normalize=cond_norm,
-                )
-                test_map[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
-
         pert_rows_by_cond = self._build_eval_pert_rows_by_condition(train_adata)
         pool_map: dict[str, np.ndarray] = {}
         nearest_map: dict[str, str] = {}
-        for cond in test_conds:
-            nearest = self._nearest_train_condition(
-                test_cond=cond,
-                train_map=train_map,
-                metric=distance_metric,
-                test_map=test_map,
+        nearest_multi_map: dict[str, list[str]] = {}
+
+        if compare_mode == "aggregate_cond":
+            train_map = self._build_condition_embedding_map(train_adata, emb_table)
+            test_map = self._build_condition_embedding_map(test_adata, emb_table, include_conds=test_conds)
+
+            if test_conds:
+                cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
+                cond_mode, cond_norm = self._get_cond_pool_cfg()
+                for cond in test_conds:
+                    if cond in test_map:
+                        continue
+                    cond_mask = cond_series_all == cond
+                    if not np.any(cond_mask):
+                        continue
+                    embd_idx_list = self._get_cond_embd_idx(cond_mask)
+                    cond_vec = aggregate_cond_embedding(
+                        emb_table,
+                        embd_idx_list,
+                        mode=cond_mode,
+                        normalize=cond_norm,
+                    )
+                    test_map[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
+
+            for cond in test_conds:
+                nearest = self._nearest_train_condition(
+                    test_cond=cond,
+                    train_map=train_map,
+                    metric=distance_metric,
+                    test_map=test_map,
+                )
+                if nearest is None:
+                    continue
+                pool_idx = self._build_eval_ctrl_pool_from_topk(
+                    nearest_train_cond=nearest,
+                    topk_map=topk_map,
+                    pert_rows_by_cond=pert_rows_by_cond,
+                )
+                if pool_idx.size == 0:
+                    continue
+                pool_map[cond] = pool_idx
+                nearest_map[cond] = nearest
+                nearest_multi_map[cond] = [nearest]
+        else:
+            train_token_map = self._build_condition_token_embedding_map(train_adata, emb_table)
+            test_token_map = self._build_condition_token_embedding_map(
+                test_adata, emb_table, include_conds=test_conds
             )
-            if nearest is None:
-                continue
-            pool_idx = self._build_eval_ctrl_pool_from_topk(
-                nearest_train_cond=nearest,
-                topk_map=topk_map,
-                pert_rows_by_cond=pert_rows_by_cond,
-            )
-            if pool_idx.size == 0:
-                continue
-            pool_map[cond] = pool_idx
-            nearest_map[cond] = nearest
+            if test_conds:
+                cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
+                embd_lookup = {str(g): i for i, g in enumerate(self.data.embd_df.index.astype(str))}
+                for cond in test_conds:
+                    if cond in test_token_map:
+                        continue
+                    cond_mask = cond_series_all == cond
+                    if not np.any(cond_mask):
+                        continue
+                    vecs: list[np.ndarray] = []
+                    for tok in self._condition_tokens_no_ctrl(cond):
+                        tok_idx = embd_lookup.get(str(tok), None)
+                        if tok_idx is None:
+                            continue
+                        i = int(tok_idx)
+                        if i < 0 or i >= int(emb_table.shape[0]):
+                            continue
+                        vec = emb_table[i].detach().cpu().numpy().astype(np.float32).reshape(-1)
+                        vecs.append(vec)
+                    if vecs:
+                        test_token_map[cond] = vecs
+
+            for cond in test_conds:
+                test_token_vecs = test_token_map.get(cond, [])
+                if not test_token_vecs:
+                    continue
+                nearest_list: list[str] = []
+                for token_vec in test_token_vecs:
+                    nearest = self._nearest_train_condition_for_token(
+                        test_token_vec=token_vec,
+                        train_token_map=train_token_map,
+                        metric=distance_metric,
+                    )
+                    if nearest is not None:
+                        nearest_list.append(str(nearest))
+                if not nearest_list:
+                    continue
+                pool_idx = self._build_eval_ctrl_pool_from_many_topk(
+                    nearest_train_conds=nearest_list,
+                    topk_map=topk_map,
+                    pert_rows_by_cond=pert_rows_by_cond,
+                )
+                if pool_idx.size == 0:
+                    continue
+                pool_map[cond] = pool_idx
+                nearest_map[cond] = nearest_list[0]
+                nearest_multi_map[cond] = nearest_list
 
         print(
             "[eval] built nearest_genept_ot_pool strategy: "
-            f"metric={distance_metric}, mapped={len(pool_map)}/{len(test_conds)}, sample_size={int(sample_size)}"
+            f"metric={distance_metric}, compare_mode={compare_mode}, "
+            f"mapped={len(pool_map)}/{len(test_conds)}, sample_size={int(sample_size)}"
         )
         return {
             "mode": "nearest_genept_ot_pool",
             "distance_metric": str(distance_metric),
+            "compare_mode": str(compare_mode),
             "sample_size": int(sample_size),
             "pool_idx_by_test_cond": pool_map,
             "nearest_train_cond_by_test_cond": nearest_map,
+            "nearest_train_conds_by_test_cond": nearest_multi_map,
         }
 
     def _get_cond_pool_cfg(self) -> tuple[str, bool]:

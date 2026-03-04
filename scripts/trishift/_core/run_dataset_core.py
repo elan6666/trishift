@@ -625,6 +625,7 @@ def run_dataset_with_paths(
     n_eval_ensemble = int(defaults.get("n_eval_ensemble", 300))
     eval_ctrl_pool_mode = str(defaults.get("eval_ctrl_pool_mode", "random_train_ctrl"))
     eval_genept_distance = str(defaults.get("eval_genept_distance", "both"))
+    eval_genept_compare_mode = str(defaults.get("eval_genept_compare_mode", "aggregate_cond"))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
     if train_mode not in valid_train_modes:
@@ -665,6 +666,12 @@ def run_dataset_with_paths(
         raise ValueError(
             f"Unsupported eval_genept_distance={eval_genept_distance}. "
             f"Supported: {sorted(valid_eval_distances)}"
+        )
+    valid_eval_compare_modes = {"aggregate_cond", "per_gene_nearest_cond"}
+    if eval_genept_compare_mode not in valid_eval_compare_modes:
+        raise ValueError(
+            f"Unsupported eval_genept_compare_mode={eval_genept_compare_mode}. "
+            f"Supported: {sorted(valid_eval_compare_modes)}"
         )
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
     if topk_strategy not in {"random", "weighted_sample"}:
@@ -713,7 +720,8 @@ def run_dataset_with_paths(
     if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
         print(
             "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
-            f"(sample_size=n_eval_ensemble={n_eval_ensemble}, distance={eval_genept_distance})"
+            f"(sample_size=n_eval_ensemble={n_eval_ensemble}, distance={eval_genept_distance}, "
+            f"compare_mode={eval_genept_compare_mode})"
         )
 
     # Snapshot the exact configs used for this run for reproducibility.
@@ -740,6 +748,7 @@ def run_dataset_with_paths(
             "n_eval_ensemble": int(n_eval_ensemble),
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
             "eval_genept_distance": str(eval_genept_distance),
+            "eval_genept_compare_mode": str(eval_genept_compare_mode),
             "eval_ctrl_sample_size_source": "n_eval_ensemble",
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
@@ -1028,6 +1037,7 @@ def run_dataset_with_paths(
                     topk_map=eval_topk_map,
                     distance_metric=dist_tag,
                     sample_size=n_eval_ensemble,
+                    compare_mode=eval_genept_compare_mode,
                 )
                 metrics_df = model.evaluate(
                     split_dict=split_dict,

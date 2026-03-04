@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import anndata as ad
 import numpy as np
+import pandas as pd
 import torch
 
 import sys
@@ -12,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from scripts.tests._helpers import make_data_and_model, train_stage1_and_cache
+from trishift.TriShift import TriShift
+from trishift.TriShiftData import TriShiftData
 
 
 def test_eval_ctrl_pool_flatten_without_dedup():
@@ -59,6 +63,7 @@ def test_nearest_genept_ot_pool_eval_and_export():
     assert strategy["mode"] == "nearest_genept_ot_pool"
     assert strategy["distance_metric"] == "cosine"
     assert strategy["sample_size"] == 10
+    assert strategy["compare_mode"] == "aggregate_cond"
 
     df = model.evaluate(
         split_dict=split,
@@ -100,9 +105,84 @@ def test_nearest_genept_ot_pool_eval_and_export():
     assert set(df_fb["n_ensemble"].astype(int).unique().tolist()) == {10}
 
 
+def test_condition_tokens_no_ctrl():
+    data, model = make_data_and_model(seed=2)
+    assert model._condition_tokens_no_ctrl("A+ctrl") == ["A"]
+    assert model._condition_tokens_no_ctrl("ctrl+A") == ["A"]
+    assert model._condition_tokens_no_ctrl("A+B") == ["A", "B"]
+
+
+def test_per_gene_nearest_strategy_concat_without_dedup():
+    X = np.random.RandomState(0).rand(12, 6).astype(np.float32)
+    obs = pd.DataFrame(
+        {
+            "condition": (
+                ["ctrl"] * 4
+                + ["A+ctrl"] * 2
+                + ["B+ctrl"] * 2
+                + ["A+B"] * 4
+            )
+        }
+    )
+    var = pd.DataFrame({"gene_name": ["A", "B", "G1", "G2", "G3", "G4"]})
+    adata = ad.AnnData(X=X, obs=obs, var=var)
+
+    embd_df = pd.DataFrame(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        index=["ctrl", "A", "B"],
+    )
+    data = TriShiftData(adata, embd_df)
+    data.setup_embedding_index()
+
+    model = TriShift(data, device="cpu")
+    model.model_init(
+        x_dim=adata.n_vars,
+        z_dim=4,
+        cond_dim=embd_df.shape[1],
+        vae_enc_hidden=[8],
+        vae_dec_hidden=[8],
+        shift_hidden=[8],
+        gen_hidden=[8],
+        dropout=0.0,
+    )
+
+    emb_table = torch.tensor(embd_df.values, dtype=torch.float32)
+    train_mask = adata.obs["condition"].isin(["ctrl", "A+ctrl", "B+ctrl"]).values
+    test_mask = adata.obs["condition"] == "A+B"
+    split_dict = {
+        "train": adata[train_mask].copy(),
+        "test": adata[test_mask].copy(),
+        "test_conds": ["A+B"],
+    }
+    # train pert rows order: A+ctrl (2 rows), B+ctrl (2 rows)
+    topk_map = np.asarray(
+        [
+            [1, 1],
+            [1, 2],
+            [7, 7],
+            [7, 8],
+        ],
+        dtype=int,
+    )
+    strategy = model.build_eval_ctrl_strategy(
+        split_dict=split_dict,
+        emb_table=emb_table,
+        topk_map=topk_map,
+        distance_metric="cosine",
+        sample_size=5,
+        compare_mode="per_gene_nearest_cond",
+    )
+    assert strategy["compare_mode"] == "per_gene_nearest_cond"
+    assert strategy["nearest_train_conds_by_test_cond"]["A+B"] == ["A+ctrl", "B+ctrl"]
+    pool = strategy["pool_idx_by_test_cond"]["A+B"]
+    assert pool.tolist() == [1, 1, 1, 2, 7, 7, 7, 8]
+
+
 def main():
     test_eval_ctrl_pool_flatten_without_dedup()
     test_nearest_genept_ot_pool_eval_and_export()
+    test_condition_tokens_no_ctrl()
+    test_per_gene_nearest_strategy_concat_without_dedup()
     print("test_eval_ctrl_pool: PASS")
 
 
