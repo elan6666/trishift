@@ -1,7 +1,7 @@
-# TriShift 默认配置（总入口：scripts/run_dataset.py）
+﻿# TriShift 默认配置（总入口：scripts/run_dataset.py）
 
 # 每个 pert 细胞匹配的 top-k control 邻居数。
-k_topk: 300
+k_topk: 10
 # control/pert 匹配方式：knn | ot | knn_ot | soft_ot | scpram_ot。
 matching_mode: ot
 # matching_mode options: knn | ot (Sinkhorn OT) | knn_ot | soft_ot | scpram_ot (EMD / POT ot.emd)
@@ -13,8 +13,8 @@ train_mode: joint
 n_eval_ensemble: 300
 # 评估 control 采样模式：
 # - random_train_ctrl: 随机 train ctrl 池采样（采样数 n_eval_ensemble）
-# - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 k_topk）
-eval_ctrl_pool_mode: random_train_ctrl
+# - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 n_eval_ensemble）
+eval_ctrl_pool_mode: nearest_genept_ot_pool
 # 最近 condition 距离：cosine | l2 | both（both 会输出两套结果）
 eval_genept_distance: both
 # 全局随机种子。
@@ -103,7 +103,7 @@ ablation:
   # 软权重场景下是否按分布采样 control（否则取 argmax）。
   sample_soft_ctrl: false
   # OT 是否按 perturbation 条件分组计算（更细粒度，通常更慢）。
-  per_condition_ot: false
+  per_condition_ot: true
   # 是否允许复用 OT/soft_ot/knn_ot 的 top-k 缓存（knn 一直可复用）。
   # 注意：缓存文件名和校验键已包含 matching_mode 与 stage1 配置指纹，避免误复用。
   reuse_ot_cache: true

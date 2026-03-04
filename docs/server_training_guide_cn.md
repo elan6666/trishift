@@ -162,6 +162,23 @@ grep -n -E 'num_workers|pin_memory' configs/defaults.yaml
 
 ---
 
+## 8.1 评估控制池模式（可选）
+
+如果你要启用“最近 GenePT + OT 控制池”评估，在 `configs/defaults.yaml` 中设置：
+
+```yaml
+eval_ctrl_pool_mode: nearest_genept_ot_pool
+eval_genept_distance: cosine  # 可选 cosine / l2 / both
+n_eval_ensemble: 300
+```
+
+说明：
+- 该模式下评估采样数由 `n_eval_ensemble` 决定。
+- `k_topk` 仍只用于训练/OT 候选池宽度，不控制评估采样数。
+- `eval_genept_distance: both` 会额外输出 `*_cosine` 和 `*_l2` 两套评估文件。
+
+---
+
 ## 9. 启动训练
 
 ```bash
@@ -271,4 +288,3 @@ conda activate scouter
 - `conda run -n 名称 命令`：不激活也可在指定环境运行命令。  
 - `nvidia-smi`：查看 GPU 状态。  
 - `tmux`：断线不中断任务的会话管理工具。
-

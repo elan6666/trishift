@@ -622,6 +622,7 @@ def run_dataset_with_paths(
     emb_table = torch.tensor(embd_df.values, dtype=torch.float32)
     mode = str(defaults.get("matching_mode", "knn"))
     k = int(defaults.get("k_topk", 5))
+    n_eval_ensemble = int(defaults.get("n_eval_ensemble", 300))
     eval_ctrl_pool_mode = str(defaults.get("eval_ctrl_pool_mode", "random_train_ctrl"))
     eval_genept_distance = str(defaults.get("eval_genept_distance", "both"))
     train_mode = defaults.get("train_mode", "joint")
@@ -712,7 +713,7 @@ def run_dataset_with_paths(
     if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
         print(
             "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
-            f"(sample_size=k_topk={k}, distance={eval_genept_distance})"
+            f"(sample_size=n_eval_ensemble={n_eval_ensemble}, distance={eval_genept_distance})"
         )
 
     # Snapshot the exact configs used for this run for reproducibility.
@@ -736,12 +737,10 @@ def run_dataset_with_paths(
             "train_mode": str(train_mode),
             "matching_mode": str(mode),
             "k_topk": int(k),
-            "n_eval_ensemble": int(defaults.get("n_eval_ensemble", 300)),
+            "n_eval_ensemble": int(n_eval_ensemble),
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
             "eval_genept_distance": str(eval_genept_distance),
-            "eval_ctrl_sample_size_source": (
-                "k_topk" if eval_ctrl_pool_mode == "nearest_genept_ot_pool" else "n_eval_ensemble"
-            ),
+            "eval_ctrl_sample_size_source": "n_eval_ensemble",
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
         }
@@ -774,7 +773,6 @@ def run_dataset_with_paths(
         if run_cfg.get("multi_split", False)
         else 1
     )
-    n_eval_ensemble = int(defaults.get("n_eval_ensemble", 300))
     if fast:
         stage1_epochs = 1
         stage23_epochs = 1
@@ -1029,13 +1027,13 @@ def run_dataset_with_paths(
                     emb_table=emb_table,
                     topk_map=eval_topk_map,
                     distance_metric=dist_tag,
-                    sample_size=int(k),
+                    sample_size=n_eval_ensemble,
                 )
                 metrics_df = model.evaluate(
                     split_dict=split_dict,
                     emb_table=emb_table,
                     split_id=split_id,
-                    n_ensemble=int(k),
+                    n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
                     eval_ctrl_strategy=eval_strategy,
                 )
@@ -1050,7 +1048,7 @@ def run_dataset_with_paths(
                     split_dict=split_dict,
                     emb_table=emb_table,
                     split_id=split_id,
-                    n_ensemble=int(k),
+                    n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
                     out_path=str(out_pkl),
                     eval_ctrl_strategy=eval_strategy,

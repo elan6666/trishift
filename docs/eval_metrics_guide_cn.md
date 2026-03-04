@@ -54,23 +54,23 @@ $$
 
 ## 2. `metrics.csv` 单条件指标
 
-### 2.1 `nmse`
+### 2.1 `mse_pred` / `mse_ctrl` / `nmse`
 
 公式：
 
 $$
-\text{Num}=\frac{1}{K}\sum_{g\in D}\left(\mu_t[g]-\mu_p[g]\right)^2
+\text{mse\_pred}=\frac{1}{K}\sum_{g\in D}\left(\mu_t[g]-\mu_p[g]\right)^2
 $$
 
 $$
-\text{Den}=\frac{1}{K}\sum_{g\in D}\left(\mu_t[g]-\mu_0[g]\right)^2
+\text{mse\_ctrl}=\frac{1}{K}\sum_{g\in D}\left(\mu_t[g]-\mu_0[g]\right)^2
 $$
 
 $$
 \mathrm{nMSE}=
 \begin{cases}
-\dfrac{\text{Num}}{\text{Den}}, & \text{Den}>0 \\
-\mathrm{NaN}, & \text{Den}=0
+\dfrac{\text{mse\_pred}}{\text{mse\_ctrl}}, & \text{mse\_ctrl}>0 \\
+\mathrm{NaN}, & \text{mse\_ctrl}=0
 \end{cases}
 $$
 
@@ -79,7 +79,13 @@ $$
 - $\mu_p[g]$：预测扰动在基因 $g$ 上的均值表达。
 - $\mu_0[g]$：对照均值表达。
 - $D$：该条件的 DE 基因集合（评估重点基因）。
-- Num：预测误差；Den：该条件相对对照的“信号强度”。
+- `mse_pred`：预测误差（`MSE(y_true, y_pred)`）。
+- `mse_ctrl`：对照误差（`MSE(y_true, y_ctrl)`），也是 nMSE 分母。
+
+对应列名：
+- `mse_pred`
+- `mse_ctrl`
+- `nmse`
 
 指标意义（反映模型什么）：
 - 反映模型对 DE 基因“幅值恢复”的能力（绝对量纲误差，经条件难度归一化）。
@@ -336,6 +342,15 @@ $$
 
 - `split_id`：当前数据划分编号（元信息，不是性能好坏指标）。
 - `n_ensemble`：评估时每个条件采样次数（元信息，会影响方差稳定性）。
+  - `eval_ctrl_pool_mode=random_train_ctrl`：采样数来自 `n_eval_ensemble`。
+  - `eval_ctrl_pool_mode=nearest_genept_ot_pool`：采样数同样来自 `n_eval_ensemble`（`k_topk` 仅用于构建 OT 候选池宽度，不用于评估采样数）。
+
+### 2.12 评估控制池模式（TriShift）
+
+- `eval_ctrl_pool_mode=random_train_ctrl`：从训练集 control 细胞中随机采样评估控制池。
+- `eval_ctrl_pool_mode=nearest_genept_ot_pool`：先用 GenePT 找到最近训练 condition，再复用该 condition 的训练 OT 控制池进行采样。
+- `eval_genept_distance`：`cosine | l2 | both`。
+  - `both` 时会额外输出两套文件：`*_cosine` 与 `*_l2`，并保留主文件（默认使用 `cosine`）。
 
 ## 3. 聚合指标（多条件）
 
@@ -384,4 +399,3 @@ $$
 一句话模板：
 - “模型在方向上更好，但幅值校准不足”：`pearson/systema` 上升，`nmse/wasserstein` 未同步下降。
 - “模型均值对齐但异质性不足”：`r2_*_mean` 高、`r2_*_var` 低。
-

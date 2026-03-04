@@ -54,11 +54,11 @@ def test_nearest_genept_ot_pool_eval_and_export():
         emb_table=emb_table,
         topk_map=topk_map,
         distance_metric="cosine",
-        sample_size=3,
+        sample_size=10,
     )
     assert strategy["mode"] == "nearest_genept_ot_pool"
     assert strategy["distance_metric"] == "cosine"
-    assert strategy["sample_size"] == 3
+    assert strategy["sample_size"] == 10
 
     df = model.evaluate(
         split_dict=split,
@@ -69,7 +69,7 @@ def test_nearest_genept_ot_pool_eval_and_export():
         eval_ctrl_strategy=strategy,
     )
     assert df.shape[0] > 0
-    assert set(df["n_ensemble"].astype(int).unique().tolist()) == {3}
+    assert set(df["n_ensemble"].astype(int).unique().tolist()) == {10}
 
     preds = model.export_predictions(
         split_dict=split,
@@ -82,8 +82,22 @@ def test_nearest_genept_ot_pool_eval_and_export():
     )
     assert isinstance(preds, dict) and preds
     for payload in preds.values():
-        assert payload["Pred"].shape[0] == 3
-        assert payload["Ctrl"].shape[0] == 3
+        assert payload["Pred"].shape[0] == 10
+        assert payload["Ctrl"].shape[0] == 10
+
+    # Fallback branch: missing pool entry should still use n_ensemble-sized random sampling.
+    strategy_fallback = dict(strategy)
+    strategy_fallback["pool_idx_by_test_cond"] = {}
+    df_fb = model.evaluate(
+        split_dict=split,
+        emb_table=emb_table,
+        split_id=1,
+        n_ensemble=10,
+        base_seed=24,
+        eval_ctrl_strategy=strategy_fallback,
+    )
+    assert df_fb.shape[0] > 0
+    assert set(df_fb["n_ensemble"].astype(int).unique().tolist()) == {10}
 
 
 def main():
@@ -94,4 +108,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
