@@ -15,6 +15,7 @@ from trishift._external_metrics import (
     average_of_perturbation_centroids,
     compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
+    regression_r2_safe,
 )
 
 
@@ -532,6 +533,8 @@ class TriShift:
         distance_metric: str,
         sample_size: int,
         compare_mode: str = "aggregate_cond",
+        train_candidate_conds: list[str] | None = None,
+        target_test_conds: list[str] | None = None,
     ) -> dict:
         """Build eval control strategy based on nearest train condition in GenePT space."""
         if distance_metric not in {"cosine", "l2"}:
@@ -544,20 +547,48 @@ class TriShift:
         train_adata = split_dict.get("train")
         test_adata = split_dict.get("test")
         test_conds = [str(c) for c in split_dict.get("test_conds", [])]
+        target_test_conds_count = 0
+        if target_test_conds is None:
+            active_test_conds = list(test_conds)
+        else:
+            target_set = {str(c) for c in target_test_conds if str(c)}
+            target_test_conds_count = int(len(target_set))
+            active_test_conds = [c for c in test_conds if c in target_set]
+        skipped_test_conds_count = int(max(0, len(test_conds) - len(active_test_conds)))
+        candidate_mode = "all_train_pert" if train_candidate_conds is None else "filtered"
+        include_conds = None
+        if train_candidate_conds is not None:
+            include_conds = sorted(
+                {
+                    str(c)
+                    for c in train_candidate_conds
+                    if str(c) and str(c) != self.data.ctrl_label
+                }
+            )
 
         pert_rows_by_cond = self._build_eval_pert_rows_by_condition(train_adata)
         pool_map: dict[str, np.ndarray] = {}
         nearest_map: dict[str, str] = {}
         nearest_multi_map: dict[str, list[str]] = {}
+        train_candidate_conds_count = 0
 
         if compare_mode == "aggregate_cond":
-            train_map = self._build_condition_embedding_map(train_adata, emb_table)
-            test_map = self._build_condition_embedding_map(test_adata, emb_table, include_conds=test_conds)
+            train_map = self._build_condition_embedding_map(
+                train_adata,
+                emb_table,
+                include_conds=include_conds,
+            )
+            train_candidate_conds_count = int(len(train_map))
+            test_map = self._build_condition_embedding_map(
+                test_adata,
+                emb_table,
+                include_conds=active_test_conds,
+            )
 
-            if test_conds:
+            if active_test_conds:
                 cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
                 cond_mode, cond_norm = self._get_cond_pool_cfg()
-                for cond in test_conds:
+                for cond in active_test_conds:
                     if cond in test_map:
                         continue
                     cond_mask = cond_series_all == cond
@@ -572,7 +603,7 @@ class TriShift:
                     )
                     test_map[cond] = cond_vec.detach().cpu().numpy().astype(np.float32)
 
-            for cond in test_conds:
+            for cond in active_test_conds:
                 nearest = self._nearest_train_condition(
                     test_cond=cond,
                     train_map=train_map,
@@ -592,14 +623,19 @@ class TriShift:
                 nearest_map[cond] = nearest
                 nearest_multi_map[cond] = [nearest]
         else:
-            train_token_map = self._build_condition_token_embedding_map(train_adata, emb_table)
-            test_token_map = self._build_condition_token_embedding_map(
-                test_adata, emb_table, include_conds=test_conds
+            train_token_map = self._build_condition_token_embedding_map(
+                train_adata,
+                emb_table,
+                include_conds=include_conds,
             )
-            if test_conds:
+            train_candidate_conds_count = int(len(train_token_map))
+            test_token_map = self._build_condition_token_embedding_map(
+                test_adata, emb_table, include_conds=active_test_conds
+            )
+            if active_test_conds:
                 cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
                 embd_lookup = {str(g): i for i, g in enumerate(self.data.embd_df.index.astype(str))}
-                for cond in test_conds:
+                for cond in active_test_conds:
                     if cond in test_token_map:
                         continue
                     cond_mask = cond_series_all == cond
@@ -618,7 +654,7 @@ class TriShift:
                     if vecs:
                         test_token_map[cond] = vecs
 
-            for cond in test_conds:
+            for cond in active_test_conds:
                 test_token_vecs = test_token_map.get(cond, [])
                 if not test_token_vecs:
                     continue
@@ -647,7 +683,8 @@ class TriShift:
         print(
             "[eval] built nearest_genept_ot_pool strategy: "
             f"metric={distance_metric}, compare_mode={compare_mode}, "
-            f"mapped={len(pool_map)}/{len(test_conds)}, sample_size={int(sample_size)}"
+            f"mapped={len(pool_map)}/{len(active_test_conds)}, sample_size={int(sample_size)}, "
+            f"candidate_source={candidate_mode}, candidate_count={train_candidate_conds_count}"
         )
         return {
             "mode": "nearest_genept_ot_pool",
@@ -657,6 +694,11 @@ class TriShift:
             "pool_idx_by_test_cond": pool_map,
             "nearest_train_cond_by_test_cond": nearest_map,
             "nearest_train_conds_by_test_cond": nearest_multi_map,
+            "train_candidate_conds_source": str(candidate_mode),
+            "train_candidate_conds_count": int(train_candidate_conds_count),
+            "target_test_conds_count": int(target_test_conds_count),
+            "active_test_conds_count": int(len(active_test_conds)),
+            "skipped_test_conds_count": int(skipped_test_conds_count),
         }
 
     def _get_cond_pool_cfg(self) -> tuple[str, bool]:
@@ -2254,6 +2296,10 @@ class TriShift:
             mse_pred_val = float(mse(true_vec, pred_vec))
             nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
             pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
+            deg_mean_r2_val = regression_r2_safe(
+                true_vec - ctrl_vec,
+                pred_vec - ctrl_vec,
+            )
             if not np.isfinite(nmse_val) or not np.isfinite(pearson_val):
                 print(f"[eval] non-finite metrics: {cond} nmse={nmse_val} pearson={pearson_val}")
 
@@ -2279,8 +2325,11 @@ class TriShift:
                     "mse_ctrl": mse_ctrl_val,
                     "nmse": nmse_val,
                     "pearson": pearson_val,
+                    "deg_mean_r2": float(deg_mean_r2_val),
                     "systema_corr_all_allpert": float(systema_metrics["corr_all_allpert"]),
                     "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+                    "systema_corr_all_r2": float(systema_metrics["corr_all_r2"]),
+                    "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
                     **scpram_metrics,
                     "split_id": split_id,
                     "n_ensemble": ensemble_size,

@@ -46,11 +46,20 @@ $$
 \bar b=\frac{1}{m}\sum_{u=1}^{m}b_u
 $$
 
-scPRAM 风格 $R^2$ 定义（注意是相关系数平方）：
+scPRAM 兼容指标里的 $R^2$ 定义（注意是相关系数平方，只用于 `scpram_r2_*` 旧字段）：
 
 $$
 R^2(\mathbf{a},\mathbf{b})=\rho(\mathbf{a},\mathbf{b})^2
 $$
+
+回归决定系数定义（新增字段使用，可能为负）：
+
+$$
+R^2_{\text{reg}}(\mathbf{y}, \hat{\mathbf{y}})
+=1-\frac{\sum_u (y_u-\hat y_u)^2}{\sum_u (y_u-\bar y)^2}
+$$
+
+其中当目标向量方差为 0 或向量无效时，记为 `NaN`。
 
 ## 2. `metrics.csv` 单条件指标
 
@@ -218,6 +227,62 @@ $$
 
 ---
 
+### 2.5.1 新增回归 R² 指标（`R^2 = 1-SSE/SST`）
+
+#### 2.5.1.1 `deg_mean_r2`
+
+$$
+\mathrm{deg\_mean\_r2}=R^2_{\text{reg}}\left(\mu_t[D]-\mu_0[D],\ \mu_p[D]-\mu_0[D]\right)
+$$
+
+含义：DE 增量向量上的回归决定系数，衡量预测对真实扰动强度的解释程度。
+
+#### 2.5.1.2 `systema_corr_all_r2`
+
+$$
+\mathrm{systema\_corr\_all\_r2}=R^2_{\text{reg}}\left(\Delta_t[1{:}G],\ \Delta_p[1{:}G]\right)
+$$
+
+含义：Systema 全基因增量口径下的回归决定系数。
+
+#### 2.5.1.3 `systema_corr_deg_r2`
+
+$$
+\mathrm{systema\_corr\_deg\_r2}=R^2_{\text{reg}}\left(\Delta_t[D_{20}],\ \Delta_p[D_{20}]\right)
+$$
+
+含义：Systema top20 DE 增量口径下的回归决定系数。
+
+#### 2.5.1.4 `r2_all_var_mean`
+
+在 scPRAM 风格重复采样中，每次先构造全基因方差向量，再计算回归 R²：
+
+$$
+r^{(s)}_{v,\mathrm{all,reg}}=R^2_{\text{reg}}\left(v_t^{(s)}[1{:}G],\ v_p^{(s)}[1{:}G]\right)
+$$
+
+最终取采样均值：
+
+$$
+\mathrm{r2\_all\_var\_mean}=\frac{1}{T}\sum_{s=1}^{T}r^{(s)}_{v,\mathrm{all,reg}}
+$$
+
+#### 2.5.1.5 `r2_degs_var_mean`
+
+同理，仅在 DE 子空间方差向量上计算：
+
+$$
+r^{(s)}_{v,\mathrm{de,reg}}=R^2_{\text{reg}}\left(v_t^{(s)}[D],\ v_p^{(s)}[D]\right)
+$$
+
+$$
+\mathrm{r2\_degs\_var\_mean}=\frac{1}{T}\sum_{s=1}^{T}r^{(s)}_{v,\mathrm{de,reg}}
+$$
+
+说明：这些新增字段与旧 `scpram_r2_*`（corr²）是并行存在，不能混为一类。
+
+---
+
 ### 2.6 `scpram_r2_all_var_mean` 与 `scpram_r2_all_var_std`
 
 第 $s$ 次采样下，按基因计算方差（样本方差）：
@@ -354,6 +419,19 @@ $$
 - `eval_genept_compare_mode`（仅在 `nearest_genept_ot_pool` 下生效）：
   - `aggregate_cond`：先把 condition 聚合成一个向量，再找最近 train condition（旧行为）。
   - `per_gene_nearest_cond`：对每个基因 token 分别找最近 train condition，再把这些 condition 的 OT 池直接拼接（不去重）。
+  - `all`：固定使用 `per_gene_nearest_cond`，并遍历全部候选模式（见下条）。
+- `eval_genept_train_candidate_mode`（仅在 `nearest_genept_ot_pool` 下生效）：
+  - `all_train_pert`：最近邻候选使用当前 split 的全部 train pert 条件（默认）。
+  - `norman_train_single_only`：最近邻候选仅使用 Norman 当前 split 中 `group=train` 且 `subgroup=single` 的条件；
+    - 对 `aggregate_cond` 与 `per_gene_nearest_cond` 两种比较模式都生效。
+    - 非 Norman 或候选为空时自动回退 `all_train_pert`（并打印 warning）。
+  - `norman_single_nearest_else_random`：仅 Norman 当前 split 的 `group=test` 且 `subgroup=single` 条件走 nearest；
+    - `seen0/seen1/seen2/unknown` 条件不构建 nearest 池，自动走 random fallback；
+    - nearest 的 train 候选仍为 `all_train_pert`；
+    - 非 Norman 时回退 `all_train_pert`。
+- 输出命名补充：
+  - `eval_ctrl_pool_mode=all` 时，主别名 `metrics.csv/mean_pearson.txt` 始终对应 random 分支；
+  - `eval_ctrl_pool_mode=nearest_genept_ot_pool` 且 `eval_genept_compare_mode=all` 时，会按 `candidate_mode(+distance)` 输出多套文件，主别名默认指向 `all_train_pert`（`both` 时指向 `all_train_pert+cosine`）。
 
 ## 3. 聚合指标（多条件）
 

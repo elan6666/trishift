@@ -29,6 +29,7 @@ from trishift._external_metrics import (
     average_of_perturbation_centroids,
     compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
+    regression_r2_safe,
 )
 from scripts.common.split_utils import (
     condition_sort as _shared_condition_sort,
@@ -90,8 +91,13 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "nmse",
         "mse_pred",
         "mse_ctrl",
+        "deg_mean_r2",
         "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
+        "systema_corr_all_r2",
+        "systema_corr_deg_r2",
+        "r2_degs_var_mean",
+        "r2_all_var_mean",
         "scpram_r2_all_mean_mean",
         "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
@@ -393,6 +399,10 @@ def _compute_metrics_and_export_payload(
         mse_pred_val = float(mse(true_vec, pred_vec))
         nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
         pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
+        deg_mean_r2_val = regression_r2_safe(
+            true_vec - ctrl_vec,
+            pred_vec - ctrl_vec,
+        )
         systema_metrics = pearson_delta_reference_metrics(
             X_true=true.mean(axis=0),
             X_pred=pred.mean(axis=0),
@@ -414,8 +424,11 @@ def _compute_metrics_and_export_payload(
                 "mse_ctrl": mse_ctrl_val,
                 "nmse": nmse_val,
                 "pearson": pearson_val,
+                "deg_mean_r2": float(deg_mean_r2_val),
                 "systema_corr_all_allpert": float(systema_metrics["corr_all_allpert"]),
                 "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+                "systema_corr_all_r2": float(systema_metrics["corr_all_r2"]),
+                "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
                 **scpram_metrics,
                 "split_id": split_id,
                 "n_ensemble": n_ensemble,

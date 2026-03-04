@@ -14,14 +14,20 @@ n_eval_ensemble: 300
 # 评估 control 采样模式：
 # - random_train_ctrl: 随机 train ctrl 池采样（采样数 n_eval_ensemble）
 # - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 n_eval_ensemble）
-eval_ctrl_pool_mode: nearest_genept_ot_pool
+# - all: 同时执行 random_train_ctrl + nearest_genept_ot_pool，并分别输出结果文件
+eval_ctrl_pool_mode: random_train_ctrl
 # 最近 condition 距离：cosine | l2 | both（both 会输出两套结果）
 eval_genept_distance: both
 # nearest_genept_ot_pool 下的 GenePT 比较策略：
 # - aggregate_cond: 先按条件聚合后比较（当前默认行为）
 # - per_gene_nearest_cond: 每个基因 token 分别找最近 train condition，再拼接其 OT 池（不去重）
+# - all: 遍历全部 eval_genept_train_candidate_mode，并固定使用 per_gene_nearest_cond
 eval_genept_compare_mode: per_gene_nearest_cond
-# 全局随机种子。
+# nearest_genept_ot_pool 下 train condition 候选集合模式：
+# - all_train_pert: 使用当前 split 的全部 train pert 条件（默认，现有行为）
+# - norman_train_single_only: 仅 Norman 当前 split 的 train+single 条件；其他数据集或空集合时回退 all_train_pert
+# - norman_single_nearest_else_random: 仅 Norman 的 test+single 条件走 nearest；seen0/1/2/unknown 自动回退 random
+eval_genept_train_candidate_mode: all_train_pert
 seed: 24
 
 run:

@@ -14,6 +14,7 @@ def main() -> int:
         "test_train.py",
         "test_eval.py",
         "test_eval_ctrl_pool.py",
+        "test_regression_r2_metrics.py",
     ]
     for name in tests:
         path = root / name

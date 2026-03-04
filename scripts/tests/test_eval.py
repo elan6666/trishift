@@ -29,6 +29,11 @@ def test_evaluate_and_export():
     assert df.shape[0] > 0
     assert "nmse" in df.columns
     assert "pearson" in df.columns
+    assert "deg_mean_r2" in df.columns
+    assert "systema_corr_all_r2" in df.columns
+    assert "systema_corr_deg_r2" in df.columns
+    assert "r2_degs_var_mean" in df.columns
+    assert "r2_all_var_mean" in df.columns
 
     with temp_dir() as td:
         out_path = Path(td) / "preds.pkl"

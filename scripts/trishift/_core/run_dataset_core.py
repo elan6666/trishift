@@ -147,8 +147,13 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "nmse",
         "mse_pred",
         "mse_ctrl",
+        "deg_mean_r2",
         "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
+        "systema_corr_all_r2",
+        "systema_corr_deg_r2",
+        "r2_degs_var_mean",
+        "r2_all_var_mean",
         "scpram_r2_all_mean_mean",
         "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
@@ -270,6 +275,28 @@ def _resolve_cond_dims_for_pool_mode(
     if mode in {"sum", "mean"}:
         return emb_dim
     raise ValueError("cond_pool_mode must be one of: sum, mean")
+
+
+def _resolve_eval_compare_modes(eval_genept_compare_mode: str) -> list[str]:
+    mode = str(eval_genept_compare_mode)
+    if mode == "all":
+        # Locked decision: compare_mode=all only expands candidate modes;
+        # nearest algorithm is fixed to per_gene_nearest_cond.
+        return ["per_gene_nearest_cond"]
+    return [mode]
+
+
+def _resolve_eval_candidate_modes(
+    eval_genept_compare_mode: str,
+    eval_genept_train_candidate_mode: str,
+) -> list[str]:
+    if str(eval_genept_compare_mode) == "all":
+        return [
+            "all_train_pert",
+            "norman_train_single_only",
+            "norman_single_nearest_else_random",
+        ]
+    return [str(eval_genept_train_candidate_mode)]
 
 
 def _load_z_mu_cache(cache_path: Path, n_obs: int) -> np.ndarray | None:
@@ -626,6 +653,9 @@ def run_dataset_with_paths(
     eval_ctrl_pool_mode = str(defaults.get("eval_ctrl_pool_mode", "random_train_ctrl"))
     eval_genept_distance = str(defaults.get("eval_genept_distance", "both"))
     eval_genept_compare_mode = str(defaults.get("eval_genept_compare_mode", "aggregate_cond"))
+    eval_genept_train_candidate_mode = str(
+        defaults.get("eval_genept_train_candidate_mode", "all_train_pert")
+    )
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
     if train_mode not in valid_train_modes:
@@ -655,7 +685,7 @@ def run_dataset_with_paths(
             f"Unsupported matching_mode={mode}. "
             f"Supported: {sorted(valid_matching_modes)}"
         )
-    valid_eval_pool_modes = {"random_train_ctrl", "nearest_genept_ot_pool"}
+    valid_eval_pool_modes = {"random_train_ctrl", "nearest_genept_ot_pool", "all"}
     if eval_ctrl_pool_mode not in valid_eval_pool_modes:
         raise ValueError(
             f"Unsupported eval_ctrl_pool_mode={eval_ctrl_pool_mode}. "
@@ -667,11 +697,21 @@ def run_dataset_with_paths(
             f"Unsupported eval_genept_distance={eval_genept_distance}. "
             f"Supported: {sorted(valid_eval_distances)}"
         )
-    valid_eval_compare_modes = {"aggregate_cond", "per_gene_nearest_cond"}
+    valid_eval_compare_modes = {"aggregate_cond", "per_gene_nearest_cond", "all"}
     if eval_genept_compare_mode not in valid_eval_compare_modes:
         raise ValueError(
             f"Unsupported eval_genept_compare_mode={eval_genept_compare_mode}. "
             f"Supported: {sorted(valid_eval_compare_modes)}"
+        )
+    valid_eval_train_candidate_modes = {
+        "all_train_pert",
+        "norman_train_single_only",
+        "norman_single_nearest_else_random",
+    }
+    if eval_genept_train_candidate_mode not in valid_eval_train_candidate_modes:
+        raise ValueError(
+            f"Unsupported eval_genept_train_candidate_mode={eval_genept_train_candidate_mode}. "
+            f"Supported: {sorted(valid_eval_train_candidate_modes)}"
         )
     topk_strategy = str(ablation_cfg.get("topk_strategy", "random"))
     if topk_strategy not in {"random", "weighted_sample"}:
@@ -721,7 +761,22 @@ def run_dataset_with_paths(
         print(
             "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
             f"(sample_size=n_eval_ensemble={n_eval_ensemble}, distance={eval_genept_distance}, "
-            f"compare_mode={eval_genept_compare_mode})"
+            f"compare_mode={eval_genept_compare_mode}, "
+            f"candidate_mode={eval_genept_train_candidate_mode})"
+        )
+        if eval_genept_compare_mode == "all":
+            print(
+                "[run] eval_genept_compare_mode=all => compare algorithm fixed to "
+                "per_gene_nearest_cond, and candidate mode will expand to all configured modes"
+            )
+    elif eval_ctrl_pool_mode == "all":
+        print(
+            "[run] eval_ctrl_pool_mode=all "
+            "(run both random_train_ctrl and nearest_genept_ot_pool); "
+            f"nearest settings: distance={eval_genept_distance}, "
+            f"compare_mode={eval_genept_compare_mode}, "
+            f"candidate_mode={eval_genept_train_candidate_mode}, "
+            f"sample_size=n_eval_ensemble={n_eval_ensemble}"
         )
 
     # Snapshot the exact configs used for this run for reproducibility.
@@ -733,6 +788,15 @@ def run_dataset_with_paths(
         print(f"[run] warning: failed to write config snapshots ({exc})")
 
     try:
+        if eval_ctrl_pool_mode in {"nearest_genept_ot_pool", "all"}:
+            compare_modes_executed = _resolve_eval_compare_modes(eval_genept_compare_mode)
+            candidate_modes_executed = _resolve_eval_candidate_modes(
+                eval_genept_compare_mode=eval_genept_compare_mode,
+                eval_genept_train_candidate_mode=eval_genept_train_candidate_mode,
+            )
+        else:
+            compare_modes_executed = []
+            candidate_modes_executed = []
         meta = {
             "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "git_commit": _safe_git_commit(),
@@ -747,8 +811,16 @@ def run_dataset_with_paths(
             "k_topk": int(k),
             "n_eval_ensemble": int(n_eval_ensemble),
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
+            "eval_ctrl_modes_executed": (
+                ["random_train_ctrl", "nearest_genept_ot_pool"]
+                if str(eval_ctrl_pool_mode) == "all"
+                else [str(eval_ctrl_pool_mode)]
+            ),
             "eval_genept_distance": str(eval_genept_distance),
             "eval_genept_compare_mode": str(eval_genept_compare_mode),
+            "eval_genept_train_candidate_mode": str(eval_genept_train_candidate_mode),
+            "eval_compare_modes_executed": list(compare_modes_executed),
+            "eval_candidate_modes_executed": list(candidate_modes_executed),
             "eval_ctrl_sample_size_source": "n_eval_ensemble",
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
@@ -789,6 +861,11 @@ def run_dataset_with_paths(
         stage3_epochs = 1
         n_splits = 1
         n_eval_ensemble = min(n_eval_ensemble, 20)
+    eval_modes_to_run = (
+        ["random_train_ctrl", "nearest_genept_ot_pool"]
+        if eval_ctrl_pool_mode == "all"
+        else [eval_ctrl_pool_mode]
+    )
     stage1_cache_sig = _make_stage1_cache_signature(
         stage1_train_cfg=stage1_cfg,
         stage1_model_cfg=stage1_model_cfg,
@@ -1008,97 +1085,268 @@ def run_dataset_with_paths(
             )
 
         print("[run] evaluate")
-        if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
-            train_split = split_dict.get("train")
-            if train_split is None:
-                raise ValueError("split_dict['train'] is required for nearest_genept_ot_pool")
-            split_train_cond = train_split.obs[data.label_key].astype(str).values
-            split_train_pert = train_split[split_train_cond != data.ctrl_label]
-            _, train_ctrl_global_idx = model._get_ctrl_pool_from_split(train_split)
-            eval_topk_map = data.build_or_load_topk_map(
-                split_adata=split_train_pert,
-                mode=mode,
-                k=k,
-                seed=split_id,
-                candidates=100,
-                cache_path=str(cache_path),
-                per_condition_ot=per_condition_ot,
-                reuse_ot_cache=reuse_ot_cache,
-                cache_key=topk_cache_key,
-                ctrl_global_indices=train_ctrl_global_idx,
-            )
-            eval_distances = (
-                ["cosine", "l2"] if eval_genept_distance == "both" else [eval_genept_distance]
-            )
-            for dist_tag in eval_distances:
-                eval_strategy = model.build_eval_ctrl_strategy(
-                    split_dict=split_dict,
-                    emb_table=emb_table,
-                    topk_map=eval_topk_map,
-                    distance_metric=dist_tag,
-                    sample_size=n_eval_ensemble,
-                    compare_mode=eval_genept_compare_mode,
+        for eval_mode in eval_modes_to_run:
+            if eval_mode == "nearest_genept_ot_pool":
+                train_split = split_dict.get("train")
+                if train_split is None:
+                    raise ValueError("split_dict['train'] is required for nearest_genept_ot_pool")
+                split_train_cond = train_split.obs[data.label_key].astype(str).values
+                split_train_pert = train_split[split_train_cond != data.ctrl_label]
+                _, train_ctrl_global_idx = model._get_ctrl_pool_from_split(train_split)
+                eval_topk_map = data.build_or_load_topk_map(
+                    split_adata=split_train_pert,
+                    mode=mode,
+                    k=k,
+                    seed=split_id,
+                    candidates=100,
+                    cache_path=str(cache_path),
+                    per_condition_ot=per_condition_ot,
+                    reuse_ot_cache=reuse_ot_cache,
+                    cache_key=topk_cache_key,
+                    ctrl_global_indices=train_ctrl_global_idx,
                 )
+                eval_distances = (
+                    ["cosine", "l2"] if eval_genept_distance == "both" else [eval_genept_distance]
+                )
+                compare_modes_for_nearest = _resolve_eval_compare_modes(eval_genept_compare_mode)
+                candidate_modes_for_nearest = _resolve_eval_candidate_modes(
+                    eval_genept_compare_mode=eval_genept_compare_mode,
+                    eval_genept_train_candidate_mode=eval_genept_train_candidate_mode,
+                )
+                nearest_alias_preds = None
+                nearest_combo_seen: set[tuple[str, str]] = set()
+                split_test_conds = [str(c) for c in split_dict.get("test_conds", [])]
+
+                for compare_mode_eff in compare_modes_for_nearest:
+                    for candidate_mode_req in candidate_modes_for_nearest:
+                        candidate_mode_eff = str(candidate_mode_req)
+                        candidate_conds: list[str] | None = None
+                        target_test_conds: list[str] | None = None
+
+                        if candidate_mode_req == "norman_train_single_only":
+                            if name != "norman" or subgroup_df is None:
+                                print(
+                                    "[eval] warning: eval_genept_train_candidate_mode=norman_train_single_only "
+                                    f"not applicable for dataset={name}; fallback to all_train_pert"
+                                )
+                                candidate_mode_eff = "all_train_pert"
+                            else:
+                                train_pert_conds = {
+                                    str(c) for c in split_train_cond.tolist() if str(c) != data.ctrl_label
+                                }
+                                single_train_conds = {
+                                    str(idx)
+                                    for idx in subgroup_df.index[
+                                        (subgroup_df["group"].astype(str) == "train")
+                                        & (subgroup_df["subgroup"].astype(str) == "single")
+                                    ].tolist()
+                                }
+                                filtered = sorted(single_train_conds & train_pert_conds)
+                                if len(filtered) == 0:
+                                    print(
+                                        "[eval] warning: single candidate set is empty; "
+                                        "fallback to all_train_pert"
+                                    )
+                                    candidate_mode_eff = "all_train_pert"
+                                else:
+                                    candidate_conds = filtered
+
+                        elif candidate_mode_req == "norman_single_nearest_else_random":
+                            if name != "norman" or subgroup_df is None:
+                                print(
+                                    "[eval] warning: eval_genept_train_candidate_mode=norman_single_nearest_else_random "
+                                    f"not applicable for dataset={name}; fallback to all_train_pert"
+                                )
+                                candidate_mode_eff = "all_train_pert"
+                            else:
+                                single_test_conds = {
+                                    str(idx)
+                                    for idx in subgroup_df.index[
+                                        (subgroup_df["group"].astype(str) == "test")
+                                        & (subgroup_df["subgroup"].astype(str) == "single")
+                                    ].tolist()
+                                }
+                                target_test_conds = [c for c in split_test_conds if c in single_test_conds]
+                                print(
+                                    "[eval] target_test_conds source=norman_test_single "
+                                    f"(count={len(target_test_conds)})"
+                                )
+
+                        combo_key = (str(compare_mode_eff), str(candidate_mode_eff))
+                        if combo_key in nearest_combo_seen:
+                            print(
+                                f"[eval] skip duplicate nearest combo compare={compare_mode_eff} "
+                                f"candidate={candidate_mode_eff}"
+                            )
+                            continue
+                        nearest_combo_seen.add(combo_key)
+
+                        if candidate_conds is None:
+                            print(f"[eval] train candidate source={candidate_mode_eff}")
+                        else:
+                            print(
+                                f"[eval] train candidate source={candidate_mode_eff} "
+                                f"(count={len(candidate_conds)})"
+                            )
+
+                        for dist_tag in eval_distances:
+                            eval_strategy = model.build_eval_ctrl_strategy(
+                                split_dict=split_dict,
+                                emb_table=emb_table,
+                                topk_map=eval_topk_map,
+                                distance_metric=dist_tag,
+                                sample_size=n_eval_ensemble,
+                                compare_mode=compare_mode_eff,
+                                train_candidate_conds=candidate_conds,
+                                target_test_conds=target_test_conds,
+                            )
+                            metrics_df = model.evaluate(
+                                split_dict=split_dict,
+                                emb_table=emb_table,
+                                split_id=split_id,
+                                n_ensemble=n_eval_ensemble,
+                                base_seed=base_seed,
+                                eval_ctrl_strategy=eval_strategy,
+                            )
+                            metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
+
+                            # Keep old tag naming for legacy combos; add explicit tags for compare_mode=all.
+                            if eval_genept_compare_mode == "all":
+                                if eval_genept_distance == "both":
+                                    metrics_tag = f"nearest_{candidate_mode_eff}_{dist_tag}"
+                                    pkl_tag = f"nearest_{candidate_mode_eff}_{dist_tag}"
+                                else:
+                                    metrics_tag = f"nearest_{candidate_mode_eff}"
+                                    pkl_tag = f"nearest_{candidate_mode_eff}"
+                            else:
+                                if eval_ctrl_pool_mode == "all":
+                                    if eval_genept_distance == "both":
+                                        metrics_tag = f"nearest_{dist_tag}"
+                                        pkl_tag = f"nearest_{dist_tag}"
+                                    else:
+                                        metrics_tag = "nearest"
+                                        pkl_tag = "nearest"
+                                else:
+                                    if eval_genept_distance == "both":
+                                        metrics_tag = dist_tag
+                                        pkl_tag = dist_tag
+                                    else:
+                                        metrics_tag = "main"
+                                        pkl_tag = ""
+
+                            metrics_all_by_tag.setdefault(metrics_tag, []).append(metrics_df)
+
+                            if eval_ctrl_pool_mode == "all" or eval_genept_compare_mode == "all":
+                                pkl_name = (
+                                    f"trishift_{name}_{split_id}_{pkl_tag}.pkl"
+                                    if pkl_tag
+                                    else f"trishift_{name}_{split_id}.pkl"
+                                )
+                                out_pkl = out_dir_path / pkl_name
+                            elif eval_genept_distance == "both":
+                                out_pkl = out_dir_path / f"trishift_{name}_{split_id}_{dist_tag}.pkl"
+                            else:
+                                out_pkl = out_dir_path / f"trishift_{name}_{split_id}.pkl"
+
+                            preds = model.export_predictions(
+                                split_dict=split_dict,
+                                emb_table=emb_table,
+                                split_id=split_id,
+                                n_ensemble=n_eval_ensemble,
+                                base_seed=base_seed,
+                                out_path=str(out_pkl),
+                                eval_ctrl_strategy=eval_strategy,
+                            )
+
+                            # Alias policy for nearest-only mode:
+                            # - legacy: both -> cosine alias
+                            # - compare_mode=all: alias all_train_pert (+cosine when both)
+                            if eval_ctrl_pool_mode != "all":
+                                if eval_genept_compare_mode == "all":
+                                    if candidate_mode_eff == "all_train_pert":
+                                        if eval_genept_distance != "both" or dist_tag == "cosine":
+                                            nearest_alias_preds = preds
+                                elif eval_genept_distance == "both" and dist_tag == "cosine":
+                                    nearest_alias_preds = preds
+
+                if eval_ctrl_pool_mode != "all" and nearest_alias_preds is not None:
+                    with open(out_dir_path / f"trishift_{name}_{split_id}.pkl", "wb") as f:
+                        pickle.dump(nearest_alias_preds, f)
+            else:
                 metrics_df = model.evaluate(
                     split_dict=split_dict,
                     emb_table=emb_table,
                     split_id=split_id,
                     n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
-                    eval_ctrl_strategy=eval_strategy,
                 )
                 metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
-                metrics_all_by_tag.setdefault(dist_tag, []).append(metrics_df)
-
-                if eval_genept_distance == "both":
-                    out_pkl = out_dir_path / f"trishift_{name}_{split_id}_{dist_tag}.pkl"
-                else:
-                    out_pkl = out_dir_path / f"trishift_{name}_{split_id}.pkl"
+                out_default = out_dir_path / f"trishift_{name}_{split_id}.pkl"
                 preds = model.export_predictions(
                     split_dict=split_dict,
                     emb_table=emb_table,
                     split_id=split_id,
                     n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
-                    out_path=str(out_pkl),
-                    eval_ctrl_strategy=eval_strategy,
+                    out_path=str(out_default),
                 )
-                if eval_genept_distance == "both" and dist_tag == "cosine":
-                    with open(out_dir_path / f"trishift_{name}_{split_id}.pkl", "wb") as f:
+                if eval_ctrl_pool_mode == "all":
+                    with open(out_dir_path / f"trishift_{name}_{split_id}_random.pkl", "wb") as f:
                         pickle.dump(preds, f)
-        else:
-            metrics_df = model.evaluate(
-                split_dict=split_dict,
-                emb_table=emb_table,
-                split_id=split_id,
-                n_ensemble=n_eval_ensemble,
-                base_seed=base_seed,
-            )
-            metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
-            model.export_predictions(
-                split_dict=split_dict,
-                emb_table=emb_table,
-                split_id=split_id,
-                n_ensemble=n_eval_ensemble,
-                base_seed=base_seed,
-                out_path=str(out_dir_path / f"trishift_{name}_{split_id}.pkl"),
-            )
-            metrics_all_by_tag.setdefault("main", []).append(metrics_df)
+                    metrics_all_by_tag.setdefault("random", []).append(metrics_df)
+                else:
+                    metrics_all_by_tag.setdefault("main", []).append(metrics_df)
 
     if metrics_all_by_tag:
-        if eval_ctrl_pool_mode == "nearest_genept_ot_pool" and eval_genept_distance == "both":
-            cosine_df_all = None
-            for dist_tag in ("cosine", "l2"):
-                if dist_tag not in metrics_all_by_tag:
-                    continue
-                metrics_df_all = pd.concat(metrics_all_by_tag[dist_tag], ignore_index=True)
-                metrics_df_all.to_csv(out_dir_path / f"metrics_{dist_tag}.csv", index=False)
-                _write_mean_metrics(out_dir_path / f"mean_pearson_{dist_tag}.txt", metrics_df_all)
-                if dist_tag == "cosine":
-                    cosine_df_all = metrics_df_all
-            if cosine_df_all is not None:
-                cosine_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
-                _write_mean_metrics(out_dir_path / "mean_pearson.txt", cosine_df_all)
+        if eval_ctrl_pool_mode == "all":
+            for tag, frames in metrics_all_by_tag.items():
+                metrics_df_all = pd.concat(frames, ignore_index=True)
+                metrics_df_all.to_csv(out_dir_path / f"metrics_{tag}.csv", index=False)
+                _write_mean_metrics(out_dir_path / f"mean_pearson_{tag}.txt", metrics_df_all)
+            alias_tag = "random" if "random" in metrics_all_by_tag else next(iter(metrics_all_by_tag.keys()))
+            alias_df = pd.concat(metrics_all_by_tag[alias_tag], ignore_index=True)
+            alias_df.to_csv(out_dir_path / "metrics.csv", index=False)
+            _write_mean_metrics(out_dir_path / "mean_pearson.txt", alias_df)
+        elif eval_ctrl_pool_mode == "nearest_genept_ot_pool":
+            if eval_genept_compare_mode == "all":
+                for tag, frames in metrics_all_by_tag.items():
+                    metrics_df_all = pd.concat(frames, ignore_index=True)
+                    metrics_df_all.to_csv(out_dir_path / f"metrics_{tag}.csv", index=False)
+                    _write_mean_metrics(out_dir_path / f"mean_pearson_{tag}.txt", metrics_df_all)
+
+                if eval_genept_distance == "both":
+                    alias_tag = "nearest_all_train_pert_cosine"
+                else:
+                    alias_tag = "nearest_all_train_pert"
+                if alias_tag not in metrics_all_by_tag:
+                    fallbacks = [
+                        k0 for k0 in metrics_all_by_tag.keys() if k0.startswith("nearest_all_train_pert")
+                    ]
+                    alias_tag = fallbacks[0] if fallbacks else next(iter(metrics_all_by_tag.keys()))
+                alias_df = pd.concat(metrics_all_by_tag[alias_tag], ignore_index=True)
+                alias_df.to_csv(out_dir_path / "metrics.csv", index=False)
+                _write_mean_metrics(out_dir_path / "mean_pearson.txt", alias_df)
+            elif eval_genept_distance == "both":
+                cosine_df_all = None
+                for dist_tag in ("cosine", "l2"):
+                    if dist_tag not in metrics_all_by_tag:
+                        continue
+                    metrics_df_all = pd.concat(metrics_all_by_tag[dist_tag], ignore_index=True)
+                    metrics_df_all.to_csv(out_dir_path / f"metrics_{dist_tag}.csv", index=False)
+                    _write_mean_metrics(out_dir_path / f"mean_pearson_{dist_tag}.txt", metrics_df_all)
+                    if dist_tag == "cosine":
+                        cosine_df_all = metrics_df_all
+                if cosine_df_all is not None:
+                    cosine_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
+                    _write_mean_metrics(out_dir_path / "mean_pearson.txt", cosine_df_all)
+            else:
+                if "main" in metrics_all_by_tag:
+                    main_tag = "main"
+                else:
+                    main_tag = next(iter(metrics_all_by_tag.keys()))
+                metrics_df_all = pd.concat(metrics_all_by_tag[main_tag], ignore_index=True)
+                metrics_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
+                _write_mean_metrics(out_dir_path / "mean_pearson.txt", metrics_df_all)
         else:
             if "main" in metrics_all_by_tag:
                 main_tag = "main"
