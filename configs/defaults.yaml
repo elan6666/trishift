@@ -15,14 +15,14 @@ n_eval_ensemble: 300
 # - random_train_ctrl: 随机 train ctrl 池采样（采样数 n_eval_ensemble）
 # - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 n_eval_ensemble）
 # - all: 同时执行 random_train_ctrl + nearest_genept_ot_pool，并分别输出结果文件
-eval_ctrl_pool_mode: random_train_ctrl
+eval_ctrl_pool_mode: all
 # 最近 condition 距离：cosine | l2 | both（both 会输出两套结果）
 eval_genept_distance: both
 # nearest_genept_ot_pool 下的 GenePT 比较策略：
 # - aggregate_cond: 先按条件聚合后比较（当前默认行为）
 # - per_gene_nearest_cond: 每个基因 token 分别找最近 train condition，再拼接其 OT 池（不去重）
-# - all: 遍历全部 eval_genept_train_candidate_mode，并固定使用 per_gene_nearest_cond
-eval_genept_compare_mode: per_gene_nearest_cond
+# - all: 同时执行 aggregate_cond 和 per_gene_nearest_cond，并遍历全部 eval_genept_train_candidate_mode
+eval_genept_compare_mode: all
 # nearest_genept_ot_pool 下 train condition 候选集合模式：
 # - all_train_pert: 使用当前 split 的全部 train pert 条件（默认，现有行为）
 # - norman_train_single_only: 仅 Norman 当前 split 的 train+single 条件；其他数据集或空集合时回退 all_train_pert
@@ -137,15 +137,21 @@ model:
     shift_hidden:
     - 512
     - 2048
+    # 是否启用 Shift 头预测；false 时 joint/sequential 都改为无 shift 前向。
+    # 注意：false 时会自动强制 model.stage3.input_mode=full。
+    predict_shift: true
     # 是否预测显式 delta_z（false 则输出 shift 表征）。
     # 注意：false 时 latent supervision 会自动关闭。
+    # 注意：predict_shift=false 时该项不生效。
     predict_delta: false
     # predict_delta=false 时的 shift 表征维度（可选）；未设置时使用默认输出维度。
     # 注意：predict_delta=true 时不允许设置该项。
+    # 注意：predict_shift=false 时该项不生效。
     shift_repr_dim: 8
     # Shift 输入来源：latent_mu | state。
     # - latent_mu: 使用 z_ctrl_mu
     # - state: 使用 Stage3 compressor(x_ctrl)
+    # 注意：predict_shift=false 时该项不生效。
     shift_input_source: latent_mu
     # 多基因条件 embedding 聚合方式：sum | mean。
     # cond embedding 聚合方式: sum | mean

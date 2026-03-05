@@ -419,7 +419,7 @@ $$
 - `eval_genept_compare_mode`（仅在 `nearest_genept_ot_pool` 下生效）：
   - `aggregate_cond`：先把 condition 聚合成一个向量，再找最近 train condition（旧行为）。
   - `per_gene_nearest_cond`：对每个基因 token 分别找最近 train condition，再把这些 condition 的 OT 池直接拼接（不去重）。
-  - `all`：固定使用 `per_gene_nearest_cond`，并遍历全部候选模式（见下条）。
+  - `all`：同时执行 `aggregate_cond` 和 `per_gene_nearest_cond`，并遍历全部候选模式（见下条）。
 - `eval_genept_train_candidate_mode`（仅在 `nearest_genept_ot_pool` 下生效）：
   - `all_train_pert`：最近邻候选使用当前 split 的全部 train pert 条件（默认）。
   - `norman_train_single_only`：最近邻候选仅使用 Norman 当前 split 中 `group=train` 且 `subgroup=single` 的条件；
@@ -431,7 +431,18 @@ $$
     - 非 Norman 时回退 `all_train_pert`。
 - 输出命名补充：
   - `eval_ctrl_pool_mode=all` 时，主别名 `metrics.csv/mean_pearson.txt` 始终对应 random 分支；
-  - `eval_ctrl_pool_mode=nearest_genept_ot_pool` 且 `eval_genept_compare_mode=all` 时，会按 `candidate_mode(+distance)` 输出多套文件，主别名默认指向 `all_train_pert`（`both` 时指向 `all_train_pert+cosine`）。
+  - `eval_ctrl_pool_mode=nearest_genept_ot_pool` 且 `eval_genept_compare_mode=all` 时，会按 `compare_mode+candidate_mode(+distance)` 输出多套文件，主别名默认指向 `aggregate_cond + all_train_pert`（`both` 时指向 `aggregate_cond + all_train_pert + cosine`）。
+
+### 2.13 无 Shift 头训练模式（TriShift）
+
+- `model.stage2.predict_shift=true`：默认行为，joint/sequential 使用 shift 头路径。
+- `model.stage2.predict_shift=false`：禁用 shift 头前向，joint/sequential 统一走 `GeneratorNet.forward_no_delta(...)`。
+- 自动改写规则（不中断运行）：
+  - `model.stage3.input_mode` 自动改为 `full`；
+  - `model.stage2.predict_delta / shift_repr_dim / shift_input_source` 仅保留配置记录，但训练时忽略。
+- `train_mode=sequential` 且 `predict_shift=false` 时：
+  - Stage2 会被跳过；
+  - Stage3 正常训练（无 shift 路径）。
 
 ## 3. 聚合指标（多条件）
 

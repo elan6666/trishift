@@ -808,12 +808,15 @@ class TriShift:
         """Predict expression given control expression and condition vectors."""
         x_ctrl_t = torch.tensor(ctrl_expr, dtype=torch.float32, device=self.device)
         with torch.no_grad():
-            if self.hparams.get("stage3_only", False):
+            if self.hparams.get("stage3_only", False) or (not self._use_shift_head()):
                 x_pred = self.net.gen.forward_no_delta(x_ctrl_t, cond_vec).cpu().numpy()
             else:
                 out = self.net.forward_joint(x_ctrl_t, cond_vec)
                 x_pred = out["x_pred"].cpu().numpy()
         return x_pred
+
+    def _use_shift_head(self) -> bool:
+        return bool(self.hparams.get("predict_shift", True))
 
     @staticmethod
     def _need_topk_weights(mode: str, topk_strategy: str) -> bool:
@@ -1008,6 +1011,7 @@ class TriShift:
         gen_input_mode: str = "full",
         gen_use_batchnorm: bool = True,
         gen_use_layernorm: bool = False,
+        predict_shift: bool = True,
         shift_predict_delta: bool = True,
         shift_use_cross_attention: bool = False,
         shift_cross_attn_heads: int = 4,
@@ -1059,6 +1063,7 @@ class TriShift:
         ).to(self.device)
         self.hparams["cond_pool_mode"] = str(cond_pool_mode)
         self.hparams["cond_l2_norm"] = bool(cond_l2_norm)
+        self.hparams["predict_shift"] = bool(predict_shift)
         self.hparams["shift_predict_delta"] = bool(shift_predict_delta)
         self.hparams["shift_repr_dim"] = None if shift_repr_dim is None else int(shift_repr_dim)
         self.hparams["shift_transformer_readout"] = str(shift_transformer_readout)
@@ -1328,10 +1333,18 @@ class TriShift:
         print(
             f"[stage23] start joint training: mode={mode}, k={k}, split_id={split_id}, epochs={epochs}"
         )
-        disable_loss_z_supervision = self._derive_disable_loss_z_supervision(
-            disable_loss_z_supervision,
-            "[stage23] disable_loss_z_supervision=True -> optimize expression loss only",
-        )
+        use_shift_head = self._use_shift_head()
+        if use_shift_head:
+            disable_loss_z_supervision = self._derive_disable_loss_z_supervision(
+                disable_loss_z_supervision,
+                "[stage23] disable_loss_z_supervision=True -> optimize expression loss only",
+            )
+        else:
+            disable_loss_z_supervision = True
+            print(
+                "[stage23] predict_shift=false -> shift head disabled; "
+                "optimize generator expression loss only"
+            )
 
         base_seed = int(self.hparams.get("base_seed", 24))
         z_mu_all = self._require_cached_z_mu()
@@ -1437,10 +1450,17 @@ class TriShift:
         for p in self.net.vae.parameters():
             p.requires_grad = False
         self.net.vae.eval()
-        self.net.shift.train()
+        if use_shift_head:
+            self.net.shift.train()
+        else:
+            for p in self.net.shift.parameters():
+                p.requires_grad = False
+            self.net.shift.eval()
         self.net.gen.train()
 
-        params = list(self.net.shift.parameters()) + list(self.net.gen.parameters())
+        params = list(self.net.gen.parameters())
+        if use_shift_head:
+            params = list(self.net.shift.parameters()) + params
         optimizer = torch.optim.Adam(params, lr=lr)
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=sched_gamma)
         use_amp = amp and self.device.type == "cuda"
@@ -1453,7 +1473,7 @@ class TriShift:
             if not deg_idx_dict:
                 print("[degs] warning: deg_weight set but no degs found; using unweighted loss")
         latent_idx_dict = None
-        if not disable_loss_z_supervision and latent_loss_type == "gears":
+        if use_shift_head and (not disable_loss_z_supervision) and latent_loss_type == "gears":
             latent_dims = int(getattr(self.net.gen, "z_dim", z_ctrl_mu_all.shape[1]))
             latent_idx = list(range(latent_dims))
             cond_vals = pert_adata.obs[self.data.label_key].astype(str).values
@@ -1480,9 +1500,13 @@ class TriShift:
                 delta_target = delta_target.to(self.device, non_blocking=True)
                 cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
                 with torch.cuda.amp.autocast(enabled=use_amp):
-                    out = self.net.forward_joint(x_ctrl, cond_vec, z_ctrl_mu=z_ctrl_mu)
-                    x_pred = out["x_pred"]
-                    shift_pred = out["shift_repr"]
+                    if use_shift_head:
+                        out = self.net.forward_joint(x_ctrl, cond_vec, z_ctrl_mu=z_ctrl_mu)
+                        x_pred = out["x_pred"]
+                        shift_pred = out["shift_repr"]
+                    else:
+                        x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
+                        shift_pred = None
                     loss_expr = self._compute_expression_loss(
                         x_pred=x_pred,
                         x_true=x_true,
@@ -1499,6 +1523,8 @@ class TriShift:
                         loss_z = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
                         loss = loss_expr / grad_accum_steps
                     else:
+                        if shift_pred is None:
+                            raise RuntimeError("shift_pred is required when shift supervision is enabled")
                         loss_z = self._compute_latent_supervision_loss(
                             shift_pred=shift_pred,
                             delta_target=delta_target,
@@ -1532,9 +1558,13 @@ class TriShift:
                         z_ctrl_mu = z_ctrl_mu.to(self.device, non_blocking=True)
                         delta_target = delta_target.to(self.device, non_blocking=True)
                         cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
-                        out = self.net.forward_joint(x_ctrl, cond_vec, z_ctrl_mu=z_ctrl_mu)
-                        x_pred = out["x_pred"]
-                        shift_pred = out["shift_repr"]
+                        if use_shift_head:
+                            out = self.net.forward_joint(x_ctrl, cond_vec, z_ctrl_mu=z_ctrl_mu)
+                            x_pred = out["x_pred"]
+                            shift_pred = out["shift_repr"]
+                        else:
+                            x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
+                            shift_pred = None
                         loss_expr = self._compute_expression_loss(
                             x_pred=x_pred,
                             x_true=x_true,
@@ -1551,6 +1581,10 @@ class TriShift:
                         if disable_loss_z_supervision:
                             val_total += loss_expr.item()
                         else:
+                            if shift_pred is None:
+                                raise RuntimeError(
+                                    "shift_pred is required when shift supervision is enabled"
+                                )
                             loss_z = self._compute_latent_supervision_loss(
                                 shift_pred=shift_pred,
                                 delta_target=delta_target,
@@ -1576,17 +1610,19 @@ class TriShift:
             monitor = val_loss if val_loss is not None else avg_loss
             improved, should_stop = stopper.update(monitor)
             if improved:
-                best_state = {
-                    "shift": {k: v.detach().cpu() for k, v in self.net.shift.state_dict().items()},
-                    "gen": {k: v.detach().cpu() for k, v in self.net.gen.state_dict().items()},
-                }
+                best_state = {"gen": {k: v.detach().cpu() for k, v in self.net.gen.state_dict().items()}}
+                if use_shift_head:
+                    best_state["shift"] = {
+                        k: v.detach().cpu() for k, v in self.net.shift.state_dict().items()
+                    }
             if should_stop:
                 print(f"[stage23] early stop at epoch {epoch+1}")
                 break
 
         if best_state is not None:
-            self.net.shift.load_state_dict(best_state["shift"])
             self.net.gen.load_state_dict(best_state["gen"])
+            if use_shift_head and "shift" in best_state:
+                self.net.shift.load_state_dict(best_state["shift"])
         print("[stage23] done joint training")
         return {"epochs": logs}
 
@@ -1667,11 +1703,19 @@ class TriShift:
         print(
             f"[stage23] start sequential training: mode={mode}, k={k}, split_id={split_id}"
         )
-        disable_loss_z_supervision = self._derive_disable_loss_z_supervision(
-            disable_loss_z_supervision,
-            "[stage23] disable_loss_z_supervision=True -> skip supervised stage2; "
-            "stage3 trains shift+generator with expression loss only",
-        )
+        use_shift_head = self._use_shift_head()
+        if use_shift_head:
+            disable_loss_z_supervision = self._derive_disable_loss_z_supervision(
+                disable_loss_z_supervision,
+                "[stage23] disable_loss_z_supervision=True -> skip supervised stage2; "
+                "stage3 trains shift+generator with expression loss only",
+            )
+        else:
+            disable_loss_z_supervision = True
+            print(
+                "[stage23] predict_shift=false -> skip stage2 shift training; "
+                "stage3 trains generator with no-shift forward"
+            )
 
         base_seed = int(self.hparams.get("base_seed", 24))
         z_mu_all = self._require_cached_z_mu()
@@ -1794,7 +1838,16 @@ class TriShift:
                 print("[degs] warning: deg_weight set but no degs found; using unweighted loss")
 
         logs_stage2 = []
-        if disable_loss_z_supervision:
+        if not use_shift_head:
+            logs_stage2.append(
+                {
+                    "loss": np.nan,
+                    "val_loss": np.nan,
+                    "skipped": True,
+                    "stage2_skipped_predict_shift_false": True,
+                }
+            )
+        elif disable_loss_z_supervision:
             logs_stage2.append({"loss": np.nan, "val_loss": np.nan, "skipped": True})
         else:
             # Phase A: shift only
@@ -1881,15 +1934,15 @@ class TriShift:
         # Phase B: generator only
         print(f"[stage3] start generator training: epochs={epochs_stage3}")
         for p in self.net.shift.parameters():
-            p.requires_grad = bool(disable_loss_z_supervision)
+            p.requires_grad = bool(disable_loss_z_supervision) if use_shift_head else False
         for p in self.net.gen.parameters():
             p.requires_grad = True
-        if disable_loss_z_supervision:
+        if use_shift_head and disable_loss_z_supervision:
             self.net.shift.train()
         else:
             self.net.shift.eval()
         self.net.gen.train()
-        if disable_loss_z_supervision:
+        if use_shift_head and disable_loss_z_supervision:
             params_stage3 = list(self.net.shift.parameters()) + list(self.net.gen.parameters())
         else:
             params_stage3 = list(self.net.gen.parameters())
@@ -1909,12 +1962,15 @@ class TriShift:
                 z_ctrl_mu = z_ctrl_mu.to(self.device, non_blocking=True)
                 cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
                 with torch.cuda.amp.autocast(enabled=use_amp):
-                    shift_repr = self.net.predict_shift_repr(
-                        z_ctrl_mu,
-                        cond_vec,
-                        x_ctrl=x_ctrl,
-                    )
-                    x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
+                    if use_shift_head:
+                        shift_repr = self.net.predict_shift_repr(
+                            z_ctrl_mu,
+                            cond_vec,
+                            x_ctrl=x_ctrl,
+                        )
+                        x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
+                    else:
+                        x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
                     loss_expr = self._compute_expression_loss(
                         x_pred=x_pred,
                         x_true=x_true,
@@ -1945,12 +2001,15 @@ class TriShift:
                         x_true = x_true.to(self.device, non_blocking=True)
                         z_ctrl_mu = z_ctrl_mu.to(self.device, non_blocking=True)
                         cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
-                        shift_repr = self.net.predict_shift_repr(
-                            z_ctrl_mu,
-                            cond_vec,
-                            x_ctrl=x_ctrl,
-                        )
-                        x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
+                        if use_shift_head:
+                            shift_repr = self.net.predict_shift_repr(
+                                z_ctrl_mu,
+                                cond_vec,
+                                x_ctrl=x_ctrl,
+                            )
+                            x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
+                        else:
+                            x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
                         loss_expr = self._compute_expression_loss(
                             x_pred=x_pred,
                             x_true=x_true,
@@ -1966,7 +2025,7 @@ class TriShift:
                         val_total += loss_expr.item()
                 val_loss = val_total / max(len(val_loader), 1)
                 self.net.gen.train()
-                if disable_loss_z_supervision:
+                if use_shift_head and disable_loss_z_supervision:
                     self.net.shift.train()
             logs_stage3.append({"loss": avg_loss, "val_loss": val_loss})
             sched_gen.step()
@@ -1974,7 +2033,7 @@ class TriShift:
             improved, should_stop = stopper.update(monitor)
             if improved:
                 best_state = {"gen": {k: v.detach().cpu() for k, v in self.net.gen.state_dict().items()}}
-                if disable_loss_z_supervision:
+                if use_shift_head and disable_loss_z_supervision:
                     best_state["shift"] = {
                         k: v.detach().cpu() for k, v in self.net.shift.state_dict().items()
                     }
@@ -1984,7 +2043,7 @@ class TriShift:
 
         if best_state is not None:
             self.net.gen.load_state_dict(best_state["gen"])
-            if disable_loss_z_supervision and "shift" in best_state:
+            if use_shift_head and disable_loss_z_supervision and "shift" in best_state:
                 self.net.shift.load_state_dict(best_state["shift"])
 
         print("[stage23] done sequential training")

@@ -280,9 +280,8 @@ def _resolve_cond_dims_for_pool_mode(
 def _resolve_eval_compare_modes(eval_genept_compare_mode: str) -> list[str]:
     mode = str(eval_genept_compare_mode)
     if mode == "all":
-        # Locked decision: compare_mode=all only expands candidate modes;
-        # nearest algorithm is fixed to per_gene_nearest_cond.
-        return ["per_gene_nearest_cond"]
+        # compare_mode=all evaluates both compare algorithms.
+        return ["aggregate_cond", "per_gene_nearest_cond"]
     return [mode]
 
 
@@ -336,6 +335,7 @@ def _init_model(
     stage2_model_cfg: dict,
     model_cfg: dict,
     *,
+    predict_shift: bool = True,
     shift_input_source_override: str | None = None,
     gen_state_source: str = "compressor",
 ) -> TriShift:
@@ -374,6 +374,9 @@ def _init_model(
     shift_transformer_ff_mult = int(stage2_model_cfg.get("transformer_ff_mult", 4))
     shift_transformer_dropout = float(stage2_model_cfg.get("transformer_dropout", 0.0))
     shift_transformer_readout = str(stage2_model_cfg.get("transformer_readout", "first"))
+    if not bool(predict_shift):
+        shift_predict_delta = False
+        shift_repr_dim = None
     shift_input_source = (
         str(shift_input_source_override)
         if shift_input_source_override is not None
@@ -409,6 +412,7 @@ def _init_model(
         gen_input_mode=gen_input_mode,
         gen_use_batchnorm=gen_use_batch_norm,
         gen_use_layernorm=gen_use_layer_norm,
+        predict_shift=bool(predict_shift),
         shift_predict_delta=shift_predict_delta,
         shift_use_cross_attention=shift_use_cross_attention,
         shift_cross_attn_heads=shift_cross_attn_heads,
@@ -643,8 +647,8 @@ def run_dataset_with_paths(
 
     model_root = defaults.get("model", {})
     stage1_model_cfg = model_root.get("stage1", {})
-    stage2_model_cfg = model_root.get("stage2", {})
-    model_cfg = model_root.get("stage3", {})
+    stage2_model_cfg = dict(model_root.get("stage2", {}))
+    model_cfg = dict(model_root.get("stage3", {}))
 
     emb_table = torch.tensor(embd_df.values, dtype=torch.float32)
     mode = str(defaults.get("matching_mode", "knn"))
@@ -724,6 +728,44 @@ def run_dataset_with_paths(
     reuse_ot_cache = bool(ablation_cfg.get("reuse_ot_cache", False))
     reuse_z_mu_cache = bool(ablation_cfg.get("reuse_z_mu_cache", False))
     latent_loss_type = str(ablation_cfg.get("latent_loss_type", "gears"))
+    predict_shift_cfg = bool(stage2_model_cfg.get("predict_shift", True))
+    predict_shift_effective = bool(predict_shift_cfg)
+    predict_shift_auto_overrides: list[str] = []
+    if not predict_shift_effective:
+        input_mode_before = str(model_cfg.get("input_mode", "full"))
+        if input_mode_before != "full":
+            model_cfg["input_mode"] = "full"
+            msg = (
+                "predict_shift=false forces model.stage3.input_mode=full "
+                f"(was {input_mode_before})"
+            )
+            predict_shift_auto_overrides.append(msg)
+            print(f"[config] warning: {msg}")
+        if "predict_delta" in stage2_model_cfg:
+            msg = (
+                "model.stage2.predict_delta is ignored when "
+                "model.stage2.predict_shift=false"
+            )
+            predict_shift_auto_overrides.append(msg)
+            print(f"[config] warning: {msg}")
+        if stage2_model_cfg.get("shift_repr_dim", None) is not None:
+            msg = (
+                "model.stage2.shift_repr_dim is ignored when "
+                "model.stage2.predict_shift=false"
+            )
+            predict_shift_auto_overrides.append(msg)
+            print(f"[config] warning: {msg}")
+        if "shift_input_source" in stage2_model_cfg:
+            msg = (
+                "model.stage2.shift_input_source is ignored when "
+                "model.stage2.predict_shift=false"
+            )
+            predict_shift_auto_overrides.append(msg)
+            print(f"[config] warning: {msg}")
+        stage2_model_cfg["predict_delta"] = False
+        stage2_model_cfg["shift_repr_dim"] = None
+        stage2_model_cfg["shift_input_source"] = "latent_mu"
+
     shift_predict_delta_cfg = bool(stage2_model_cfg.get("predict_delta", True))
     legacy_disable_loss_z = bool(ablation_cfg.get("disable_loss_z_supervision", False))
     if legacy_disable_loss_z and shift_predict_delta_cfg:
@@ -735,7 +777,9 @@ def run_dataset_with_paths(
         stage2_model_cfg = dict(stage2_model_cfg)
         stage2_model_cfg["predict_delta"] = False
         shift_predict_delta_cfg = False
-    disable_loss_z_supervision = not shift_predict_delta_cfg
+    disable_loss_z_supervision = (not shift_predict_delta_cfg) or (not predict_shift_effective)
+    model_root["stage2"] = stage2_model_cfg
+    model_root["stage3"] = model_cfg
     cond_pool_mode_cfg = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
     if cond_pool_mode_cfg not in {"sum", "mean"}:
         raise ValueError(
@@ -757,6 +801,9 @@ def run_dataset_with_paths(
         if k > 1:
             msg += " [top-k extension of scPRAM OT]"
         print(msg)
+    print(f"[run] predict_shift={predict_shift_effective}")
+    if not predict_shift_effective:
+        print("[run] shift-disabled mode enabled: stage23 uses generator forward_no_delta")
     if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
         print(
             "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
@@ -766,8 +813,9 @@ def run_dataset_with_paths(
         )
         if eval_genept_compare_mode == "all":
             print(
-                "[run] eval_genept_compare_mode=all => compare algorithm fixed to "
-                "per_gene_nearest_cond, and candidate mode will expand to all configured modes"
+                "[run] eval_genept_compare_mode=all => compare algorithms "
+                "aggregate_cond + per_gene_nearest_cond, and candidate mode will expand "
+                "to all configured modes"
             )
     elif eval_ctrl_pool_mode == "all":
         print(
@@ -809,6 +857,9 @@ def run_dataset_with_paths(
             "train_mode": str(train_mode),
             "matching_mode": str(mode),
             "k_topk": int(k),
+            "predict_shift": bool(predict_shift_cfg),
+            "predict_shift_effective": bool(predict_shift_effective),
+            "predict_shift_auto_overrides": list(predict_shift_auto_overrides),
             "n_eval_ensemble": int(n_eval_ensemble),
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
             "eval_ctrl_modes_executed": (
@@ -908,6 +959,7 @@ def run_dataset_with_paths(
             stage1_model_cfg,
             stage2_model_cfg,
             model_cfg,
+            predict_shift=predict_shift_effective,
             shift_input_source_override=shift_input_source_eff,
             gen_state_source=gen_state_source,
         )
@@ -1213,11 +1265,15 @@ def run_dataset_with_paths(
                             # Keep old tag naming for legacy combos; add explicit tags for compare_mode=all.
                             if eval_genept_compare_mode == "all":
                                 if eval_genept_distance == "both":
-                                    metrics_tag = f"nearest_{candidate_mode_eff}_{dist_tag}"
-                                    pkl_tag = f"nearest_{candidate_mode_eff}_{dist_tag}"
+                                    metrics_tag = (
+                                        f"nearest_{compare_mode_eff}_{candidate_mode_eff}_{dist_tag}"
+                                    )
+                                    pkl_tag = (
+                                        f"nearest_{compare_mode_eff}_{candidate_mode_eff}_{dist_tag}"
+                                    )
                                 else:
-                                    metrics_tag = f"nearest_{candidate_mode_eff}"
-                                    pkl_tag = f"nearest_{candidate_mode_eff}"
+                                    metrics_tag = f"nearest_{compare_mode_eff}_{candidate_mode_eff}"
+                                    pkl_tag = f"nearest_{compare_mode_eff}_{candidate_mode_eff}"
                             else:
                                 if eval_ctrl_pool_mode == "all":
                                     if eval_genept_distance == "both":
@@ -1263,7 +1319,10 @@ def run_dataset_with_paths(
                             # - compare_mode=all: alias all_train_pert (+cosine when both)
                             if eval_ctrl_pool_mode != "all":
                                 if eval_genept_compare_mode == "all":
-                                    if candidate_mode_eff == "all_train_pert":
+                                    if (
+                                        compare_mode_eff == "aggregate_cond"
+                                        and candidate_mode_eff == "all_train_pert"
+                                    ):
                                         if eval_genept_distance != "both" or dist_tag == "cosine":
                                             nearest_alias_preds = preds
                                 elif eval_genept_distance == "both" and dist_tag == "cosine":
@@ -1315,12 +1374,14 @@ def run_dataset_with_paths(
                     _write_mean_metrics(out_dir_path / f"mean_pearson_{tag}.txt", metrics_df_all)
 
                 if eval_genept_distance == "both":
-                    alias_tag = "nearest_all_train_pert_cosine"
+                    alias_tag = "nearest_aggregate_cond_all_train_pert_cosine"
                 else:
-                    alias_tag = "nearest_all_train_pert"
+                    alias_tag = "nearest_aggregate_cond_all_train_pert"
                 if alias_tag not in metrics_all_by_tag:
                     fallbacks = [
-                        k0 for k0 in metrics_all_by_tag.keys() if k0.startswith("nearest_all_train_pert")
+                        k0
+                        for k0 in metrics_all_by_tag.keys()
+                        if k0.startswith("nearest_aggregate_cond_all_train_pert")
                     ]
                     alias_tag = fallbacks[0] if fallbacks else next(iter(metrics_all_by_tag.keys()))
                 alias_df = pd.concat(metrics_all_by_tag[alias_tag], ignore_index=True)
