@@ -1,6 +1,20 @@
-﻿dataset: adamson
+dataset: adamson
 base:
   defaults: configs/defaults.yaml
   paths: configs/paths.yaml
-defaults_overrides: {}
+defaults_overrides:
+  k_topk: 300
+  train:
+    stage23:
+      lr: 0.0001
+      sched_gamma: 1
+  loss:
+    lambda_dir: 0.01
+    lambda_dir_expr: 0.01
+  ablation:
+    per_condition_ot: false
+  model:
+    stage2:
+      cross_attn_heads: 1
+      shift_repr_dim: null
 paths_overrides: {}
