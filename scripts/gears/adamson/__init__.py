@@ -1,0 +1,1 @@
+"""GEARS Adamson entrypoint package."""

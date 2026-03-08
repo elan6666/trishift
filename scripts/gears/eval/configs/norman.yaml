@@ -1,0 +1,4 @@
+dataset: norman
+task_args:
+  seed: 24
+  export_notebook_pkl: false
