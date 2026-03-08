@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import argparse
+import importlib
 import pickle
 import random
 import sys
@@ -14,15 +15,13 @@ import anndata as ad
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error as mse
 
-# Ensure local src and scouter package are importable
+# Ensure local src is importable.
 ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = ROOT / "src"
-SCOUTER_ROOT = ROOT / "external" / "scouter" / "scouter-master" / "scouter-master"
-SCOUTER_MISC = ROOT / "external" / "scouter" / "scouter_misc-main" / "scouter_misc-main"
+LOCAL_DATA_ROOT = ROOT / "src" / "data"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC_ROOT))
-sys.path.insert(0, str(SCOUTER_ROOT))
 
 from trishift import _utils
 from trishift._external_metrics import (
@@ -37,7 +36,6 @@ from scripts.common.split_utils import (
     split_list_by_ratio as _shared_split_list_by_ratio,
 )
 from scripts.common.yaml_utils import load_yaml_file
-from scouter import Scouter, ScouterData
 
 
 @dataclass(frozen=True)
@@ -211,6 +209,19 @@ def subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
     return _shared_norman_subgroup(pert_list=pert_list, seed=seed)
 
 
+def _require_scouter_classes():
+    try:
+        scouter_mod = importlib.import_module("scouter")
+        Scouter = getattr(scouter_mod, "Scouter")
+        ScouterData = getattr(scouter_mod, "ScouterData")
+    except ImportError as exc:
+        raise ImportError(
+            "Scouter is not installed or not importable. Install the external `scouter` package "
+            "in the current Python environment so `import scouter` works."
+        ) from exc
+    return Scouter, ScouterData
+
+
 DATASET_CONFIG = {
     "adamson": ScouterDatasetConfig(
         data_rel="data/Data_GEARS/adamson/perturb_processed.h5ad",
@@ -298,8 +309,8 @@ DATASET_CONFIG = {
 
 
 def _resolve_data_and_emb_paths(name: str, cfg: ScouterDatasetConfig) -> tuple[Path, Path]:
-    data_path_primary = SCOUTER_MISC / cfg.data_rel
-    emb_path_primary = SCOUTER_MISC / cfg.emb_rel
+    data_path_primary = LOCAL_DATA_ROOT / name / "perturb_processed.h5ad"
+    emb_path_primary = LOCAL_DATA_ROOT / "Data_GeneEmbd" / Path(cfg.emb_rel).name
     if data_path_primary.exists() and emb_path_primary.exists():
         return data_path_primary, emb_path_primary
 
@@ -320,7 +331,8 @@ def _resolve_data_and_emb_paths(name: str, cfg: ScouterDatasetConfig) -> tuple[P
     raise FileNotFoundError(
         "Missing dataset/embedding files. "
         f"Tried primary data={data_path_primary} emb={emb_path_primary}; "
-        f"fallback via {paths_cfg_path} with emb_key={cfg.emb_key}."
+        f"fallback via {paths_cfg_path} with emb_key={cfg.emb_key}. "
+        "Provide files under src/data or configs/paths.yaml."
     )
 
 
@@ -462,6 +474,7 @@ def run_scouter_eval(
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     cfg = DATASET_CONFIG[name]
+    Scouter, ScouterData = _require_scouter_classes()
 
     data_path, emb_path = _resolve_data_and_emb_paths(name, cfg)
 

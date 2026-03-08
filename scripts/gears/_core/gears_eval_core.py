@@ -18,7 +18,6 @@ from sklearn.metrics import mean_squared_error as mse
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = ROOT / "src"
-SCOUTER_MISC = ROOT / "external" / "scouter" / "scouter_misc-main" / "scouter_misc-main"
 LOCAL_DATA_ROOT = ROOT / "src" / "data"
 LOCAL_GEARS_DATA_ROOT = LOCAL_DATA_ROOT / "Data_GEARS"
 
@@ -256,10 +255,6 @@ def _resolve_eval_data_path(name: str, cfg: GearsDatasetConfig) -> Path:
     if data_path_primary.exists():
         return data_path_primary
 
-    data_path_legacy = SCOUTER_MISC / cfg.eval_data_rel
-    if data_path_legacy.exists():
-        return data_path_legacy
-
     paths_cfg_path = ROOT / "configs" / "paths.yaml"
     if paths_cfg_path.exists():
         paths_cfg = _utils.load_yaml(str(paths_cfg_path))
@@ -270,7 +265,8 @@ def _resolve_eval_data_path(name: str, cfg: GearsDatasetConfig) -> Path:
 
     raise FileNotFoundError(
         "Missing evaluation h5ad for GEARS. "
-        f"Tried primary data={data_path_primary}; fallback via {paths_cfg_path}."
+        f"Tried primary data={data_path_primary}; fallback via {paths_cfg_path}. "
+        "Provide files under src/data/Data_GEARS or configs/paths.yaml."
     )
 
 
@@ -280,7 +276,6 @@ def _resolve_gears_data_root(name: str) -> Path:
     if env_root:
         candidates.append(Path(env_root))
     candidates.append(LOCAL_GEARS_DATA_ROOT)
-    candidates.append(SCOUTER_MISC / "data" / "Data_GEARS")
 
     for root in candidates:
         if (root / name).exists():
@@ -485,7 +480,7 @@ def run_gears_eval(
         eval_adata = _prepare_eval_adata(eval_data_path)
         subgroup_df = None
         if cfg.norman_split:
-            subgroup_df = subgroup(list(eval_adata.obs["condition"].cat.categories), seed=int(split))
+            subgroup_df = subgroup(list(eval_adata.obs["condition"].astype(str).unique()), seed=int(split))
 
         pert_data = PertData(str(gears_data_root))
         pert_data.load(data_name=cfg.gears_data_name)

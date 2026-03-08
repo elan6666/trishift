@@ -282,7 +282,7 @@ def _mean_vector_from_adata(adata) -> np.ndarray:
 
 
 def _systema_nonctl_mean_mu(train_adata) -> np.ndarray:
-    # Strictly match external/systema-main/src/run_nonctl-mean.py:
+    # Preserve the original Systema nonctl-mean semantics:
     # pert_adata = train_adata[control==0]; pert_mean = pert_adata.X.mean(axis=0)
     if "control" in train_adata.obs.columns:
         control = train_adata.obs["control"].to_numpy()
@@ -310,7 +310,7 @@ def _systema_matching_mean_mu(
     mu_pert: np.ndarray,
     centroid_cache: dict[str, np.ndarray],
 ) -> np.ndarray:
-    # Match external/systema-main/src/run_matching-mean.py semantics, adapted to
+    # Preserve the original Systema matching-mean semantics, adapted to
     # TriShift-normalized conditions: ignore 'ctrl' tokens when building gene list.
     tokens = [t for t in str(condition).split("+") if t and t != "ctrl"]
     if len(tokens) == 0:
