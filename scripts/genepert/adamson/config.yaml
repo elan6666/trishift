@@ -1,0 +1,5 @@
+dataset: adamson
+task_args:
+  seed: 24
+  export_notebook_pkl: false
+  alpha_grid: [0.1, 1.0, 10.0]
