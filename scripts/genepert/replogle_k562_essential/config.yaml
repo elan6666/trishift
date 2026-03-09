@@ -1,5 +1,5 @@
 dataset: replogle_k562_essential
 task_args:
   seed: 24
-  export_notebook_pkl: false
+  export_notebook_pkl: true
   alpha_grid: [0.1, 1.0, 10.0]
