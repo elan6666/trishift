@@ -304,39 +304,85 @@ def _coerce_prediction_matrix(pred) -> np.ndarray:
     raise ValueError(f"Unexpected GEARS prediction shape: {arr.shape}")
 
 
-def _build_test_queries(gears_model, dataset_name: str) -> list[tuple[str, list[str]]]:
-    queries: list[tuple[str, list[str]]] = []
-    seen: set[str] = set()
-    if dataset_name == "adamson":
-        for gene in getattr(gears_model, "set2conditions", {}).get("test", []):
-            cond = condition_sort(f"{gene}+ctrl")
-            if cond in seen:
-                continue
-            seen.add(cond)
-            queries.append((cond, [str(gene)]))
-        return queries
-
-    test_subgroup = getattr(gears_model, "subgroup", {}).get("test_subgroup", {})
-    for subgroup_name, pertbs in test_subgroup.items():
-        for pertb in pertbs:
-            cond = condition_sort(str(pertb))
-            if cond in seen:
-                continue
-            seen.add(cond)
-            if subgroup_name == "unseen_single":
-                genes = [sorted(str(pertb).split("+"))[0]]
-            else:
-                genes = [str(x) for x in str(pertb).split("+")]
-            queries.append((cond, genes))
-    return queries
-
-
 def _predict_single_condition(gears_model, genes: list[str]) -> np.ndarray:
     pred_dict = gears_model.predict([genes])
     if not isinstance(pred_dict, dict) or len(pred_dict) == 0:
         raise ValueError(f"Unexpected GEARS predict output for genes={genes!r}: {type(pred_dict)}")
     pred = list(pred_dict.values())[0]
     return _coerce_prediction_matrix(pred)
+
+
+def _dataset_topgene_prefix(dataset_name: str) -> str:
+    if dataset_name == "adamson":
+        return "K562(?)_"
+    if dataset_name == "norman":
+        return "A549_"
+    if dataset_name in {"dixit", "replogle_k562_essential"}:
+        return "K562_"
+    if dataset_name == "replogle_rpe1_essential":
+        return "rpe1_"
+    raise ValueError(f"Unsupported GEARS dataset for topgene prefix: {dataset_name}")
+
+
+def _build_adamson_prediction_bundle(gears_model) -> list[dict]:
+    raw_test_conds = getattr(gears_model, "set2conditions", {}).get("test", [])
+    bundle = []
+    seen: set[str] = set()
+    for raw_cond in raw_test_conds:
+        condition = condition_sort(str(raw_cond))
+        if condition in seen:
+            continue
+        seen.add(condition)
+        genes = [token for token in condition.split("+") if token != "ctrl"]
+        if not genes:
+            continue
+        pred = _predict_single_condition(gears_model, genes)
+        bundle.append(
+            {
+                "condition": condition,
+                "genes": genes,
+                "pred": pred,
+                "source_group": "test",
+                "topgene_key": f"{_dataset_topgene_prefix('adamson')}{condition}_1+1",
+            }
+        )
+    return bundle
+
+
+def _build_subgroup_prediction_bundle(gears_model) -> list[dict]:
+    test_subgroup = getattr(gears_model, "subgroup", {}).get("test_subgroup", {})
+    bundle = []
+    seen: set[str] = set()
+    for subgroup_name, pertbs in test_subgroup.items():
+        for pertb in pertbs:
+            condition = condition_sort(str(pertb))
+            if condition in seen:
+                continue
+            seen.add(condition)
+            if subgroup_name == "unseen_single":
+                genes = [sorted(str(pertb).split("+"))[0]]
+            else:
+                genes = [str(x) for x in str(pertb).split("+")]
+            pred = _predict_single_condition(gears_model, genes)
+            bundle.append(
+                {
+                    "condition": condition,
+                    "genes": genes,
+                    "pred": pred,
+                    "source_group": str(subgroup_name),
+                }
+            )
+    return bundle
+
+
+def _build_prediction_bundle(gears_model, dataset_name: str) -> list[dict]:
+    if dataset_name == "adamson":
+        return _build_adamson_prediction_bundle(gears_model)
+    bundle = _build_subgroup_prediction_bundle(gears_model)
+    prefix = _dataset_topgene_prefix(dataset_name)
+    for item in bundle:
+        item["topgene_key"] = f"{prefix}{item['condition']}_1+1"
+    return bundle
 
 
 def _infer_reference_adata(eval_adata: ad.AnnData, gears_model) -> ad.AnnData:
@@ -377,23 +423,41 @@ def _compute_metrics_and_export_payload(
         gene_names = eval_adata.var_names.astype(str).values
 
     ctrl = _utils.densify_X(eval_adata[eval_adata.obs["condition"] == "ctrl"].X)
-    queries = _build_test_queries(gears_model, dataset_name)
-    top20_map = eval_adata.uns.get("top20_degs_non_dropout", {})
-    if not isinstance(top20_map, dict):
-        raise TypeError("Expected eval_adata.uns['top20_degs_non_dropout'] to be a mapping")
+    prediction_bundle = _build_prediction_bundle(gears_model, dataset_name)
+    model_adata = gears_model.adata
+    topgene_dict = model_adata.uns.get("top_non_dropout_de_20", {})
+    if not isinstance(topgene_dict, dict):
+        raise TypeError("Expected gears_model.adata.uns['top_non_dropout_de_20'] to be a mapping")
+    node_map = getattr(gears_model, "node_map", {})
+    if not isinstance(node_map, dict):
+        raise TypeError("Expected gears_model.node_map to be a mapping")
+    model_gene_raw2id = dict(zip(model_adata.var.index.values, model_adata.var.gene_name.values))
+    eval_gene_name_to_idx = {str(g): i for i, g in enumerate(gene_names)}
 
-    for cond, genes in queries:
+    for item in prediction_bundle:
+        cond = str(item["condition"])
+        genes = [str(g) for g in item["genes"]]
         if cond == "ctrl":
             continue
-        if cond not in top20_map:
-            print(f"[gears] skip condition without top20_degs_non_dropout entry: {cond}")
+        topgene_key = str(item["topgene_key"])
+        if topgene_key not in topgene_dict:
+            print(f"[gears] skip condition without top_non_dropout_de_20 entry: {cond}")
             continue
         cond_mask = eval_conds == cond
         if not bool(cond_mask.any()):
             print(f"[gears] skip condition missing in eval adata: {cond}")
             continue
         true = _utils.densify_X(eval_adata[cond_mask].X)
-        degs = np.asarray(top20_map[cond], dtype=int).reshape(-1)
+        deg_gene_names = []
+        for raw_gene in topgene_dict[topgene_key]:
+            mapped_name = model_gene_raw2id.get(raw_gene)
+            if mapped_name is None:
+                continue
+            deg_gene_names.append(str(mapped_name))
+        degs = np.asarray(
+            [eval_gene_name_to_idx[g] for g in deg_gene_names if g in eval_gene_name_to_idx],
+            dtype=int,
+        ).reshape(-1)
         if degs.size == 0:
             print(f"[gears] skip condition without DEGs: {cond}")
             continue
@@ -404,7 +468,7 @@ def _compute_metrics_and_export_payload(
             print(f"[gears] skip condition after removing perturbed genes from DEGs: {cond}")
             continue
 
-        pred = _predict_single_condition(gears_model, genes)
+        pred = _coerce_prediction_matrix(item["pred"])
         pred_vec = pred[:, degs].mean(axis=0)
         ctrl_vec = ctrl[:, degs].mean(axis=0)
         true_vec = true[:, degs].mean(axis=0)

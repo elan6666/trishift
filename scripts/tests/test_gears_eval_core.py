@@ -29,23 +29,21 @@ def _make_eval_adata(conditions: list[str]) -> ad.AnnData:
     obs = pd.DataFrame({"condition": obs_cond})
     var = pd.DataFrame({"gene_name": ["A", "B", "G1", "G2", "G3", "G4"]})
     adata = ad.AnnData(X=X, obs=obs, var=var)
-    top20 = np.asarray([0, 1, 2, 3, 4], dtype=int)
-    adata.uns["top20_degs_non_dropout"] = {
-        cond: top20.copy() for cond in conditions if cond != "ctrl"
-    }
     return adata
 
 
 def test_build_test_queries_norman_and_adamson():
     class FakeModel:
         subgroup = {"test_subgroup": {"unseen_single": ["A+ctrl"], "seen0": ["A+B"]}}
-        set2conditions = {"test": ["A", "B"]}
+        set2conditions = {"test": ["A+ctrl", "B+ctrl"]}
+        def predict(self, genes_batch):
+            return {"dummy": [0.1, 0.2, 0.3]}
 
-    norman_queries = core._build_test_queries(FakeModel(), "norman")
-    assert norman_queries == [("A+ctrl", ["A"]), ("A+B", ["A", "B"])]
+    norman_bundle = core._build_prediction_bundle(FakeModel(), "norman")
+    assert [(x["condition"], x["genes"]) for x in norman_bundle] == [("A+ctrl", ["A"]), ("A+B", ["A", "B"])]
 
-    adamson_queries = core._build_test_queries(FakeModel(), "adamson")
-    assert adamson_queries == [("A+ctrl", ["A"]), ("B+ctrl", ["B"])]
+    adamson_bundle = core._build_prediction_bundle(FakeModel(), "adamson")
+    assert [(x["condition"], x["genes"]) for x in adamson_bundle] == [("A+ctrl", ["A"]), ("B+ctrl", ["B"])]
 
 
 def test_run_gears_eval_norman_and_adamson_with_fake_backend(tmp_path, monkeypatch):
@@ -78,17 +76,27 @@ def test_run_gears_eval_norman_and_adamson_with_fake_backend(tmp_path, monkeypat
 
     class FakeGEARS:
         def __init__(self, pert_data, **kwargs):
-            self.pert_data = pert_data
             self.kwargs = kwargs
             self.node_map = {"A": 0, "B": 1, "G1": 2, "G2": 3, "G3": 4, "G4": 5}
             if pert_data.loaded == "norman":
                 self.adata = norman_adata.copy()
+                self.adata.uns["top_non_dropout_de_20"] = {
+                    "A549_A+ctrl_1+1": np.array(["raw_A", "raw_G1", "raw_G2"], dtype=object),
+                    "A549_A+B_1+1": np.array(["raw_A", "raw_B", "raw_G1", "raw_G2"], dtype=object),
+                }
+                self.adata.var.index = np.array(["raw_A", "raw_B", "raw_G1", "raw_G2", "raw_G3", "raw_G4"], dtype=object)
                 self.subgroup = {"test_subgroup": {"unseen_single": ["A+ctrl"], "seen0": ["A+B"]}}
                 self.set2conditions = {"train": ["A+ctrl"]}
             else:
                 self.adata = adamson_adata.copy()
+                self.adata.uns["top_non_dropout_de_20"] = {
+                    "K562(?)_A+ctrl_1+1": np.array(["raw_A", "raw_G1", "raw_G2"], dtype=object),
+                    "K562(?)_B+ctrl_1+1": np.array(["raw_B", "raw_G1", "raw_G2"], dtype=object),
+                }
+                self.adata.var.index = np.array(["raw_A", "raw_B", "raw_G1", "raw_G2", "raw_G3", "raw_G4"], dtype=object)
                 self.subgroup = {"test_subgroup": {}}
-                self.set2conditions = {"test": ["A", "B"], "train": ["A"]}
+                self.set2conditions = {"test": ["A+ctrl", "B+ctrl"], "train": ["A+ctrl"]}
+            self.adata.var["gene_name"] = ["A", "B", "G1", "G2", "G3", "G4"]
 
         def model_initialize(self, hidden_size: int):
             self.hidden_size = hidden_size

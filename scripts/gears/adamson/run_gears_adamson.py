@@ -1,6 +1,5 @@
 from pathlib import Path
 import argparse
-from dataclasses import replace
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -32,16 +31,11 @@ def main() -> None:
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
-    old_cfg = gears_core.DATASET_CONFIG["adamson"]
-    gears_core.DATASET_CONFIG["adamson"] = replace(old_cfg, epochs=1)
-    try:
-        gears_core.run_gears_eval(
-            "adamson",
-            base_seed=seed,
-            export_notebook_pkl=export_notebook_pkl,
-        )
-    finally:
-        gears_core.DATASET_CONFIG["adamson"] = old_cfg
+    gears_core.run_gears_eval(
+        "adamson",
+        base_seed=seed,
+        export_notebook_pkl=export_notebook_pkl,
+    )
 
 
 if __name__ == "__main__":
