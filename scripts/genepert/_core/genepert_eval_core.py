@@ -528,8 +528,12 @@ def _compute_metrics_and_export_payload(
             "Pred": pred[:, degs] if degs.size > 0 else pred[:, :0],
             "Ctrl": ctrl[:, degs] if degs.size > 0 else ctrl[:, :0],
             "Truth": true[:, degs] if degs.size > 0 else true[:, :0],
+            "Pred_full": pred,
+            "Ctrl_full": ctrl,
+            "Truth_full": true,
             "DE_idx": degs,
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
+            "gene_name_full": gene_names,
         }
 
     return pd.DataFrame(results), export_payload

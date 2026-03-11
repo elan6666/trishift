@@ -2608,8 +2608,12 @@ class TriShift:
                 "Pred": x_pred[:, deg_idx] if deg_idx.size > 0 else x_pred[:, :0],
                 "Ctrl": ctrl_expr[:, deg_idx] if deg_idx.size > 0 else ctrl_expr[:, :0],
                 "Truth": true_expr[:, deg_idx] if deg_idx.size > 0 else true_expr[:, :0],
+                "Pred_full": x_pred,
+                "Ctrl_full": ctrl_expr,
+                "Truth_full": true_expr,
                 "DE_idx": deg_idx,
                 "DE_name": deg_names,
+                "gene_name_full": gene_names,
             }
 
         if out_path:

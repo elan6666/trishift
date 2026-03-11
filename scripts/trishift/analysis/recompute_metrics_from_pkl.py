@@ -270,8 +270,8 @@ def main() -> None:
         f"splits={split_ids} mode={eval_ctrl_pool_mode} distance={eval_genept_distance}"
     )
     print(
-        "[pkl-eval] note: pkl payload contains DE-subset arrays only; "
-        "recomputed metrics include pearson/nmse/mse_pred/mse_ctrl/deg_mean_r2."
+        "[pkl-eval] note: pkl payload contains DE-subset arrays plus optional full-gene arrays; "
+        "recomputed metrics still use the DE-subset fields Pred/Ctrl/Truth."
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[pkl-eval] pkl_dir={pkl_dir}")

@@ -146,7 +146,16 @@ def test_run_gears_eval_norman_and_adamson_with_fake_backend(tmp_path, monkeypat
     with (norman_out / "gears_norman_1.pkl").open("rb") as f:
         norman_payload = pickle.load(f)
     assert set(norman_payload.keys()) == {"A+ctrl", "A+B"}
-    assert norman_payload["A+ctrl"]["Pred"].shape == (1, 4)
+    assert norman_payload["A+ctrl"]["Pred"].shape[0] == 1
+    assert norman_payload["A+ctrl"]["Pred"].shape[1] == len(norman_payload["A+ctrl"]["DE_idx"])
+    assert norman_payload["A+ctrl"]["Pred_full"].shape == (1, 6)
+    assert norman_payload["A+ctrl"]["Ctrl_full"].shape[1] == 6
+    assert norman_payload["A+ctrl"]["Truth_full"].shape[1] == 6
+    assert len(norman_payload["A+ctrl"]["gene_name_full"]) == 6
+    np.testing.assert_allclose(
+        norman_payload["A+ctrl"]["Pred_full"][:, norman_payload["A+ctrl"]["DE_idx"]],
+        norman_payload["A+ctrl"]["Pred"],
+    )
 
     core.run_gears_eval("adamson", export_notebook_pkl=True)
     adamson_out = tmp_path / "artifacts" / "results" / "gears" / "adamson"
@@ -157,3 +166,8 @@ def test_run_gears_eval_norman_and_adamson_with_fake_backend(tmp_path, monkeypat
         adamson_payload = pickle.load(f)
     assert set(adamson_payload.keys()) == {"A+ctrl", "B+ctrl"}
     assert adamson_payload["A+ctrl"]["Pred"].shape[0] == 1
+    assert adamson_payload["A+ctrl"]["Pred_full"].shape == (1, 6)
+    np.testing.assert_allclose(
+        adamson_payload["A+ctrl"]["Pred_full"][:, adamson_payload["A+ctrl"]["DE_idx"]],
+        adamson_payload["A+ctrl"]["Pred"],
+    )

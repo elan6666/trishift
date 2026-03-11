@@ -146,6 +146,14 @@ def test_run_genepert_eval_norman_alias_and_export(tmp_path, monkeypatch):
     assert payload["KIAA1804+ctrl"]["Pred"].shape == (3, 2)
     assert payload["KIAA1804+ctrl"]["Ctrl"].shape == (3, 2)
     assert payload["KIAA1804+ctrl"]["Truth"].shape == (3, 2)
+    assert payload["KIAA1804+ctrl"]["Pred_full"].shape == (3, 6)
+    assert payload["KIAA1804+ctrl"]["Ctrl_full"].shape == (3, 6)
+    assert payload["KIAA1804+ctrl"]["Truth_full"].shape == (3, 6)
+    assert len(payload["KIAA1804+ctrl"]["gene_name_full"]) == 6
+    np.testing.assert_allclose(
+        payload["KIAA1804+ctrl"]["Pred_full"][:, payload["KIAA1804+ctrl"]["DE_idx"]],
+        payload["KIAA1804+ctrl"]["Pred"],
+    )
     assert all("MISSING+ctrl" not in test for _, test in calls)
     assert calls[0][1] == ["B+ctrl"]
     assert set(calls[1][1]) == {"A+B", "KIAA1804+ctrl"}

@@ -89,6 +89,13 @@ def test_nearest_genept_ot_pool_eval_and_export():
     for payload in preds.values():
         assert payload["Pred"].shape[0] == 10
         assert payload["Ctrl"].shape[0] == 10
+        assert payload["Pred_full"].shape[0] == 10
+        assert payload["Ctrl_full"].shape[0] == 10
+        assert payload["Truth_full"].shape[1] == len(payload["gene_name_full"])
+        np.testing.assert_allclose(
+            payload["Pred_full"][:, payload["DE_idx"]],
+            payload["Pred"],
+        )
 
     # Fallback branch: missing pool entry should still use n_ensemble-sized random sampling.
     strategy_fallback = dict(strategy)

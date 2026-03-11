@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import torch
 
 import sys
@@ -47,6 +48,16 @@ def test_evaluate_and_export():
         )
         assert out_path.exists()
         assert isinstance(preds, dict)
+        first_payload = next(iter(preds.values()))
+        assert "Pred_full" in first_payload
+        assert "Ctrl_full" in first_payload
+        assert "Truth_full" in first_payload
+        assert "gene_name_full" in first_payload
+        assert first_payload["Pred_full"].shape[1] == len(first_payload["gene_name_full"])
+        np.testing.assert_allclose(
+            first_payload["Pred_full"][:, first_payload["DE_idx"]],
+            first_payload["Pred"],
+        )
 
 
 def main():
