@@ -85,6 +85,77 @@ class _EarlyStopper:
         return False, self.epochs_no_improve >= self.patience
 
 
+class _Stage1VaeDataset(Dataset):
+    def __init__(self, x: np.ndarray, cond: np.ndarray):
+        self.x = torch.from_numpy(np.asarray(x, dtype=np.float32))
+        self.cond = np.asarray(cond, dtype=object)
+
+    def __len__(self) -> int:
+        return int(self.x.shape[0])
+
+    def __getitem__(self, i: int) -> tuple[torch.Tensor, str]:
+        return self.x[i], str(self.cond[i])
+
+
+def _stage1_deg_weight_status(
+    *,
+    cond_values: np.ndarray,
+    deg_idx_dict: dict | None,
+    deg_weight: float,
+) -> tuple[bool, str]:
+    if float(deg_weight) == 1.0:
+        return False, "deg_weight_is_1"
+    unique_conds = {str(c) for c in np.asarray(cond_values, dtype=object).tolist()}
+    pert_conds = [c for c in unique_conds if c != "ctrl"]
+    if not pert_conds:
+        return False, "ctrl_only_pool"
+    if not deg_idx_dict:
+        return False, "missing_degs"
+    has_any = False
+    for cond in pert_conds:
+        deg_idx = np.asarray(deg_idx_dict.get(cond, []), dtype=int).reshape(-1)
+        if deg_idx.size > 0:
+            has_any = True
+            break
+    if not has_any:
+        return False, "missing_degs"
+    return True, "active"
+
+
+def _weighted_stage1_recon_loss(
+    *,
+    x_true: torch.Tensor,
+    x_recon: torch.Tensor,
+    cond_batch: list[str],
+    deg_idx_dict: dict | None,
+    deg_weight: float,
+) -> torch.Tensor:
+    sq_err = (x_true - x_recon) ** 2
+    if not deg_idx_dict or float(deg_weight) == 1.0:
+        return sq_err.sum(dim=1)
+
+    weights = torch.ones_like(sq_err)
+    cond_arr = np.asarray(cond_batch, dtype=object)
+    unique_conds = np.unique(cond_arr.astype(str))
+    n_genes = int(sq_err.shape[1])
+    for cond in unique_conds:
+        if cond == "ctrl":
+            continue
+        deg_idx = np.asarray(deg_idx_dict.get(cond, []), dtype=int).reshape(-1)
+        if deg_idx.size == 0:
+            continue
+        valid_idx = deg_idx[(deg_idx >= 0) & (deg_idx < n_genes)]
+        if valid_idx.size == 0:
+            continue
+        row_idx = np.where(cond_arr.astype(str) == str(cond))[0]
+        if row_idx.size == 0:
+            continue
+        row_t = torch.as_tensor(row_idx, device=sq_err.device, dtype=torch.long)
+        col_t = torch.as_tensor(valid_idx, device=sq_err.device, dtype=torch.long)
+        weights[row_t.unsqueeze(1), col_t.unsqueeze(0)] = float(deg_weight)
+    return (sq_err * weights).sum(dim=1)
+
+
 class _TopKTrainDataset(Dataset):
     def __init__(
         self,
@@ -1079,6 +1150,8 @@ class TriShift:
         batch_size: int,
         lr: float,
         beta: float = 1.0,
+        deg_weight: float = 1.0,
+        deg_key_obs_key: str | None = None,
         sched_gamma: float = 0.9,
         patience: int = 5,
         min_delta: float = 1e-3,
@@ -1097,6 +1170,7 @@ class TriShift:
             batch_size: Batch size for training.
             lr: Learning rate for VAE optimizer.
             beta: KL weight for ELBO.
+            deg_key_obs_key: Optional obs column used to look up DEG weighting keys.
             sched_gamma: ExponentialLR decay rate.
             patience: Early stopping patience (0 to disable).
             min_delta: Minimum improvement for early stopping.
@@ -1112,10 +1186,30 @@ class TriShift:
             raise ValueError("model_init must be called before training")
         print(f"[stage1] start vae training: epochs={epochs}, batch_size={batch_size}")
         beta = float(beta)
+        deg_weight = float(deg_weight)
+        if deg_weight <= 0:
+            raise ValueError("stage1 deg_weight must be positive")
 
         x_np = _utils.densify_X(adata_ctrl_pool.X).astype(np.float32, copy=False)
-        x_tensor = torch.from_numpy(x_np)
-        dataset = TensorDataset(x_tensor)
+        if deg_key_obs_key is None:
+            cond_np = adata_ctrl_pool.obs[self.data.label_key].astype(str).values
+        else:
+            if deg_key_obs_key not in adata_ctrl_pool.obs.columns:
+                raise KeyError(f"deg_key_obs_key not found in adata.obs: {deg_key_obs_key}")
+            cond_np = adata_ctrl_pool.obs[deg_key_obs_key].astype(str).values
+        deg_idx_dict = self._get_degs_idx_dict() if deg_weight != 1.0 else None
+        deg_weight_active, deg_reason = _stage1_deg_weight_status(
+            cond_values=cond_np,
+            deg_idx_dict=deg_idx_dict,
+            deg_weight=deg_weight,
+        )
+        print(
+            f"[stage1] deg_weight={deg_weight}, "
+            f"deg_weight_active={str(deg_weight_active).lower()}"
+        )
+        if not deg_weight_active:
+            print(f"[stage1] deg_weight inactive reason={deg_reason}")
+        dataset = _Stage1VaeDataset(x_np, cond_np)
         loader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -1126,7 +1220,13 @@ class TriShift:
         val_loader = None
         if adata_val is not None and getattr(adata_val, "n_obs", 0) > 0:
             x_val = _utils.densify_X(adata_val.X).astype(np.float32, copy=False)
-            val_dataset = TensorDataset(torch.from_numpy(x_val))
+            if deg_key_obs_key is None:
+                cond_val = adata_val.obs[self.data.label_key].astype(str).values
+            else:
+                if deg_key_obs_key not in adata_val.obs.columns:
+                    raise KeyError(f"deg_key_obs_key not found in adata_val.obs: {deg_key_obs_key}")
+                cond_val = adata_val.obs[deg_key_obs_key].astype(str).values
+            val_dataset = _Stage1VaeDataset(x_val, cond_val)
             val_loader = DataLoader(
                 val_dataset,
                 batch_size=batch_size,
@@ -1149,12 +1249,22 @@ class TriShift:
             recon_loss = 0.0
             kl_loss = 0.0
             optimizer.zero_grad(set_to_none=True)
-            for step, (x_batch,) in enumerate(
+            for step, (x_batch, cond_batch) in enumerate(
                 tqdm(loader, desc=f"stage1 {epoch+1}/{epochs}", leave=False)
             ):
                 x_batch = x_batch.to(self.device, non_blocking=True)
                 with torch.cuda.amp.autocast(enabled=use_amp):
-                    loss_rec, loss_kl = self.net.vae.get_loss(x_batch)
+                    x_recon, _, loss_kl = self.net.vae.forward(x_batch)
+                    if deg_weight_active:
+                        loss_rec = _weighted_stage1_recon_loss(
+                            x_true=x_batch,
+                            x_recon=x_recon,
+                            cond_batch=cond_batch,
+                            deg_idx_dict=deg_idx_dict,
+                            deg_weight=deg_weight,
+                        )
+                    else:
+                        loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
                     scpram_loss = (
                         0.5 * loss_rec + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)
                     ).mean()
@@ -1184,10 +1294,20 @@ class TriShift:
                 self.net.vae.eval()
                 val_total = 0.0
                 with torch.no_grad():
-                    for (x_batch,) in val_loader:
+                    for x_batch, cond_batch in val_loader:
                         x_batch = x_batch.to(self.device, non_blocking=True)
                         with torch.cuda.amp.autocast(enabled=use_amp):
-                            loss_rec, loss_kl = self.net.vae.get_loss(x_batch)
+                            x_recon, _, loss_kl = self.net.vae.forward(x_batch)
+                            if deg_weight_active:
+                                loss_rec = _weighted_stage1_recon_loss(
+                                    x_true=x_batch,
+                                    x_recon=x_recon,
+                                    cond_batch=cond_batch,
+                                    deg_idx_dict=deg_idx_dict,
+                                    deg_weight=deg_weight,
+                                )
+                            else:
+                                loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
                             scpram_loss = (
                                 0.5 * loss_rec
                                 + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)

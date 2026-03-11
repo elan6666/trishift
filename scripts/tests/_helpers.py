@@ -63,16 +63,49 @@ def make_embeddings_df(dim: int = 8) -> pd.DataFrame:
     return pd.DataFrame(data, index=["ctrl", "A", "B"])
 
 
+def make_tiny_pbmc_adata(
+    n_per_group: int = 8,
+    n_genes: int = 12,
+    seed: int = 0,
+) -> ad.AnnData:
+    rng = np.random.default_rng(seed)
+    gene_names = [f"G{i}" for i in range(n_genes)]
+    cell_types = []
+    conditions = []
+    xs = []
+    for cell_type, up_idx in (("T", [0, 1]), ("B", [2, 3])):
+        for condition in ("control", "stimulated"):
+            base = rng.normal(loc=1.0, scale=0.05, size=(n_per_group, n_genes)).astype(np.float32)
+            base = np.clip(base, 0.0, None)
+            if condition == "stimulated":
+                base[:, up_idx] += 2.0
+            xs.append(base)
+            cell_types.extend([cell_type] * n_per_group)
+            conditions.extend([condition] * n_per_group)
+    X = np.vstack(xs).astype(np.float32, copy=False)
+    obs = pd.DataFrame(
+        {
+            "condition": conditions,
+            "cell_type": cell_types,
+        }
+    )
+    var = pd.DataFrame({"gene_symbol": gene_names})
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
 def make_data_and_model(
     seed: int = 0,
+    include_top20: bool = True,
+    build_degs: bool = True,
     model_init_overrides: dict | None = None,
 ) -> tuple[TriShiftData, TriShift]:
     _utils.set_seeds(seed)
-    adata = make_tiny_adata()
+    adata = make_tiny_adata(include_top20=include_top20)
     embd_df = make_embeddings_df()
     data = TriShiftData(adata, embd_df)
     data.setup_embedding_index()
-    data.build_or_load_degs()
+    if build_degs:
+        data.build_or_load_degs()
     model = TriShift(data, device="cpu")
     model_init_kwargs = {
         "x_dim": adata.n_vars,

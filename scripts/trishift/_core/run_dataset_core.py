@@ -898,6 +898,7 @@ def run_dataset_with_paths(
     stage1_batch_size = int(stage1_cfg.get("batch_size", 64))
     stage1_lr = float(stage1_cfg.get("lr", 1e-3))
     stage1_beta = float(stage1_cfg.get("beta", 1.0))
+    stage1_deg_weight = float(stage1_cfg.get("deg_weight", 1.0))
 
     metrics_all_by_tag: dict[str, list[pd.DataFrame]] = {}
     n_splits = (
@@ -999,6 +1000,7 @@ def run_dataset_with_paths(
                     batch_size=stage1_batch_size,
                     lr=stage1_lr,
                     beta=stage1_beta,
+                    deg_weight=stage1_deg_weight,
                     sched_gamma=sched_stage1.sched_gamma,
                     patience=sched_stage1.patience,
                     min_delta=sched_stage1.min_delta,

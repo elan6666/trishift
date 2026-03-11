@@ -115,7 +115,7 @@ def run_profile(profile: str) -> None:
     run_gears_eval(
         prof["dataset"],
         base_seed=int(task_args.get("seed", 24)),
-        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", False)),
+        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", True)),
     )
 
 
@@ -601,7 +601,7 @@ def main(argv: list[str] | None = None) -> None:
         prof = _load_profile(profile)
         task_args = prof["task_args"]
         seed = int(task_args.get("seed", 24)) if int(args.seed) == 24 else int(args.seed)
-        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", False))
+        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", True))
         if bool(args.no_export_notebook_pkl):
             export_notebook_pkl = False
         run_gears_eval(

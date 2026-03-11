@@ -58,6 +58,9 @@ train:
     lr: 0.0005
     # Stage1 KL 系数（额外乘以 model.stage1.kl_weight）。
     beta: 1.0
+    # Stage1 专用 DEG reconstruction 加权倍率（=1 表示关闭）。
+    # 仅在 stage1 训练池中含 pert 条件且可解析到对应 DEG 时生效。
+    deg_weight: 1
     # 指数学习率衰减系数（1 表示不衰减）。
     sched_gamma: 1
     # 早停耐心。
