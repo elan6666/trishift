@@ -899,6 +899,7 @@ def run_dataset_with_paths(
     stage1_lr = float(stage1_cfg.get("lr", 1e-3))
     stage1_beta = float(stage1_cfg.get("beta", 1.0))
     stage1_deg_weight = float(stage1_cfg.get("deg_weight", 1.0))
+    stage1_ecs_cfg = dict(stage1_cfg.get("ecs", {}))
 
     metrics_all_by_tag: dict[str, list[pd.DataFrame]] = {}
     n_splits = (
@@ -1001,6 +1002,14 @@ def run_dataset_with_paths(
                     lr=stage1_lr,
                     beta=stage1_beta,
                     deg_weight=stage1_deg_weight,
+                    ecs_enable=bool(stage1_ecs_cfg.get("enable", False)),
+                    ecs_epochs=int(stage1_ecs_cfg.get("epochs", 10)),
+                    ecs_lr=float(stage1_ecs_cfg.get("lr", 1e-4)),
+                    ecs_sched_gamma=float(stage1_ecs_cfg.get("sched_gamma", 0.9)),
+                    ecs_weight=float(stage1_ecs_cfg.get("weight", 10.0)),
+                    ecs_threshold=float(stage1_ecs_cfg.get("threshold", 0.8)),
+                    ecs_patience=int(stage1_ecs_cfg.get("patience", 5)),
+                    ecs_min_delta=float(stage1_ecs_cfg.get("min_delta", 1e-3)),
                     sched_gamma=sched_stage1.sched_gamma,
                     patience=sched_stage1.patience,
                     min_delta=sched_stage1.min_delta,

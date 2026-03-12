@@ -61,6 +61,23 @@ train:
     # Stage1 专用 DEG reconstruction 加权倍率（=1 表示关闭）。
     # 仅在 stage1 训练池中含 pert 条件且可解析到对应 DEG 时生效。
     deg_weight: 1
+    ecs:
+      # Stage1 早停后是否追加 scGPT 风格 ECS 微调阶段。
+      enable: false
+      # ECS 微调轮数。
+      epochs: 10
+      # ECS 微调学习率。
+      lr: 0.0001
+      # ECS 微调学习率指数衰减系数（对齐 scGPT schedule_ratio）。
+      sched_gamma: 0.9
+      # ECS loss 权重。
+      weight: 10.0
+      # ECS cosine similarity threshold。
+      threshold: 0.8
+      # ECS 微调早停耐心。
+      patience: 5
+      # ECS 微调早停最小提升阈值。
+      min_delta: 0.001
     # 指数学习率衰减系数（1 表示不衰减）。
     sched_gamma: 1
     # 早停耐心。

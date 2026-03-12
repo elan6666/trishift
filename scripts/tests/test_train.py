@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from trishift import _utils
-from trishift.TriShift import _weighted_stage1_recon_loss
+from trishift.TriShift import _stage1_ecs_loss, _weighted_stage1_recon_loss
 
 from scripts.tests._helpers import make_data_and_model, make_tiny_pbmc_adata, train_stage1_and_cache
 
@@ -61,6 +61,43 @@ def test_stage1_weighted_recon_loss_leaves_ctrl_rows_unweighted():
     assert float(weighted[1].item()) > float(plain[1].item())
 
 
+def test_stage1_ecs_loss_matches_scgpt_style_formula():
+    mu = torch.tensor(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    loss = _stage1_ecs_loss(mu, threshold=0.8)
+    mu_norm = torch.nn.functional.normalize(mu, p=2, dim=1)
+    cos = torch.mm(mu_norm, mu_norm.t())
+    cos = cos.masked_fill(torch.eye(cos.size(0), dtype=torch.bool), 0.0)
+    cos = torch.nn.functional.relu(cos)
+    expected = torch.mean(1 - (cos - 0.8) ** 2)
+    assert torch.allclose(loss, expected)
+
+
+def test_stage1_ecs_loss_batch_size_one_returns_zero():
+    mu = torch.tensor([[1.0, 2.0, 3.0]], dtype=torch.float32)
+    loss = _stage1_ecs_loss(mu, threshold=0.8)
+    assert float(loss.item()) == 0.0
+
+
+def test_stage1_ecs_loss_negative_similarity_is_relued():
+    mu = torch.tensor(
+        [
+            [1.0, 0.0],
+            [-1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    loss = _stage1_ecs_loss(mu, threshold=0.8)
+    expected = torch.tensor(1 - (0.0 - 0.8) ** 2, dtype=torch.float32)
+    assert torch.allclose(loss, expected)
+
+
 def test_stage1_deg_weight_on_pert_pool_runs():
     data, model = make_data_and_model()
     logs = model.train_stage1_vae(
@@ -75,6 +112,56 @@ def test_stage1_deg_weight_on_pert_pool_runs():
         grad_accum_steps=1,
     )
     assert "epochs" in logs and len(logs["epochs"]) == 1
+
+
+def test_stage1_ecs_finetune_runs_after_phase1_and_logs():
+    data, model = make_data_and_model()
+    logs = model.train_stage1_vae(
+        data.adata_all,
+        epochs=1,
+        batch_size=8,
+        lr=1e-3,
+        ecs_enable=True,
+        ecs_epochs=1,
+        ecs_lr=1e-4,
+        ecs_sched_gamma=0.9,
+        ecs_weight=10.0,
+        ecs_threshold=0.8,
+        ecs_patience=1,
+        ecs_min_delta=1e-3,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_accum_steps=1,
+        adata_val=data.adata_all[:8].copy(),
+    )
+    assert "epochs" in logs and len(logs["epochs"]) == 1
+    assert "ecs_finetune" in logs
+    assert logs["ecs_finetune"]["enabled"] is True
+    assert logs["ecs_finetune"]["active"] is True
+    assert logs["ecs_finetune"]["monitor_key"] == "val_loss"
+    assert len(logs["ecs_finetune"]["epochs"]) == 1
+    assert "ecs" in logs["ecs_finetune"]["epochs"][0]
+
+
+def test_stage1_ecs_disabled_keeps_inactive_logs():
+    data, model = make_data_and_model()
+    logs = model.train_stage1_vae(
+        data.adata_ctrl,
+        epochs=1,
+        batch_size=8,
+        lr=1e-3,
+        ecs_enable=False,
+        ecs_epochs=1,
+        ecs_sched_gamma=0.9,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_accum_steps=1,
+    )
+    assert logs["ecs_finetune"]["enabled"] is False
+    assert logs["ecs_finetune"]["active"] is False
+    assert logs["ecs_finetune"]["reason"] == "ecs_disabled"
 
 
 def test_stage1_ctrl_only_deg_weight_falls_back():

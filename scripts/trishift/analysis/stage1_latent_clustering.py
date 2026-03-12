@@ -61,6 +61,31 @@ def _get_utils():
     }
 
 
+def _get_scgpt_preprocessor_cls():
+    from trishift._scgpt_preprocess import Preprocessor
+
+    return Preprocessor
+
+
+def _get_scvi_module():
+    try:
+        import scvi  # type: ignore
+    except Exception as exc:  # pragma: no cover - exercised via tests with monkeypatch
+        raise ImportError(
+            "PBMC scvi source requires scvi-tools. "
+            "Install scvi-tools and ensure `import scvi` succeeds."
+        ) from exc
+    return scvi
+
+
+def _get_scib_metrics_module():
+    try:
+        import scib.metrics  # type: ignore
+    except Exception:
+        return None
+    return scib.metrics
+
+
 @dataclass(frozen=True)
 class Stage1LatentRunResult:
     out_dir: Path
@@ -153,24 +178,30 @@ def _compute_nonzero_non_dropout(
 
 
 def _pbmc_deg_cache_path(
-    pbmc_path: str | Path,
+    pbmc_source: str,
     pbmc_deg_mode: str,
 ) -> Path:
-    pbmc_file = Path(pbmc_path).resolve()
+    safe_source = str(pbmc_source).strip().lower()
     safe_mode = str(pbmc_deg_mode).strip().lower()
     return (
         _repo_root()
         / "artifacts"
         / "cache"
         / "pbmc_degs"
-        / f"{pbmc_file.stem}__{safe_mode}__top20_non_dropout.pkl"
+        / f"{safe_source}__{safe_mode}__top20_non_dropout.pkl"
     )
+
+
+def _pbmc_scvi_cache_dir() -> Path:
+    cache_dir = _repo_root() / "artifacts" / "cache" / "scvi_pbmc"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
 
 
 def _build_pbmc_deg_cache_payload(
     adata: ad.AnnData,
     *,
-    pbmc_path: str | Path,
+    pbmc_source: str,
     pbmc_deg_mode: str,
 ) -> dict:
     mode_key = str(pbmc_deg_mode).strip().lower()
@@ -249,7 +280,7 @@ def _build_pbmc_deg_cache_payload(
             "generator": "stage1_latent_clustering.pbmc_by_cell_type",
             "version": 1,
             "pbmc_deg_mode": mode_key,
-            "source_path": str(Path(pbmc_path).resolve()),
+            "source": str(pbmc_source).strip().lower(),
         },
         "cell_type_stats": cell_type_stats,
     }
@@ -258,10 +289,10 @@ def _build_pbmc_deg_cache_payload(
 def _load_or_build_pbmc_deg_cache(
     adata: ad.AnnData,
     *,
-    pbmc_path: str | Path,
+    pbmc_source: str,
     pbmc_deg_mode: str,
 ) -> tuple[dict, Path]:
-    cache_path = _pbmc_deg_cache_path(pbmc_path, pbmc_deg_mode)
+    cache_path = _pbmc_deg_cache_path(pbmc_source, pbmc_deg_mode)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if cache_path.exists():
         with open(cache_path, "rb") as f:
@@ -270,13 +301,13 @@ def _load_or_build_pbmc_deg_cache(
         if (
             isinstance(meta, dict)
             and str(meta.get("pbmc_deg_mode", "")).strip().lower() == str(pbmc_deg_mode).strip().lower()
-            and str(meta.get("source_path", "")) == str(Path(pbmc_path).resolve())
+            and str(meta.get("source", "")).strip().lower() == str(pbmc_source).strip().lower()
         ):
             return payload, cache_path
 
     payload = _build_pbmc_deg_cache_payload(
         adata,
-        pbmc_path=pbmc_path,
+        pbmc_source=pbmc_source,
         pbmc_deg_mode=pbmc_deg_mode,
     )
     with open(cache_path, "wb") as f:
@@ -297,12 +328,26 @@ def _stage1_cache_identity(
     stage1_lr: float,
     stage1_beta: float,
     stage1_deg_weight: float,
+    stage1_ecs_enable: bool,
+    stage1_ecs_epochs: int,
+    stage1_ecs_lr: float,
+    stage1_ecs_sched_gamma: float,
+    stage1_ecs_weight: float,
+    stage1_ecs_threshold: float,
+    stage1_ecs_patience: int,
+    stage1_ecs_min_delta: float,
     stage1_sched_gamma: float,
     stage1_patience: int,
     stage1_min_delta: float,
-    pbmc_path: str | Path,
+    pbmc_source: str,
     pbmc_train_frac: float,
     pbmc_deg_mode: str,
+    pbmc_preprocess_mode: str,
+    pbmc_input_layer: str,
+    pbmc_filter_gene_by_counts: int,
+    pbmc_normalize_total: float,
+    pbmc_log1p: bool,
+    pbmc_n_hvg: int,
 ) -> dict:
     return {
         "mode": str(mode),
@@ -316,12 +361,26 @@ def _stage1_cache_identity(
         "stage1_lr": float(stage1_lr),
         "stage1_beta": float(stage1_beta),
         "stage1_deg_weight": float(stage1_deg_weight),
+        "stage1_ecs_enable": bool(stage1_ecs_enable),
+        "stage1_ecs_epochs": int(stage1_ecs_epochs),
+        "stage1_ecs_lr": float(stage1_ecs_lr),
+        "stage1_ecs_sched_gamma": float(stage1_ecs_sched_gamma),
+        "stage1_ecs_weight": float(stage1_ecs_weight),
+        "stage1_ecs_threshold": float(stage1_ecs_threshold),
+        "stage1_ecs_patience": int(stage1_ecs_patience),
+        "stage1_ecs_min_delta": float(stage1_ecs_min_delta),
         "stage1_sched_gamma": float(stage1_sched_gamma),
         "stage1_patience": int(stage1_patience),
         "stage1_min_delta": float(stage1_min_delta),
-        "pbmc_path": str(Path(pbmc_path).resolve()) if str(mode) == "pbmc_celltype" else "",
+        "pbmc_source": str(pbmc_source).strip().lower() if str(mode) == "pbmc_celltype" else "",
         "pbmc_train_frac": float(pbmc_train_frac) if str(mode) == "pbmc_celltype" else 0.0,
         "pbmc_deg_mode": str(pbmc_deg_mode).strip().lower() if str(mode) == "pbmc_celltype" else "",
+        "pbmc_preprocess_mode": str(pbmc_preprocess_mode).strip().lower() if str(mode) == "pbmc_celltype" else "",
+        "pbmc_input_layer": str(pbmc_input_layer) if str(mode) == "pbmc_celltype" else "",
+        "pbmc_filter_gene_by_counts": int(pbmc_filter_gene_by_counts) if str(mode) == "pbmc_celltype" else 0,
+        "pbmc_normalize_total": float(pbmc_normalize_total) if str(mode) == "pbmc_celltype" else 0.0,
+        "pbmc_log1p": bool(pbmc_log1p) if str(mode) == "pbmc_celltype" else False,
+        "pbmc_n_hvg": int(pbmc_n_hvg) if str(mode) == "pbmc_celltype" else 0,
     }
 
 
@@ -414,55 +473,85 @@ def _prepare_trishift_data(
 
 
 def _prepare_pbmc_data(
-    pbmc_path: str | Path,
+    pbmc_source: str = "scvi",
     *,
     stage1_deg_weight: float = 1.0,
     pbmc_deg_mode: str = "by_cell_type",
-) -> tuple[ad.AnnData, "TriShiftData", pd.DataFrame, Path | None]:
-    adata = ad.read_h5ad(str(Path(pbmc_path).resolve()))
+    pbmc_filter_gene_by_counts: int | bool = 3,
+    pbmc_normalize_total: float | bool = 1e4,
+    pbmc_log1p: bool = True,
+    pbmc_n_hvg: int | bool = 1200,
+) -> tuple[ad.AnnData, "TriShiftData", pd.DataFrame, Path | None, dict, str]:
+    source_key = str(pbmc_source).strip().lower()
+    if source_key != "scvi":
+        raise ValueError("pbmc_source must be 'scvi'")
+
+    scvi = _get_scvi_module()
+    adata = scvi.data.pbmc_dataset(
+        save_path=str(_pbmc_scvi_cache_dir()),
+        remove_extracted_data=False,
+    )
     adata = sc.AnnData(adata.X, obs=adata.obs.copy(), var=adata.var.copy())
     adata.obs_names_make_unique()
     adata.uns = {}
-    adata.obs["label_cell_type"] = adata.obs["cell_type"].astype(str)
-    adata.obs["label_condition"] = adata.obs["condition"].astype(str)
-    adata.obs["label_ctrl_pert"] = np.where(
-        adata.obs["condition"].astype(str).str.lower().eq("control"),
-        "ctrl",
-        "pert",
-    )
+    if "str_labels" not in adata.obs.columns:
+        raise ValueError("scvi PBMC adata must contain obs['str_labels']")
+    if "batch" not in adata.obs.columns:
+        raise ValueError("scvi PBMC adata must contain obs['batch']")
+    if "gene_symbols" not in adata.var.columns:
+        raise ValueError("scvi PBMC adata must contain var['gene_symbols']")
+
+    adata.obs["cell_type"] = adata.obs["str_labels"].astype(str)
+    adata.obs["label_cell_type"] = adata.obs["str_labels"].astype(str)
+    adata.obs["condition"] = adata.obs["batch"].astype(str)
     adata.obs["condition_raw"] = adata.obs["condition"].astype(str)
-    adata.obs["condition_internal"] = np.where(
-        adata.obs["condition"].astype(str).str.lower().eq("control"),
-        "ctrl",
-        "stimulated",
+    adata.obs["label_condition"] = adata.obs["condition"].astype(str)
+    adata.obs["label_ctrl_pert"] = "ctrl"
+    adata.obs["condition_internal"] = "ctrl"
+    adata.obs["stage1_deg_key"] = "ctrl"
+    adata.obs["str_batch"] = adata.obs["batch"].astype(str)
+    adata.obs["batch_id"] = adata.obs["str_batch"].astype("category").cat.codes.values
+    adata.var = adata.var.set_index("gene_symbols", drop=False)
+    adata.var["gene_name"] = adata.var.index.astype(str)
+
+    preprocessor = _get_scgpt_preprocessor_cls()(
+        use_key="X",
+        filter_gene_by_counts=pbmc_filter_gene_by_counts,
+        filter_cell_by_counts=False,
+        normalize_total=pbmc_normalize_total,
+        result_normed_key="X_normed",
+        log1p=pbmc_log1p,
+        result_log1p_key="X_log1p",
+        subset_hvg=pbmc_n_hvg,
+        hvg_flavor="seurat_v3",
+        binning=None,
+        result_binned_key="X_binned",
     )
-    adata.obs["stage1_deg_key"] = np.where(
-        adata.obs["condition"].astype(str).str.lower().eq("stimulated"),
-        "stimulated::" + adata.obs["cell_type"].astype(str),
-        "ctrl",
-    )
-    if "gene_name" not in adata.var.columns:
-        if "gene_symbol" in adata.var.columns:
-            adata.var["gene_name"] = adata.var["gene_symbol"].astype(str)
-        else:
-            adata.var["gene_name"] = adata.var_names.astype(str)
+    preprocessor(adata, batch_key="str_batch")
+    if bool(pbmc_log1p) and "X_log1p" in adata.layers:
+        pbmc_input_layer = "X_log1p"
+    elif bool(pbmc_normalize_total) and "X_normed" in adata.layers:
+        pbmc_input_layer = "X_normed"
+    else:
+        pbmc_input_layer = "X"
+    if pbmc_input_layer != "X":
+        adata.X = adata.layers[pbmc_input_layer].copy()
+
     embd_df = pd.DataFrame(
-        [[0.0], [1.0]],
-        index=["ctrl", "stimulated"],
+        [[0.0]],
+        index=["ctrl"],
         columns=["dummy_cond"],
     )
     deg_cache_path = None
-    if float(stage1_deg_weight) != 1.0:
-        payload, deg_cache_path = _load_or_build_pbmc_deg_cache(
-            adata,
-            pbmc_path=pbmc_path,
-            pbmc_deg_mode=pbmc_deg_mode,
-        )
-        adata.uns["top20_degs_non_dropout"] = payload["top20_degs_non_dropout_by_key"]
-        adata.uns["degs_meta"] = payload["degs_meta"]
+    deg_weight_status = {
+        "enabled": float(stage1_deg_weight) != 1.0,
+        "active": False,
+        "reason": "deg_weight_is_1" if float(stage1_deg_weight) == 1.0 else "missing_pbmc_perturbation_condition",
+        "pbmc_deg_mode": str(pbmc_deg_mode).strip().lower(),
+    }
     data = _get_trishift_data_cls()(adata, embd_df, label_key="condition_internal")
     data.setup_embedding_index()
-    return adata, data, embd_df, deg_cache_path
+    return adata, data, embd_df, deg_cache_path, deg_weight_status, pbmc_input_layer
 
 
 def _build_model(
@@ -556,6 +645,14 @@ def _fit_stage1_and_get_latent(
     stage1_beta: float,
     stage1_deg_weight: float,
     stage1_deg_key_obs_key: str | None,
+    stage1_ecs_enable: bool,
+    stage1_ecs_epochs: int,
+    stage1_ecs_lr: float,
+    stage1_ecs_sched_gamma: float,
+    stage1_ecs_weight: float,
+    stage1_ecs_threshold: float,
+    stage1_ecs_patience: int,
+    stage1_ecs_min_delta: float,
     stage1_sched_gamma: float,
     stage1_patience: int,
     stage1_min_delta: float,
@@ -572,6 +669,14 @@ def _fit_stage1_and_get_latent(
         beta=float(stage1_beta),
         deg_weight=float(stage1_deg_weight),
         deg_key_obs_key=stage1_deg_key_obs_key,
+        ecs_enable=bool(stage1_ecs_enable),
+        ecs_epochs=int(stage1_ecs_epochs),
+        ecs_lr=float(stage1_ecs_lr),
+        ecs_sched_gamma=float(stage1_ecs_sched_gamma),
+        ecs_weight=float(stage1_ecs_weight),
+        ecs_threshold=float(stage1_ecs_threshold),
+        ecs_patience=int(stage1_ecs_patience),
+        ecs_min_delta=float(stage1_ecs_min_delta),
         sched_gamma=float(stage1_sched_gamma),
         patience=int(stage1_patience),
         min_delta=float(stage1_min_delta),
@@ -601,12 +706,76 @@ def _compute_silhouette(x: np.ndarray, labels: np.ndarray) -> float:
     return float(silhouette_score(x, labels))
 
 
+def _compute_scib_metrics(
+    latent_adata: ad.AnnData,
+    *,
+    batch_key: str,
+    label_key: str,
+) -> dict[str, float] | None:
+    scib_metrics = _get_scib_metrics_module()
+    if scib_metrics is None:
+        return None
+    if batch_key not in latent_adata.obs.columns or label_key not in latent_adata.obs.columns:
+        return None
+    work = latent_adata.copy()
+    work.obs[batch_key] = work.obs[batch_key].astype("category")
+    work.obs[label_key] = work.obs[label_key].astype("category")
+    try:
+        result = scib_metrics.metrics(
+            work,
+            adata_int=work,
+            batch_key=batch_key,
+            label_key=label_key,
+            embed="X_stage1",
+            isolated_labels_asw_=False,
+            silhouette_=True,
+            hvg_score_=False,
+            graph_conn_=True,
+            pcr_=True,
+            isolated_labels_f1_=False,
+            trajectory_=False,
+            nmi_=True,
+            ari_=True,
+            cell_cycle_=False,
+            kBET_=False,
+            ilisi_=False,
+            clisi_=False,
+            verbose=False,
+        )
+    except Exception as exc:
+        print(f"[stage1] scib metrics unavailable for {label_key}: {exc}")
+        return None
+    if isinstance(result, pd.DataFrame) and 0 in result.columns:
+        row = result[0]
+    elif isinstance(result, pd.DataFrame) and result.shape[1] > 0:
+        row = result.iloc[:, 0]
+    else:
+        return None
+    out = {}
+    for key, value in row.to_dict().items():
+        if value is None or pd.isna(value):
+            continue
+        out[str(key)] = float(value)
+    if {"NMI_cluster/label", "ARI_cluster/label", "ASW_label"} <= set(out.keys()):
+        out["avg_bio"] = float(
+            np.mean(
+                [
+                    out["NMI_cluster/label"],
+                    out["ARI_cluster/label"],
+                    out["ASW_label"],
+                ]
+            )
+        )
+    return out
+
+
 def _label_metrics(
     *,
     x: np.ndarray,
     clusters: np.ndarray,
     labels: pd.Series,
     label_key: str,
+    scib_metrics: dict[str, float] | None = None,
 ) -> dict:
     label_arr = labels.astype(str).to_numpy()
     uniq_labels = np.unique(label_arr)
@@ -629,10 +798,14 @@ def _label_metrics(
         "nmi_leiden_vs_label": nmi,
         "silhouette_label": silhouette_label,
         # scGPT/scIB-style aliases.
-        "ARI_cluster/label": ari,
-        "NMI_cluster/label": nmi,
-        "ASW_label": silhouette_label,
-        "avg_bio": avg_bio,
+        "ARI_cluster/label": float(scib_metrics.get("ARI_cluster/label", ari)) if scib_metrics else ari,
+        "NMI_cluster/label": float(scib_metrics.get("NMI_cluster/label", nmi)) if scib_metrics else nmi,
+        "ASW_label": float(scib_metrics.get("ASW_label", silhouette_label)) if scib_metrics else silhouette_label,
+        "ASW_label/batch": float(scib_metrics.get("ASW_label/batch", np.nan)) if scib_metrics else float("nan"),
+        "PCR_batch": float(scib_metrics.get("PCR_batch", np.nan)) if scib_metrics else float("nan"),
+        "graph_conn": float(scib_metrics.get("graph_conn", np.nan)) if scib_metrics else float("nan"),
+        "avg_bio": float(scib_metrics.get("avg_bio", avg_bio)) if scib_metrics else avg_bio,
+        "avg_bio_source": "scib" if scib_metrics else "local",
     }
 
 
@@ -793,10 +966,23 @@ def run_stage1_latent_clustering(
     stage1_batch_size: int | None = None,
     stage1_lr: float | None = None,
     stage1_beta: float | None = None,
+    stage1_sched_gamma: float | None = None,
     stage1_deg_weight: float | None = None,
-    pbmc_path: str | Path = "src/data/pbmc/train_pbmc.h5ad",
+    stage1_ecs_enable: bool | None = None,
+    stage1_ecs_epochs: int | None = None,
+    stage1_ecs_lr: float | None = None,
+    stage1_ecs_sched_gamma: float | None = None,
+    stage1_ecs_weight: float | None = None,
+    stage1_ecs_threshold: float | None = None,
+    stage1_ecs_patience: int | None = None,
+    stage1_ecs_min_delta: float | None = None,
+    pbmc_source: str = "scvi",
     pbmc_train_frac: float = 0.9,
     pbmc_deg_mode: str = "by_cell_type",
+    pbmc_filter_gene_by_counts: int | bool = 3,
+    pbmc_normalize_total: float | bool = 1e4,
+    pbmc_log1p: bool = True,
+    pbmc_n_hvg: int | bool = 1200,
     l2_normalize_latent: bool = True,
     neighbors_k: int | None = None,
     leiden_resolution: float = 1.0,
@@ -838,14 +1024,69 @@ def run_stage1_latent_clustering(
         if stage1_deg_weight is not None
         else train_stage1_cfg.get("deg_weight", 1.0)
     )
-    stage1_sched_gamma_eff = float(train_stage1_cfg.get("sched_gamma", 0.9))
+    stage1_ecs_cfg = dict(train_stage1_cfg.get("ecs", {}))
+    stage1_ecs_enable_eff = bool(
+        stage1_ecs_enable
+        if stage1_ecs_enable is not None
+        else stage1_ecs_cfg.get("enable", False)
+    )
+    stage1_ecs_epochs_eff = int(
+        stage1_ecs_epochs
+        if stage1_ecs_epochs is not None
+        else stage1_ecs_cfg.get("epochs", 10)
+    )
+    stage1_ecs_lr_eff = float(
+        stage1_ecs_lr
+        if stage1_ecs_lr is not None
+        else stage1_ecs_cfg.get("lr", 1e-4)
+    )
+    stage1_ecs_sched_gamma_eff = float(
+        stage1_ecs_sched_gamma
+        if stage1_ecs_sched_gamma is not None
+        else stage1_ecs_cfg.get("sched_gamma", 0.9)
+    )
+    stage1_ecs_weight_eff = float(
+        stage1_ecs_weight
+        if stage1_ecs_weight is not None
+        else stage1_ecs_cfg.get("weight", 10.0)
+    )
+    stage1_ecs_threshold_eff = float(
+        stage1_ecs_threshold
+        if stage1_ecs_threshold is not None
+        else stage1_ecs_cfg.get("threshold", 0.8)
+    )
+    stage1_ecs_patience_eff = int(
+        stage1_ecs_patience
+        if stage1_ecs_patience is not None
+        else stage1_ecs_cfg.get("patience", 5)
+    )
+    stage1_ecs_min_delta_eff = float(
+        stage1_ecs_min_delta
+        if stage1_ecs_min_delta is not None
+        else stage1_ecs_cfg.get("min_delta", 1e-3)
+    )
+    stage1_sched_gamma_eff = float(
+        stage1_sched_gamma
+        if stage1_sched_gamma is not None
+        else train_stage1_cfg.get("sched_gamma", 0.9)
+    )
     stage1_patience_eff = int(train_stage1_cfg.get("patience", 5))
     stage1_min_delta_eff = float(train_stage1_cfg.get("min_delta", 1e-3))
+    pbmc_source_key = str(pbmc_source).strip().lower()
     pbmc_deg_mode_key = str(pbmc_deg_mode).strip().lower()
     if mode_key == "pbmc_celltype" and pbmc_deg_mode_key != "by_cell_type":
         raise ValueError("pbmc_deg_mode must be 'by_cell_type'")
+    if mode_key == "pbmc_celltype" and pbmc_source_key != "scvi":
+        raise ValueError("pbmc_source must be 'scvi'")
     stage1_deg_key_obs_key = None
     pbmc_deg_cache_path = None
+    pbmc_deg_weight_status = None
+    pbmc_preprocess_mode = "scgpt"
+    pbmc_input_layer = "X_log1p"
+    pbmc_filter_gene_by_counts = int(pbmc_filter_gene_by_counts) if bool(pbmc_filter_gene_by_counts) else 0
+    pbmc_normalize_total = float(pbmc_normalize_total) if bool(pbmc_normalize_total) else 0.0
+    pbmc_log1p = bool(pbmc_log1p)
+    pbmc_n_hvg = int(pbmc_n_hvg) if bool(pbmc_n_hvg) else 0
 
     if mode_key == "trishift_condition":
         adata, data, embd_df, defaults, _ = _prepare_trishift_data(
@@ -873,15 +1114,18 @@ def run_stage1_latent_clustering(
             seed=random_seed + int(split_id),
         )
     else:
-        adata, data, embd_df, pbmc_deg_cache_path = _prepare_pbmc_data(
-            pbmc_path,
+        adata, data, embd_df, pbmc_deg_cache_path, pbmc_deg_weight_status, pbmc_input_layer = _prepare_pbmc_data(
+            pbmc_source=pbmc_source_key,
             stage1_deg_weight=stage1_deg_weight_eff,
             pbmc_deg_mode=pbmc_deg_mode_key,
+            pbmc_filter_gene_by_counts=pbmc_filter_gene_by_counts,
+            pbmc_normalize_total=pbmc_normalize_total,
+            pbmc_log1p=pbmc_log1p,
+            pbmc_n_hvg=pbmc_n_hvg,
         )
         adata = data.adata_all
         subgroup_df = None
         split_dict = None
-        stage1_deg_key_obs_key = "stage1_deg_key"
         train_pool, val_pool, split_meta = _resolve_stage1_train_pool(
             mode=mode_key,
             data=data,
@@ -916,12 +1160,26 @@ def run_stage1_latent_clustering(
         stage1_lr=stage1_lr_eff,
         stage1_beta=stage1_beta_eff,
         stage1_deg_weight=stage1_deg_weight_eff,
+        stage1_ecs_enable=stage1_ecs_enable_eff,
+        stage1_ecs_epochs=stage1_ecs_epochs_eff,
+        stage1_ecs_lr=stage1_ecs_lr_eff,
+        stage1_ecs_sched_gamma=stage1_ecs_sched_gamma_eff,
+        stage1_ecs_weight=stage1_ecs_weight_eff,
+        stage1_ecs_threshold=stage1_ecs_threshold_eff,
+        stage1_ecs_patience=stage1_ecs_patience_eff,
+        stage1_ecs_min_delta=stage1_ecs_min_delta_eff,
         stage1_sched_gamma=stage1_sched_gamma_eff,
         stage1_patience=stage1_patience_eff,
         stage1_min_delta=stage1_min_delta_eff,
-        pbmc_path=pbmc_path,
+        pbmc_source=pbmc_source_key,
         pbmc_train_frac=pbmc_train_frac,
         pbmc_deg_mode=pbmc_deg_mode_key,
+        pbmc_preprocess_mode=pbmc_preprocess_mode,
+        pbmc_input_layer=pbmc_input_layer,
+        pbmc_filter_gene_by_counts=pbmc_filter_gene_by_counts,
+        pbmc_normalize_total=pbmc_normalize_total,
+        pbmc_log1p=pbmc_log1p,
+        pbmc_n_hvg=pbmc_n_hvg,
     )
 
     if (
@@ -957,6 +1215,14 @@ def run_stage1_latent_clustering(
             stage1_beta=stage1_beta_eff,
             stage1_deg_weight=stage1_deg_weight_eff,
             stage1_deg_key_obs_key=stage1_deg_key_obs_key,
+            stage1_ecs_enable=stage1_ecs_enable_eff,
+            stage1_ecs_epochs=stage1_ecs_epochs_eff,
+            stage1_ecs_lr=stage1_ecs_lr_eff,
+            stage1_ecs_sched_gamma=stage1_ecs_sched_gamma_eff,
+            stage1_ecs_weight=stage1_ecs_weight_eff,
+            stage1_ecs_threshold=stage1_ecs_threshold_eff,
+            stage1_ecs_patience=stage1_ecs_patience_eff,
+            stage1_ecs_min_delta=stage1_ecs_min_delta_eff,
             stage1_sched_gamma=stage1_sched_gamma_eff,
             stage1_patience=stage1_patience_eff,
             stage1_min_delta=stage1_min_delta_eff,
@@ -1000,12 +1266,21 @@ def run_stage1_latent_clustering(
     clusters = latent_adata.obs["leiden"].astype(str).to_numpy()
     metrics_rows = []
     for key in label_keys:
+        scib_row = None
+        if mode_key == "pbmc_celltype" and key == "label_cell_type":
+            batch_key = "str_batch" if "str_batch" in latent_adata.obs.columns else "label_condition"
+            scib_row = _compute_scib_metrics(
+                latent_adata,
+                batch_key=batch_key,
+                label_key=key,
+            )
         metrics_rows.append(
             _label_metrics(
                 x=latent_adata.obsm["X_stage1"],
                 clusters=clusters,
                 labels=latent_adata.obs[key],
                 label_key=key,
+                scib_metrics=scib_row,
             )
         )
     metrics_df = pd.DataFrame(metrics_rows)
@@ -1058,10 +1333,25 @@ def run_stage1_latent_clustering(
         "stage1_lr": float(stage1_lr_eff),
         "stage1_beta": float(stage1_beta_eff),
         "stage1_deg_weight": float(stage1_deg_weight_eff),
-        "pbmc_path": str(Path(pbmc_path).resolve()) if mode_key == "pbmc_celltype" else "",
+        "stage1_ecs_enable": bool(stage1_ecs_enable_eff),
+        "stage1_ecs_epochs": int(stage1_ecs_epochs_eff),
+        "stage1_ecs_lr": float(stage1_ecs_lr_eff),
+        "stage1_ecs_sched_gamma": float(stage1_ecs_sched_gamma_eff),
+        "stage1_ecs_weight": float(stage1_ecs_weight_eff),
+        "stage1_ecs_threshold": float(stage1_ecs_threshold_eff),
+        "stage1_ecs_patience": int(stage1_ecs_patience_eff),
+        "stage1_ecs_min_delta": float(stage1_ecs_min_delta_eff),
+        "pbmc_source": pbmc_source_key if mode_key == "pbmc_celltype" else "",
         "pbmc_train_frac": float(pbmc_train_frac),
         "pbmc_deg_mode": pbmc_deg_mode_key if mode_key == "pbmc_celltype" else "",
         "pbmc_deg_cache_path": str(pbmc_deg_cache_path) if pbmc_deg_cache_path is not None else "",
+        "pbmc_preprocess_mode": pbmc_preprocess_mode if mode_key == "pbmc_celltype" else "",
+        "pbmc_input_layer": pbmc_input_layer if mode_key == "pbmc_celltype" else "",
+        "pbmc_filter_gene_by_counts": int(pbmc_filter_gene_by_counts) if mode_key == "pbmc_celltype" else 0,
+        "pbmc_normalize_total": float(pbmc_normalize_total) if mode_key == "pbmc_celltype" else 0.0,
+        "pbmc_log1p": bool(pbmc_log1p) if mode_key == "pbmc_celltype" else False,
+        "pbmc_n_hvg": int(pbmc_n_hvg) if mode_key == "pbmc_celltype" else 0,
+        "pbmc_deg_weight_status": pbmc_deg_weight_status if mode_key == "pbmc_celltype" else {},
         "stage1_sched_gamma": float(stage1_sched_gamma_eff),
         "stage1_patience": int(stage1_patience_eff),
         "stage1_min_delta": float(stage1_min_delta_eff),

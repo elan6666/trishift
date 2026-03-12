@@ -156,6 +156,35 @@ def _weighted_stage1_recon_loss(
     return (sq_err * weights).sum(dim=1)
 
 
+def _stage1_ecs_status(
+    *,
+    ecs_enable: bool,
+    ecs_epochs: int,
+) -> tuple[bool, str]:
+    if not bool(ecs_enable):
+        return False, "ecs_disabled"
+    if int(ecs_epochs) <= 0:
+        return False, "non_positive_epochs"
+    return True, "active"
+
+
+def _stage1_ecs_loss(
+    mu: torch.Tensor,
+    *,
+    threshold: float,
+) -> torch.Tensor:
+    if mu.ndim != 2:
+        raise ValueError("mu must be a 2D tensor")
+    if mu.size(0) < 2:
+        return torch.zeros((), device=mu.device, dtype=mu.dtype)
+    mu_norm = F.normalize(mu, p=2, dim=1)
+    cos_sim = torch.mm(mu_norm, mu_norm.t())
+    mask = torch.eye(cos_sim.size(0), dtype=torch.bool, device=cos_sim.device)
+    cos_sim = cos_sim.masked_fill(mask, 0.0)
+    cos_sim = F.relu(cos_sim)
+    return torch.mean(1 - (cos_sim - float(threshold)) ** 2)
+
+
 class _TopKTrainDataset(Dataset):
     def __init__(
         self,
@@ -1152,6 +1181,14 @@ class TriShift:
         beta: float = 1.0,
         deg_weight: float = 1.0,
         deg_key_obs_key: str | None = None,
+        ecs_enable: bool = False,
+        ecs_epochs: int = 10,
+        ecs_lr: float = 1e-4,
+        ecs_sched_gamma: float = 0.9,
+        ecs_weight: float = 10.0,
+        ecs_threshold: float = 0.8,
+        ecs_patience: int = 5,
+        ecs_min_delta: float = 1e-3,
         sched_gamma: float = 0.9,
         patience: int = 5,
         min_delta: float = 1e-3,
@@ -1171,6 +1208,14 @@ class TriShift:
             lr: Learning rate for VAE optimizer.
             beta: KL weight for ELBO.
             deg_key_obs_key: Optional obs column used to look up DEG weighting keys.
+            ecs_enable: Whether to run ECS finetuning after phase1 early stopping.
+            ecs_epochs: ECS finetune epochs.
+            ecs_lr: ECS finetune learning rate.
+            ecs_sched_gamma: ECS finetune ExponentialLR decay rate.
+            ecs_weight: ECS loss weight.
+            ecs_threshold: ECS cosine similarity threshold.
+            ecs_patience: ECS finetune early stopping patience.
+            ecs_min_delta: ECS finetune minimum improvement.
             sched_gamma: ExponentialLR decay rate.
             patience: Early stopping patience (0 to disable).
             min_delta: Minimum improvement for early stopping.
@@ -1189,6 +1234,18 @@ class TriShift:
         deg_weight = float(deg_weight)
         if deg_weight <= 0:
             raise ValueError("stage1 deg_weight must be positive")
+        ecs_sched_gamma = float(ecs_sched_gamma)
+        ecs_weight = float(ecs_weight)
+        ecs_threshold = float(ecs_threshold)
+        if bool(ecs_enable):
+            if ecs_lr <= 0:
+                raise ValueError("stage1 ecs_lr must be positive")
+            if ecs_sched_gamma <= 0:
+                raise ValueError("stage1 ecs_sched_gamma must be positive")
+            if ecs_weight <= 0:
+                raise ValueError("stage1 ecs_weight must be positive")
+            if not 0.0 <= ecs_threshold <= 1.0:
+                raise ValueError("stage1 ecs_threshold must be in [0, 1]")
 
         x_np = _utils.densify_X(adata_ctrl_pool.X).astype(np.float32, copy=False)
         if deg_key_obs_key is None:
@@ -1209,6 +1266,18 @@ class TriShift:
         )
         if not deg_weight_active:
             print(f"[stage1] deg_weight inactive reason={deg_reason}")
+        ecs_active, ecs_reason = _stage1_ecs_status(
+            ecs_enable=ecs_enable,
+            ecs_epochs=ecs_epochs,
+        )
+        print(
+            f"[stage1] ecs_enable={str(bool(ecs_enable)).lower()}, "
+            f"ecs_lr={ecs_lr}, ecs_sched_gamma={ecs_sched_gamma}, "
+            f"ecs_weight={ecs_weight}, ecs_threshold={ecs_threshold}, "
+            f"ecs_active={str(ecs_active).lower()}"
+        )
+        if not ecs_active:
+            print(f"[stage1] ecs inactive reason={ecs_reason}")
         dataset = _Stage1VaeDataset(x_np, cond_np)
         loader = DataLoader(
             dataset,
@@ -1236,103 +1305,204 @@ class TriShift:
             )
 
         self.net.vae.train()
-        optimizer = torch.optim.Adam(self.net.vae.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=sched_gamma)
         use_amp = amp and self.device.type == "cuda"
-        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        def _current_state() -> dict:
+            return {k: v.detach().cpu() for k, v in self.net.vae.state_dict().items()}
 
-        best_state = None
-        stopper = _EarlyStopper(patience, min_delta)
-        logs = []
-        for epoch in range(epochs):
-            scpram_total = 0.0
-            recon_loss = 0.0
-            kl_loss = 0.0
-            optimizer.zero_grad(set_to_none=True)
-            for step, (x_batch, cond_batch) in enumerate(
-                tqdm(loader, desc=f"stage1 {epoch+1}/{epochs}", leave=False)
-            ):
-                x_batch = x_batch.to(self.device, non_blocking=True)
-                with torch.cuda.amp.autocast(enabled=use_amp):
-                    x_recon, _, loss_kl = self.net.vae.forward(x_batch)
-                    if deg_weight_active:
-                        loss_rec = _weighted_stage1_recon_loss(
-                            x_true=x_batch,
-                            x_recon=x_recon,
-                            cond_batch=cond_batch,
-                            deg_idx_dict=deg_idx_dict,
-                            deg_weight=deg_weight,
-                        )
-                    else:
-                        loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
-                    scpram_loss = (
-                        0.5 * loss_rec + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)
-                    ).mean()
-                    loss = scpram_loss / grad_accum_steps
-                scaler.scale(loss).backward()
-                if (step + 1) % grad_accum_steps == 0:
-                    scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.net.vae.parameters(), 10.0)
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
-                scpram_total += scpram_loss.item()
-                recon_loss += loss_rec.mean().item()
-                kl_loss += loss_kl.mean().item()
+        def _compute_base_loss(
+            x_batch: torch.Tensor,
+            cond_batch: list[str],
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            x_recon, _, loss_kl = self.net.vae.forward(x_batch)
+            if deg_weight_active:
+                loss_rec = _weighted_stage1_recon_loss(
+                    x_true=x_batch,
+                    x_recon=x_recon,
+                    cond_batch=cond_batch,
+                    deg_idx_dict=deg_idx_dict,
+                    deg_weight=deg_weight,
+                )
+            else:
+                loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
+            base_loss = (
+                0.5 * loss_rec + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)
+            ).mean()
+            return base_loss, loss_rec, loss_kl
 
-            avg_total = scpram_total / max(len(loader), 1)
-            logs.append(
-                {
-                    "scpram_loss": avg_total,
-                    "recon": recon_loss / max(len(loader), 1),
-                    "kl": kl_loss / max(len(loader), 1),
+        def _run_stage1_phase(
+            *,
+            phase_name: str,
+            phase_epochs: int,
+            phase_lr: float,
+            phase_patience: int,
+            phase_min_delta: float,
+            include_ecs: bool,
+            monitor_key: str,
+            use_scheduler: bool,
+            phase_sched_gamma: float,
+        ) -> tuple[list[dict], dict | None]:
+            def _handle_phase_error(exc: Exception) -> tuple[list[dict], dict | None]:
+                message = f"[stage1] {phase_name} aborted due to non-finite values: {exc}"
+                if include_ecs:
+                    print(message)
+                    return phase_logs, best_state
+                raise ValueError(
+                    f"{message}. Try lowering stage1_lr, disabling AMP, or reducing unstable preprocessing settings."
+                ) from exc
+
+            optimizer = torch.optim.Adam(self.net.vae.parameters(), lr=float(phase_lr))
+            scheduler = (
+                torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=float(phase_sched_gamma))
+                if use_scheduler
+                else None
+            )
+            scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+            stopper = _EarlyStopper(phase_patience, phase_min_delta)
+            phase_logs: list[dict] = []
+            best_state = None
+            self.net.vae.train()
+            for epoch in range(int(phase_epochs)):
+                total_loss_acc = 0.0
+                recon_acc = 0.0
+                kl_acc = 0.0
+                ecs_acc = 0.0
+                optimizer.zero_grad(set_to_none=True)
+                for step, (x_batch, cond_batch) in enumerate(
+                    tqdm(loader, desc=f"stage1:{phase_name} {epoch+1}/{phase_epochs}", leave=False)
+                ):
+                    x_batch = x_batch.to(self.device, non_blocking=True)
+                    try:
+                        with torch.cuda.amp.autocast(enabled=use_amp):
+                            base_loss, loss_rec, loss_kl = _compute_base_loss(x_batch, cond_batch)
+                            loss_ecs = torch.zeros((), device=x_batch.device, dtype=base_loss.dtype)
+                            if include_ecs:
+                                mu = self.net.vae.encode_mu(x_batch)
+                                if not torch.isfinite(mu).all():
+                                    raise ValueError("non-finite latent mu in ECS phase")
+                                loss_ecs = _stage1_ecs_loss(mu, threshold=ecs_threshold)
+                            total_loss = base_loss + (ecs_weight * loss_ecs if include_ecs else 0.0)
+                            if not torch.isfinite(total_loss):
+                                raise ValueError("non-finite total loss")
+                            loss = total_loss / grad_accum_steps
+                    except Exception as exc:
+                        return _handle_phase_error(exc)
+                    scaler.scale(loss).backward()
+                    if (step + 1) % grad_accum_steps == 0:
+                        scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.net.vae.parameters(), 10.0)
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad(set_to_none=True)
+                    total_loss_acc += total_loss.item()
+                    recon_acc += loss_rec.mean().item()
+                    kl_acc += loss_kl.mean().item()
+                    ecs_acc += loss_ecs.item() if include_ecs else 0.0
+
+                avg_total = total_loss_acc / max(len(loader), 1)
+                avg_recon = recon_acc / max(len(loader), 1)
+                avg_kl = kl_acc / max(len(loader), 1)
+                avg_ecs = ecs_acc / max(len(loader), 1) if include_ecs else 0.0
+                row = {
+                    "total_loss": avg_total,
+                    "recon": avg_recon,
+                    "kl": avg_kl,
+                    "ecs": avg_ecs,
                     "val_loss": None,
                 }
-            )
-            monitor = avg_total
-            if val_loader is not None:
-                self.net.vae.eval()
-                val_total = 0.0
-                with torch.no_grad():
-                    for x_batch, cond_batch in val_loader:
-                        x_batch = x_batch.to(self.device, non_blocking=True)
-                        with torch.cuda.amp.autocast(enabled=use_amp):
-                            x_recon, _, loss_kl = self.net.vae.forward(x_batch)
-                            if deg_weight_active:
-                                loss_rec = _weighted_stage1_recon_loss(
-                                    x_true=x_batch,
-                                    x_recon=x_recon,
-                                    cond_batch=cond_batch,
-                                    deg_idx_dict=deg_idx_dict,
-                                    deg_weight=deg_weight,
-                                )
-                            else:
-                                loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
-                            scpram_loss = (
-                                0.5 * loss_rec
-                                + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)
-                            ).mean()
-                        val_total += scpram_loss.item()
-                val_loss = val_total / max(len(val_loader), 1)
-                logs[-1]["val_loss"] = val_loss
-                monitor = val_loss
-                self.net.vae.train()
-            scheduler.step()
-            improved, should_stop = stopper.update(monitor)
-            if improved:
-                best_state = {k: v.detach().cpu() for k, v in self.net.vae.state_dict().items()}
-            if should_stop:
-                print(f"[stage1] early stop at epoch {epoch+1}")
-                break
+                if not include_ecs:
+                    row["scpram_loss"] = avg_total
+                phase_logs.append(row)
+                monitor = avg_total
+                if val_loader is not None:
+                    self.net.vae.eval()
+                    val_total_acc = 0.0
+                    with torch.no_grad():
+                        for x_batch, cond_batch in val_loader:
+                            x_batch = x_batch.to(self.device, non_blocking=True)
+                            try:
+                                with torch.cuda.amp.autocast(enabled=use_amp):
+                                    base_loss, _, _ = _compute_base_loss(x_batch, cond_batch)
+                                    loss_ecs = torch.zeros(
+                                        (), device=x_batch.device, dtype=base_loss.dtype
+                                    )
+                                    if include_ecs:
+                                        mu = self.net.vae.encode_mu(x_batch)
+                                        if not torch.isfinite(mu).all():
+                                            raise ValueError("non-finite latent mu in ECS validation")
+                                        loss_ecs = _stage1_ecs_loss(mu, threshold=ecs_threshold)
+                                    total_loss = base_loss + (
+                                        ecs_weight * loss_ecs if include_ecs else 0.0
+                                    )
+                                    if not torch.isfinite(total_loss):
+                                        raise ValueError("non-finite validation loss")
+                            except Exception as exc:
+                                return _handle_phase_error(exc)
+                            val_total_acc += total_loss.item()
+                    val_loss = val_total_acc / max(len(val_loader), 1)
+                    phase_logs[-1]["val_loss"] = val_loss
+                    monitor = val_loss
+                    self.net.vae.train()
+                if scheduler is not None:
+                    scheduler.step()
+                improved, should_stop = stopper.update(monitor)
+                if improved:
+                    best_state = _current_state()
+                if should_stop:
+                    print(f"[stage1] {phase_name} early stop at epoch {epoch+1}")
+                    break
+            return phase_logs, best_state
 
-        if best_state is not None:
-            self.net.vae.load_state_dict(best_state)
+        logs, phase1_best_state = _run_stage1_phase(
+            phase_name="phase1",
+            phase_epochs=int(epochs),
+            phase_lr=float(lr),
+            phase_patience=int(patience),
+            phase_min_delta=float(min_delta),
+            include_ecs=False,
+            monitor_key="val_loss" if val_loader is not None else "scpram_loss",
+            use_scheduler=True,
+            phase_sched_gamma=float(sched_gamma),
+        )
+        if phase1_best_state is not None:
+            self.net.vae.load_state_dict(phase1_best_state)
+        phase1_final_state = phase1_best_state if phase1_best_state is not None else _current_state()
+
+        ecs_logs: list[dict] = []
+        ecs_monitor_key = "val_loss" if val_loader is not None else "total_loss"
+        ecs_improved = False
+        if ecs_active:
+            ecs_logs, phase2_best_state = _run_stage1_phase(
+                phase_name="ecs",
+                phase_epochs=int(ecs_epochs),
+                phase_lr=float(ecs_lr),
+                phase_patience=int(ecs_patience),
+                phase_min_delta=float(ecs_min_delta),
+                include_ecs=True,
+                monitor_key=ecs_monitor_key,
+                use_scheduler=True,
+                phase_sched_gamma=float(ecs_sched_gamma),
+            )
+            ecs_improved = phase2_best_state is not None
+            if ecs_improved:
+                self.net.vae.load_state_dict(phase2_best_state)
+            else:
+                self.net.vae.load_state_dict(phase1_final_state)
 
         for p in self.net.vae.parameters():
             p.requires_grad = False
         self.net.vae.eval()
         print("[stage1] done vae training; vae frozen")
-        return {"epochs": logs}
+        return {
+            "epochs": logs,
+            "ecs_finetune": {
+                "enabled": bool(ecs_enable),
+                "active": bool(ecs_active),
+                "reason": str(ecs_reason),
+                "monitor_key": str(ecs_monitor_key),
+                "epochs": ecs_logs,
+                "best_from_phase2": bool(ecs_improved),
+            },
+        }
 
     def encode_and_cache_mu(
         self,

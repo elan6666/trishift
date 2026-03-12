@@ -1,0 +1,699 @@
+from __future__ import annotations
+
+import argparse
+import json
+import pickle
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from datetime import datetime
+from typing import Any
+
+import anndata as ad
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scanpy as sc
+
+from trishift._external_metrics import compute_scpram_metrics_from_arrays
+
+
+DEFAULT_RESULT_ROOTS = {
+    "trishift": REPO_ROOT / "artifacts" / "results",
+    "gears": REPO_ROOT / "artifacts" / "results" / "gears",
+    "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
+    "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
+}
+
+
+@dataclass
+class DEG20ExperimentResult:
+    out_dir: Path
+    per_condition_df: pd.DataFrame
+    split_summary_df: pd.DataFrame
+    dataset_summary_df: pd.DataFrame
+    gene_lists_df: pd.DataFrame
+    enrichment_df: pd.DataFrame
+    representative_df: pd.DataFrame
+    figure_paths: dict[str, str]
+
+
+def _ts_local() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _normalize_model_name(model_name: str) -> str:
+    key = str(model_name).strip().lower()
+    if key not in DEFAULT_RESULT_ROOTS:
+        raise ValueError(f"Unsupported model_name={model_name}")
+    return key
+
+
+def _split_ids_from_value(split_ids: int | str | list[int] | tuple[int, ...]) -> list[int]:
+    if isinstance(split_ids, int):
+        return [int(split_ids)]
+    if isinstance(split_ids, (list, tuple)):
+        out = [int(x) for x in split_ids]
+        if not out:
+            raise ValueError("split_ids cannot be empty")
+        return out
+    text = str(split_ids).strip()
+    if not text:
+        raise ValueError("split_ids cannot be empty")
+    return [int(x.strip()) for x in text.split(",") if x.strip()]
+
+
+def _result_root(model_name: str, dataset: str, result_dir: str | Path | None) -> Path:
+    if result_dir is not None and str(result_dir).strip():
+        return Path(result_dir).resolve()
+    return (DEFAULT_RESULT_ROOTS[_normalize_model_name(model_name)] / dataset).resolve()
+
+
+def _pkl_path(
+    *,
+    model_name: str,
+    dataset: str,
+    split_id: int,
+    result_root: Path,
+    variant_tag: str | None = None,
+) -> Path:
+    model_key = _normalize_model_name(model_name)
+    if model_key == "trishift":
+        suffix = f"_{variant_tag}" if variant_tag else ""
+        return result_root / f"trishift_{dataset}_{split_id}{suffix}.pkl"
+    return result_root / f"{model_key}_{dataset}_{split_id}.pkl"
+
+
+def _parse_condition_tokens(condition: str) -> list[str]:
+    tokens = []
+    for token in str(condition).split("+"):
+        tok = str(token).strip()
+        if not tok or tok.lower() == "ctrl":
+            continue
+        tokens.append(tok)
+    return tokens
+
+
+def _remove_perturbed_genes(genes: list[str], condition: str) -> list[str]:
+    perturbed = set(_parse_condition_tokens(condition))
+    return [g for g in genes if str(g) not in perturbed]
+
+
+def _payload_item_arrays(
+    obj: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if all(k in obj for k in ["Pred_full", "Ctrl_full", "Truth_full", "gene_name_full"]):
+        pred = np.asarray(obj["Pred_full"], dtype=np.float32)
+        ctrl = np.asarray(obj["Ctrl_full"], dtype=np.float32)
+        truth = np.asarray(obj["Truth_full"], dtype=np.float32)
+        gene_names = np.asarray(obj["gene_name_full"]).astype(str)
+        deg_idx = np.asarray(obj["DE_idx"], dtype=int).reshape(-1)
+        deg_name = np.asarray(obj["DE_name"]).astype(str)
+    else:
+        pred = np.asarray(obj["Pred"], dtype=np.float32)
+        ctrl = np.asarray(obj["Ctrl"], dtype=np.float32)
+        truth = np.asarray(obj["Truth"], dtype=np.float32)
+        deg_name = np.asarray(obj["DE_name"]).astype(str)
+        if deg_name.size == 0:
+            gene_names = np.asarray([f"gene_{i}" for i in range(pred.shape[1])], dtype=str)
+        else:
+            gene_names = deg_name.astype(str)
+        # Legacy payloads only contain the DEG subspace, so local gene indices are 0..n_deg-1.
+        deg_idx = np.arange(gene_names.shape[0], dtype=int)
+    if pred.ndim != 2 or ctrl.ndim != 2 or truth.ndim != 2:
+        raise ValueError("Prediction/control/truth arrays must be 2D")
+    if pred.shape[1] != ctrl.shape[1] or pred.shape[1] != truth.shape[1]:
+        raise ValueError("Prediction/control/truth arrays must share the same gene dimension")
+    if gene_names.shape[0] != pred.shape[1]:
+        raise ValueError("gene name array length must equal the gene dimension")
+    return pred, ctrl, truth, gene_names, deg_idx, deg_name
+
+
+def _truth_deg20(
+    *,
+    condition: str,
+    gene_names: np.ndarray,
+    deg_idx: np.ndarray,
+    deg_name: np.ndarray,
+    remove_perturbed_genes: bool,
+) -> tuple[list[str], np.ndarray]:
+    names = [str(g) for g in deg_name.tolist()] if deg_name.size > 0 else [str(gene_names[i]) for i in deg_idx.tolist()]
+    idx = [int(i) for i in deg_idx.tolist() if 0 <= int(i) < gene_names.shape[0]]
+    if remove_perturbed_genes:
+        filtered_names = _remove_perturbed_genes(names, condition)
+        keep = set(filtered_names)
+        idx = [i for i in idx if str(gene_names[i]) in keep]
+        names = filtered_names
+    return names[:20], np.asarray(idx[:20], dtype=int)
+
+
+def _pred_deg20_effect_size(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+    gene_names: np.ndarray,
+    condition: str,
+    remove_perturbed_genes: bool,
+) -> list[str]:
+    scores = np.abs(pred.mean(axis=0) - ctrl.mean(axis=0))
+    order = np.argsort(-scores, kind="stable")
+    ranked = [str(gene_names[i]) for i in order.tolist()]
+    if remove_perturbed_genes:
+        ranked = _remove_perturbed_genes(ranked, condition)
+    return ranked[:20]
+
+
+def _pred_deg20_scanpy_rank(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+    gene_names: np.ndarray,
+    condition: str,
+    remove_perturbed_genes: bool,
+) -> list[str]:
+    x = np.vstack([ctrl, pred]).astype(np.float32, copy=False)
+    obs = pd.DataFrame(
+        {
+            "group": ["control"] * int(ctrl.shape[0]) + ["predicted"] * int(pred.shape[0])
+        }
+    )
+    var = pd.DataFrame(index=pd.Index(gene_names.astype(str), name="gene_name"))
+    adata = ad.AnnData(X=x, obs=obs, var=var)
+    sc.tl.rank_genes_groups(
+        adata,
+        groupby="group",
+        reference="control",
+        rankby_abs=True,
+        n_genes=adata.n_vars,
+        method="wilcoxon",
+    )
+    names = adata.uns["rank_genes_groups"]["names"]["predicted"]
+    ranked = [str(g) for g in list(names)]
+    if remove_perturbed_genes:
+        ranked = _remove_perturbed_genes(ranked, condition)
+    return ranked[:20]
+
+
+def _pred_deg20(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+    gene_names: np.ndarray,
+    condition: str,
+    pred_deg_mode: str,
+    remove_perturbed_genes: bool,
+) -> tuple[list[str], str]:
+    mode_key = str(pred_deg_mode).strip().lower()
+    if mode_key not in {"adaptive", "scanpy", "effect_size"}:
+        raise ValueError("pred_deg_mode must be one of: adaptive, scanpy, effect_size")
+    if mode_key == "effect_size":
+        return _pred_deg20_effect_size(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        ), "effect_size_fallback"
+    if mode_key == "scanpy":
+        return _pred_deg20_scanpy_rank(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        ), "scanpy_rank"
+    if pred.shape[0] >= 2:
+        return _pred_deg20_scanpy_rank(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        ), "scanpy_rank"
+    return _pred_deg20_effect_size(
+        pred=pred,
+        ctrl=ctrl,
+        gene_names=gene_names,
+        condition=condition,
+        remove_perturbed_genes=remove_perturbed_genes,
+    ), "effect_size_fallback"
+
+
+def _overlap_metrics(truth_genes: list[str], pred_genes: list[str]) -> dict[str, float | int]:
+    truth = list(dict.fromkeys([str(g) for g in truth_genes]))
+    pred = list(dict.fromkeys([str(g) for g in pred_genes]))
+    truth_set = set(truth)
+    pred_set = set(pred)
+    common = truth_set & pred_set
+    union = truth_set | pred_set
+    return {
+        "common_degs_at_20": int(len(common)),
+        "jaccard_at_20": float(len(common) / len(union)) if union else float("nan"),
+        "precision_at_20": float(len(common) / len(pred_set)) if pred_set else float("nan"),
+        "recall_at_20": float(len(common) / len(truth_set)) if truth_set else float("nan"),
+        "truth_deg_count": int(len(truth)),
+        "pred_deg_count": int(len(pred)),
+    }
+
+
+def _condition_rows_from_payload(
+    *,
+    model_name: str,
+    dataset: str,
+    split_id: int,
+    pkl_path: Path,
+    payload: dict[str, Any],
+    pred_deg_mode: str,
+    remove_perturbed_genes: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    gene_rows: list[dict[str, Any]] = []
+    for condition, obj in payload.items():
+        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj)
+        truth_deg20, truth_deg_idx = _truth_deg20(
+            condition=str(condition),
+            gene_names=gene_names,
+            deg_idx=deg_idx,
+            deg_name=deg_name,
+            remove_perturbed_genes=remove_perturbed_genes,
+        )
+        pred_deg20, pred_mode_used = _pred_deg20(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=str(condition),
+            pred_deg_mode=pred_deg_mode,
+            remove_perturbed_genes=remove_perturbed_genes,
+        )
+        overlap = _overlap_metrics(truth_deg20, pred_deg20)
+        common_deg20 = [g for g in pred_deg20 if g in set(truth_deg20)]
+        scpram = compute_scpram_metrics_from_arrays(
+            X_true=truth,
+            X_pred=pred,
+            deg_idx=truth_deg_idx,
+            n_degs=20,
+            sample_ratio=0.8,
+            times=100,
+        )
+        row = {
+            "model_name": str(model_name),
+            "dataset": str(dataset),
+            "split_id": int(split_id),
+            "condition": str(condition),
+            "focus_key": f"{int(split_id)}:{str(condition)}",
+            "pkl_path": str(pkl_path),
+            "pred_deg_mode_used": str(pred_mode_used),
+            **overlap,
+            "scpram_r2_degs_mean_mean": float(scpram["scpram_r2_degs_mean_mean"]),
+            "scpram_r2_degs_var_mean": float(scpram["scpram_r2_degs_var_mean"]),
+            "scpram_wasserstein_degs_sum": float(scpram["scpram_wasserstein_degs_sum"]),
+        }
+        rows.append(row)
+        for list_type, genes in (
+            ("truth_deg20", truth_deg20),
+            ("pred_deg20", pred_deg20),
+            ("common_deg20", common_deg20),
+        ):
+            for rank, gene in enumerate(genes, start=1):
+                gene_rows.append(
+                    {
+                        "model_name": str(model_name),
+                        "dataset": str(dataset),
+                        "split_id": int(split_id),
+                        "condition": str(condition),
+                        "focus_key": f"{int(split_id)}:{str(condition)}",
+                        "list_type": str(list_type),
+                        "rank": int(rank),
+                        "gene": str(gene),
+                        "pred_deg_mode_used": str(pred_mode_used),
+                    }
+                )
+    return rows, gene_rows
+
+
+def _summarize_by_split(per_condition_df: pd.DataFrame) -> pd.DataFrame:
+    metric_cols = [
+        "common_degs_at_20",
+        "jaccard_at_20",
+        "precision_at_20",
+        "recall_at_20",
+        "truth_deg_count",
+        "pred_deg_count",
+        "scpram_r2_degs_mean_mean",
+        "scpram_r2_degs_var_mean",
+        "scpram_wasserstein_degs_sum",
+    ]
+    rows = []
+    for split_id, split_df in per_condition_df.groupby("split_id", sort=True):
+        row: dict[str, Any] = {
+            "model_name": str(split_df["model_name"].iloc[0]),
+            "dataset": str(split_df["dataset"].iloc[0]),
+            "split_id": int(split_id),
+            "n_conditions": int(len(split_df)),
+            "n_scanpy_rank": int(split_df["pred_deg_mode_used"].eq("scanpy_rank").sum()),
+            "n_effect_size_fallback": int(split_df["pred_deg_mode_used"].eq("effect_size_fallback").sum()),
+        }
+        for col in metric_cols:
+            vals = pd.to_numeric(split_df[col], errors="coerce")
+            row[f"{col}_mean"] = float(vals.mean())
+            row[f"{col}_median"] = float(vals.median())
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _summarize_dataset(split_summary_df: pd.DataFrame) -> pd.DataFrame:
+    numeric_cols = [c for c in split_summary_df.columns if c.endswith("_mean") or c.endswith("_median")]
+    row: dict[str, Any] = {
+        "model_name": str(split_summary_df["model_name"].iloc[0]),
+        "dataset": str(split_summary_df["dataset"].iloc[0]),
+        "n_splits": int(split_summary_df["split_id"].nunique()),
+    }
+    for col in numeric_cols:
+        vals = pd.to_numeric(split_summary_df[col], errors="coerce")
+        row[col] = float(vals.mean())
+    return pd.DataFrame([row])
+
+
+def select_representative_conditions(
+    per_condition_df: pd.DataFrame,
+    *,
+    focus_conditions: list[str] | None = None,
+) -> pd.DataFrame:
+    if focus_conditions:
+        focus_set = {str(x) for x in focus_conditions}
+        picked = per_condition_df[per_condition_df["condition"].astype(str).isin(focus_set)].copy()
+        sort_cols = [c for c in ["split_id", "condition"] if c in picked.columns]
+        if sort_cols:
+            return picked.sort_values(by=sort_cols).reset_index(drop=True)
+        return picked.reset_index(drop=True)
+    ranked = per_condition_df.sort_values(
+        by=["common_degs_at_20", "jaccard_at_20", "scpram_r2_degs_mean_mean"],
+        ascending=[False, False, False],
+        na_position="last",
+    ).reset_index(drop=True)
+    if ranked.empty:
+        return ranked
+    top_row = ranked.iloc[[0]]
+    mid_row = ranked.iloc[[len(ranked) // 2]]
+    worst_row = ranked.iloc[[-1]]
+    return pd.concat([top_row, mid_row, worst_row], ignore_index=True).drop_duplicates(
+        subset=["focus_key"]
+    )
+
+
+def _try_run_enrichment(
+    *,
+    gene_lists_df: pd.DataFrame,
+    representative_df: pd.DataFrame,
+    enrichment_mode: str,
+    enrichment_library: str,
+) -> pd.DataFrame:
+    mode_key = str(enrichment_mode).strip().lower()
+    if mode_key in {"disabled", "off", "none", "export_only"}:
+        return pd.DataFrame()
+    try:
+        import gseapy as gp  # type: ignore
+    except Exception:
+        return pd.DataFrame()
+
+    rep_keys = set(representative_df["focus_key"].astype(str).tolist())
+    work_df = gene_lists_df[
+        gene_lists_df["focus_key"].astype(str).isin(rep_keys)
+        & gene_lists_df["list_type"].isin(["pred_deg20", "common_deg20"])
+    ]
+    rows: list[dict[str, Any]] = []
+    for (focus_key, list_type), sub_df in work_df.groupby(["focus_key", "list_type"], sort=False):
+        gene_list = sub_df.sort_values("rank")["gene"].astype(str).tolist()
+        if not gene_list:
+            continue
+        try:
+            enr = gp.enrichr(
+                gene_list=gene_list,
+                gene_sets=[str(enrichment_library)],
+                organism="Human",
+                outdir=None,
+                no_plot=True,
+            )
+        except Exception:
+            continue
+        res2d = getattr(enr, "results", None)
+        if res2d is None or len(res2d) == 0:
+            continue
+        res2d = pd.DataFrame(res2d).head(20)
+        cond_info = sub_df.iloc[0]
+        for _, rr in res2d.iterrows():
+            rows.append(
+                {
+                    "model_name": str(cond_info["model_name"]),
+                    "dataset": str(cond_info["dataset"]),
+                    "split_id": int(cond_info["split_id"]),
+                    "condition": str(cond_info["condition"]),
+                    "focus_key": str(focus_key),
+                    "list_type": str(list_type),
+                    "library": str(enrichment_library),
+                    "term": str(rr.get("Term", "")),
+                    "adjusted_p_value": float(rr.get("Adjusted P-value", np.nan)),
+                    "combined_score": float(rr.get("Combined Score", np.nan)),
+                    "overlap": str(rr.get("Overlap", "")),
+                    "genes": str(rr.get("Genes", "")),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def load_condition_payload(
+    *,
+    model_name: str,
+    dataset: str,
+    split_id: int,
+    condition: str,
+    result_dir: str | Path | None = None,
+    variant_tag: str | None = None,
+) -> dict[str, Any]:
+    result_root = _result_root(model_name, dataset, result_dir)
+    pkl_path = _pkl_path(
+        model_name=model_name,
+        dataset=dataset,
+        split_id=int(split_id),
+        result_root=result_root,
+        variant_tag=variant_tag,
+    )
+    with pkl_path.open("rb") as f:
+        payload = pickle.load(f)
+    if str(condition) not in payload:
+        raise KeyError(f"Condition not found in payload: {condition}")
+    return payload[str(condition)]
+
+
+def summarize_condition_payload(
+    *,
+    payload_item: dict[str, Any],
+    condition: str,
+    pred_deg_mode: str = "adaptive",
+    remove_perturbed_genes: bool = True,
+) -> dict[str, Any]:
+    pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(payload_item)
+    truth_deg20, truth_deg_idx = _truth_deg20(
+        condition=str(condition),
+        gene_names=gene_names,
+        deg_idx=deg_idx,
+        deg_name=deg_name,
+        remove_perturbed_genes=remove_perturbed_genes,
+    )
+    pred_deg20, pred_mode_used = _pred_deg20(
+        pred=pred,
+        ctrl=ctrl,
+        gene_names=gene_names,
+        condition=str(condition),
+        pred_deg_mode=pred_deg_mode,
+        remove_perturbed_genes=remove_perturbed_genes,
+    )
+    common_deg20 = [g for g in pred_deg20 if g in set(truth_deg20)]
+    return {
+        "condition": str(condition),
+        "pred": pred,
+        "ctrl": ctrl,
+        "truth": truth,
+        "gene_name_full": gene_names,
+        "truth_deg20": truth_deg20,
+        "truth_deg_idx": truth_deg_idx,
+        "pred_deg20": pred_deg20,
+        "common_deg20": common_deg20,
+        "pred_deg_mode_used": str(pred_mode_used),
+    }
+
+
+def build_mean_var_scatter(
+    *,
+    payload_item: dict[str, Any],
+    truth_deg_idx: np.ndarray,
+    title_prefix: str,
+) -> tuple[plt.Figure, plt.Figure]:
+    pred, _, truth, gene_names, _, _ = _payload_item_arrays(payload_item)
+    degs = np.asarray(truth_deg_idx, dtype=int).reshape(-1)
+    degs = degs[(degs >= 0) & (degs < pred.shape[1])]
+    pred_mean = pred.mean(axis=0)[degs]
+    truth_mean = truth.mean(axis=0)[degs]
+    pred_var = pred.var(axis=0)[degs]
+    truth_var = truth.var(axis=0)[degs]
+    labels = gene_names[degs] if degs.size > 0 else np.array([], dtype=str)
+
+    fig_mean, ax_mean = plt.subplots(figsize=(5, 4))
+    ax_mean.scatter(truth_mean, pred_mean, s=18, alpha=0.8)
+    ax_mean.set_xlabel("Truth mean")
+    ax_mean.set_ylabel("Pred mean")
+    ax_mean.set_title(f"{title_prefix}: DEG20 mean")
+    for x, y, label in zip(truth_mean[:10], pred_mean[:10], labels[:10]):
+        ax_mean.text(float(x), float(y), str(label), fontsize=8)
+
+    fig_var, ax_var = plt.subplots(figsize=(5, 4))
+    ax_var.scatter(truth_var, pred_var, s=18, alpha=0.8)
+    ax_var.set_xlabel("Truth var")
+    ax_var.set_ylabel("Pred var")
+    ax_var.set_title(f"{title_prefix}: DEG20 variance")
+    for x, y, label in zip(truth_var[:10], pred_var[:10], labels[:10]):
+        ax_var.text(float(x), float(y), str(label), fontsize=8)
+    return fig_mean, fig_var
+
+
+def run_deg20_experiment(
+    *,
+    dataset: str,
+    model_name: str,
+    split_ids: int | str | list[int] | tuple[int, ...],
+    result_dir: str | Path | None = None,
+    out_root: str | Path | None = None,
+    variant_tag: str | None = None,
+    focus_conditions: list[str] | None = None,
+    pred_deg_mode: str = "adaptive",
+    enrichment_mode: str = "export_only",
+    enrichment_library: str = "Reactome_2022",
+    remove_perturbed_genes: bool = True,
+) -> DEG20ExperimentResult:
+    dataset_key = str(dataset).strip()
+    model_key = _normalize_model_name(model_name)
+    split_list = _split_ids_from_value(split_ids)
+    result_root = _result_root(model_key, dataset_key, result_dir)
+    out_base = Path(out_root).resolve() if out_root else result_root / f"deg20_downstream_{_ts_local()}"
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict[str, Any]] = []
+    gene_rows: list[dict[str, Any]] = []
+    for split_id in split_list:
+        pkl_path = _pkl_path(
+            model_name=model_key,
+            dataset=dataset_key,
+            split_id=int(split_id),
+            result_root=result_root,
+            variant_tag=variant_tag,
+        )
+        if not pkl_path.exists():
+            raise FileNotFoundError(f"Missing pkl: {pkl_path}")
+        with pkl_path.open("rb") as f:
+            payload = pickle.load(f)
+        if not isinstance(payload, dict):
+            raise TypeError(f"Unexpected payload type at {pkl_path}: {type(payload)}")
+        split_rows, split_gene_rows = _condition_rows_from_payload(
+            model_name=model_key,
+            dataset=dataset_key,
+            split_id=int(split_id),
+            pkl_path=pkl_path,
+            payload=payload,
+            pred_deg_mode=pred_deg_mode,
+            remove_perturbed_genes=remove_perturbed_genes,
+        )
+        rows.extend(split_rows)
+        gene_rows.extend(split_gene_rows)
+
+    per_condition_df = pd.DataFrame(rows).sort_values(by=["split_id", "condition"]).reset_index(drop=True)
+    gene_lists_df = pd.DataFrame(gene_rows).sort_values(by=["split_id", "condition", "list_type", "rank"]).reset_index(drop=True)
+    split_summary_df = _summarize_by_split(per_condition_df)
+    dataset_summary_df = _summarize_dataset(split_summary_df)
+    representative_df = select_representative_conditions(per_condition_df, focus_conditions=focus_conditions)
+    enrichment_df = _try_run_enrichment(
+        gene_lists_df=gene_lists_df,
+        representative_df=representative_df,
+        enrichment_mode=enrichment_mode,
+        enrichment_library=enrichment_library,
+    )
+
+    per_condition_path = out_base / "per_condition_metrics.csv"
+    split_summary_path = out_base / "split_summary.csv"
+    dataset_summary_path = out_base / "dataset_summary.csv"
+    gene_lists_path = out_base / "deg_gene_lists_long.csv"
+    representative_path = out_base / "representative_conditions.csv"
+    enrichment_path = out_base / "enrichment_results.csv"
+    meta_path = out_base / "run_meta.json"
+
+    per_condition_df.to_csv(per_condition_path, index=False)
+    split_summary_df.to_csv(split_summary_path, index=False)
+    dataset_summary_df.to_csv(dataset_summary_path, index=False)
+    gene_lists_df.to_csv(gene_lists_path, index=False)
+    representative_df.to_csv(representative_path, index=False)
+    enrichment_df.to_csv(enrichment_path, index=False)
+    meta = {
+        "dataset": dataset_key,
+        "model_name": model_key,
+        "split_ids": split_list,
+        "result_root": str(result_root),
+        "variant_tag": str(variant_tag or ""),
+        "pred_deg_mode": str(pred_deg_mode),
+        "enrichment_mode": str(enrichment_mode),
+        "enrichment_library": str(enrichment_library),
+        "remove_perturbed_genes": bool(remove_perturbed_genes),
+    }
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    figure_paths: dict[str, str] = {}
+    return DEG20ExperimentResult(
+        out_dir=out_base,
+        per_condition_df=per_condition_df,
+        split_summary_df=split_summary_df,
+        dataset_summary_df=dataset_summary_df,
+        gene_lists_df=gene_lists_df,
+        enrichment_df=enrichment_df,
+        representative_df=representative_df,
+        figure_paths=figure_paths,
+    )
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Run multi-condition scPRAM-style DEG20 downstream experiment from exported pkl files.")
+    ap.add_argument("--dataset", required=True)
+    ap.add_argument("--model_name", required=True, choices=sorted(DEFAULT_RESULT_ROOTS.keys()))
+    ap.add_argument("--split_ids", default="1")
+    ap.add_argument("--result_dir", default="")
+    ap.add_argument("--out_root", default="")
+    ap.add_argument("--variant_tag", default="")
+    ap.add_argument("--focus_conditions", default="")
+    ap.add_argument("--pred_deg_mode", default="adaptive", choices=["adaptive", "scanpy", "effect_size"])
+    ap.add_argument("--enrichment_mode", default="export_only", choices=["export_only", "run_if_available", "disabled"])
+    ap.add_argument("--enrichment_library", default="Reactome_2022")
+    ap.add_argument("--keep_perturbed_genes", action="store_true")
+    args = ap.parse_args()
+
+    focus_conditions = [x.strip() for x in str(args.focus_conditions).split(",") if x.strip()]
+    result = run_deg20_experiment(
+        dataset=str(args.dataset).strip(),
+        model_name=str(args.model_name).strip(),
+        split_ids=str(args.split_ids).strip(),
+        result_dir=str(args.result_dir).strip() or None,
+        out_root=str(args.out_root).strip() or None,
+        variant_tag=str(args.variant_tag).strip() or None,
+        focus_conditions=focus_conditions or None,
+        pred_deg_mode=str(args.pred_deg_mode).strip(),
+        enrichment_mode=str(args.enrichment_mode).strip(),
+        enrichment_library=str(args.enrichment_library).strip(),
+        remove_perturbed_genes=not bool(args.keep_perturbed_genes),
+    )
+    print(f"[deg20] out_dir={result.out_dir}")
+    print(result.dataset_summary_df.to_string(index=False))
+
+
+if __name__ == "__main__":
+    main()

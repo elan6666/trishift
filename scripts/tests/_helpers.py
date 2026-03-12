@@ -93,6 +93,34 @@ def make_tiny_pbmc_adata(
     return ad.AnnData(X=X, obs=obs, var=var)
 
 
+def make_tiny_scvi_pbmc_adata(
+    n_per_group: int = 8,
+    n_genes: int = 30,
+    seed: int = 0,
+) -> ad.AnnData:
+    rng = np.random.default_rng(seed)
+    gene_symbols = [f"G{i}" for i in range(n_genes)]
+    xs = []
+    labels = []
+    batches = []
+    for batch_id in (0, 1):
+        for cell_type, up_idx in (("B cells", [0, 1, 2]), ("CD4 T cells", [3, 4, 5])):
+            base = rng.poisson(lam=3 + batch_id, size=(n_per_group, n_genes)).astype(np.float32)
+            base[:, up_idx] += 2 + batch_id
+            xs.append(base)
+            labels.extend([cell_type] * n_per_group)
+            batches.extend([batch_id] * n_per_group)
+    X = np.vstack(xs).astype(np.float32, copy=False)
+    obs = pd.DataFrame(
+        {
+            "batch": batches,
+            "str_labels": labels,
+        }
+    )
+    var = pd.DataFrame({"gene_symbols": gene_symbols})
+    return ad.AnnData(X=X, obs=obs, var=var)
+
+
 def make_data_and_model(
     seed: int = 0,
     include_top20: bool = True,

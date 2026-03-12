@@ -17,6 +17,7 @@ dependencies = [
   "pandas",
   "anndata",
   "scanpy",
+  "scvi-tools",
   "scipy",
   "pyyaml",
   "tqdm",
