@@ -216,4 +216,4 @@ model:
     # Stage3 dropout。
     dropout: 0.0
     # 残差头：x_pred = x_ctrl + delta_x。
-    use_residual_head: true
+    use_residual_head: false

@@ -110,5 +110,5 @@ defaults_overrides:
       use_batch_norm: true
       use_layer_norm: false
       dropout: 0.0
-      use_residual_head: true
+      use_residual_head: false
 paths_overrides: {}

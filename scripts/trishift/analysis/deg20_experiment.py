@@ -168,6 +168,107 @@ def _pred_deg20_effect_size(
     return ranked[:20]
 
 
+def _compute_nonzero_non_dropout(
+    pert_mean: np.ndarray,
+    ctrl_mean: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    non_zero = np.where(pert_mean != 0)[0]
+    zero = np.where(pert_mean == 0)[0]
+    true_zeros = np.intersect1d(zero, np.where(ctrl_mean == 0)[0])
+    non_dropouts = np.concatenate((non_zero, true_zeros))
+    return non_zero, non_dropouts
+
+
+def _pred_deg20_effect_size_non_dropout(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+    gene_names: np.ndarray,
+    condition: str,
+    remove_perturbed_genes: bool,
+) -> list[str]:
+    pred_mean = np.asarray(pred.mean(axis=0)).ravel()
+    ctrl_mean = np.asarray(ctrl.mean(axis=0)).ravel()
+    scores = np.abs(pred_mean - ctrl_mean)
+    _, non_dropouts = _compute_nonzero_non_dropout(pred_mean, ctrl_mean)
+    keep = set(gene_names[np.asarray(non_dropouts, dtype=int)].astype(str).tolist())
+    order = np.argsort(-scores, kind="stable")
+    ranked = [str(gene_names[i]) for i in order.tolist() if str(gene_names[i]) in keep]
+    if remove_perturbed_genes:
+        ranked = _remove_perturbed_genes(ranked, condition)
+    return ranked[:20]
+
+
+def _prepare_scanpy_rank_matrix(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+) -> np.ndarray:
+    x = np.vstack([ctrl, pred]).astype(np.float32, copy=False)
+    if not np.isfinite(x).all():
+        raise ValueError("pred/ctrl matrix contains non-finite values")
+    min_val = float(np.min(x))
+    if min_val < 0.0:
+        x = x - min_val
+    return np.log1p(x).astype(np.float32, copy=False)
+
+
+def _pred_deg20_ttest_non_dropout(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+    gene_names: np.ndarray,
+    condition: str,
+    remove_perturbed_genes: bool,
+) -> list[str]:
+    if pred.ndim != 2 or ctrl.ndim != 2:
+        raise ValueError("pred/ctrl must be 2D for t-test ranking")
+    if pred.shape[1] != ctrl.shape[1]:
+        raise ValueError("pred/ctrl must share the same gene dimension")
+    if pred.shape[0] < 2 or ctrl.shape[0] < 2:
+        return _pred_deg20_effect_size(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        )
+    x = np.vstack([ctrl, pred]).astype(np.float32, copy=False)
+    if not np.isfinite(x).all():
+        return _pred_deg20_effect_size(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        )
+    obs = pd.DataFrame(
+        {
+            "group": ["control"] * int(ctrl.shape[0]) + ["predicted"] * int(pred.shape[0])
+        }
+    )
+    var = pd.DataFrame(index=pd.Index(gene_names.astype(str), name="gene_name"))
+    adata = ad.AnnData(X=x, obs=obs, var=var)
+    sc.tl.rank_genes_groups(
+        adata,
+        groupby="group",
+        reference="control",
+        rankby_abs=True,
+        n_genes=adata.n_vars,
+        method="t-test",
+    )
+    names = adata.uns["rank_genes_groups"]["names"]["predicted"]
+    ranked = [str(g) for g in list(names)]
+    pred_mean = np.asarray(pred.mean(axis=0)).ravel()
+    ctrl_mean = np.asarray(ctrl.mean(axis=0)).ravel()
+    _, non_dropouts = _compute_nonzero_non_dropout(pred_mean, ctrl_mean)
+    keep = set(gene_names[np.asarray(non_dropouts, dtype=int)].astype(str).tolist())
+    ranked = [g for g in ranked if g in keep]
+    if remove_perturbed_genes:
+        ranked = _remove_perturbed_genes(ranked, condition)
+    return ranked[:20]
+
+
 def _pred_deg20_scanpy_rank(
     *,
     pred: np.ndarray,
@@ -176,7 +277,7 @@ def _pred_deg20_scanpy_rank(
     condition: str,
     remove_perturbed_genes: bool,
 ) -> list[str]:
-    x = np.vstack([ctrl, pred]).astype(np.float32, copy=False)
+    x = _prepare_scanpy_rank_matrix(pred=pred, ctrl=ctrl)
     obs = pd.DataFrame(
         {
             "group": ["control"] * int(ctrl.shape[0]) + ["predicted"] * int(pred.shape[0])
@@ -199,6 +300,23 @@ def _pred_deg20_scanpy_rank(
     return ranked[:20]
 
 
+def _scanpy_rank_is_safe(
+    *,
+    pred: np.ndarray,
+    ctrl: np.ndarray,
+) -> bool:
+    # `rank_genes_groups` is unreliable on our reconstructed matrices once predictions
+    # contain substantial negative values; in that case adaptive mode should fall back
+    # to effect-size ranking instead of emitting deg lists with zero overlap.
+    if pred.ndim != 2 or ctrl.ndim != 2:
+        return False
+    if pred.shape[0] < 2:
+        return False
+    if not np.isfinite(pred).all() or not np.isfinite(ctrl).all():
+        return False
+    return True
+
+
 def _pred_deg20(
     *,
     pred: np.ndarray,
@@ -209,8 +327,16 @@ def _pred_deg20(
     remove_perturbed_genes: bool,
 ) -> tuple[list[str], str]:
     mode_key = str(pred_deg_mode).strip().lower()
-    if mode_key not in {"adaptive", "scanpy", "effect_size"}:
-        raise ValueError("pred_deg_mode must be one of: adaptive, scanpy, effect_size")
+    if mode_key not in {
+        "adaptive",
+        "scanpy",
+        "effect_size",
+        "effect_size_non_dropout",
+        "ttest_non_dropout",
+    }:
+        raise ValueError(
+            "pred_deg_mode must be one of: adaptive, scanpy, effect_size, effect_size_non_dropout, ttest_non_dropout"
+        )
     if mode_key == "effect_size":
         return _pred_deg20_effect_size(
             pred=pred,
@@ -219,6 +345,22 @@ def _pred_deg20(
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
         ), "effect_size_fallback"
+    if mode_key == "effect_size_non_dropout":
+        return _pred_deg20_effect_size_non_dropout(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        ), "effect_size_non_dropout"
+    if mode_key == "ttest_non_dropout":
+        return _pred_deg20_ttest_non_dropout(
+            pred=pred,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+        ), "ttest_non_dropout"
     if mode_key == "scanpy":
         return _pred_deg20_scanpy_rank(
             pred=pred,
@@ -227,7 +369,7 @@ def _pred_deg20(
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
         ), "scanpy_rank"
-    if pred.shape[0] >= 2:
+    if _scanpy_rank_is_safe(pred=pred, ctrl=ctrl):
         return _pred_deg20_scanpy_rank(
             pred=pred,
             ctrl=ctrl,
@@ -671,7 +813,17 @@ def main() -> None:
     ap.add_argument("--out_root", default="")
     ap.add_argument("--variant_tag", default="")
     ap.add_argument("--focus_conditions", default="")
-    ap.add_argument("--pred_deg_mode", default="adaptive", choices=["adaptive", "scanpy", "effect_size"])
+    ap.add_argument(
+        "--pred_deg_mode",
+        default="adaptive",
+        choices=[
+            "adaptive",
+            "scanpy",
+            "effect_size",
+            "effect_size_non_dropout",
+            "ttest_non_dropout",
+        ],
+    )
     ap.add_argument("--enrichment_mode", default="export_only", choices=["export_only", "run_if_available", "disabled"])
     ap.add_argument("--enrichment_library", default="Reactome_2022")
     ap.add_argument("--keep_perturbed_genes", action="store_true")

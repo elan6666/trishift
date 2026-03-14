@@ -29,6 +29,7 @@ from trishift.TriShiftData import TriShiftData
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
     pearson_delta_reference_metrics,
+    regression_r2_safe,
 )
 from trishift._utils import (
     apply_alias_mapping,
@@ -58,10 +59,17 @@ SYSTEMA_BASELINE_NAME_TO_DIR_SUFFIX = {
 
 DEFAULT_METRIC_COLUMNS = [
     "condition",
+    "mse_pred",
+    "mse_ctrl",
     "nmse",
     "pearson",
+    "deg_mean_r2",
     "systema_corr_all_allpert",
     "systema_corr_20de_allpert",
+    "systema_corr_all_r2",
+    "systema_corr_deg_r2",
+    "r2_degs_var_mean",
+    "r2_all_var_mean",
     "scpram_r2_all_mean_mean",
     "scpram_r2_all_var_mean",
     "scpram_r2_degs_mean_mean",
@@ -82,6 +90,7 @@ class AlignSpec:
     run_dir: Path
     columns: list[str]
     split_to_conditions: dict[int, list[str]]
+    row_values: dict[tuple[int, str], dict[str, object]]
 
 
 def _now_shanghai_ts() -> str:
@@ -113,16 +122,19 @@ def _load_profile(profile: str) -> dict:
     return {"dataset": dataset, "task_args": task_args}
 
 
-def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
-    """Match scripts/run_dataset.py:_write_mean_metrics."""
-    numeric_means = metrics_df.mean(numeric_only=True)
-    mean_pearson = float(numeric_means.get("pearson", float("nan")))
-
+def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
     preferred_order = [
         "pearson",
         "nmse",
+        "mse_pred",
+        "mse_ctrl",
+        "deg_mean_r2",
         "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
+        "systema_corr_all_r2",
+        "systema_corr_deg_r2",
+        "r2_degs_var_mean",
+        "r2_all_var_mean",
         "scpram_r2_all_mean_mean",
         "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
@@ -137,11 +149,52 @@ def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
     exclude_keys = {"split_id", "n_ensemble"}
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend([k for k in numeric_means.index if k not in exclude_keys and k not in keys])
+    return keys
+
+
+def _append_subgroup_mean_lines(lines: list[str], metrics_df: pd.DataFrame, keys: list[str]) -> None:
+    if "subgroup" not in metrics_df.columns:
+        return
+    subgroup_series = metrics_df["subgroup"]
+    if subgroup_series.isna().all():
+        return
+
+    ordered = ["single", "seen0", "seen1", "seen2"]
+    present = set(subgroup_series.dropna().astype(str).tolist())
+    subgroup_names = [g for g in ordered if g in present]
+    if "unknown" in present:
+        subgroup_names.append("unknown")
+    if not subgroup_names:
+        return
+
+    lines.append("# subgroup_means_row_weighted\n")
+    lines.append("subgroup_order=single,seen0,seen1,seen2\n")
+    lines.append("\n")
+
+    for g in subgroup_names:
+        sub_df = metrics_df[metrics_df["subgroup"].astype(str) == g]
+        lines.append(f"subgroup_{g}_n_rows={int(len(sub_df))}\n")
+        sub_numeric_means = sub_df.mean(numeric_only=True)
+        for key in keys:
+            if key not in sub_numeric_means.index:
+                continue
+            val = float(sub_numeric_means[key])
+            lines.append(f"subgroup_{g}_mean_{key}={val}\n")
+        lines.append("\n")
+
+
+def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
+    """Match scripts/run_dataset.py:_write_mean_metrics."""
+    numeric_means = metrics_df.mean(numeric_only=True)
+    mean_pearson = float(numeric_means.get("pearson", float("nan")))
+
+    keys = _resolve_mean_metric_keys(numeric_means)
 
     lines = [f"{mean_pearson}\n"]
     for key in keys:
         val = float(numeric_means[key])
         lines.append(f"mean_{key}={val}\n")
+    _append_subgroup_mean_lines(lines, metrics_df, keys)
     path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -189,11 +242,16 @@ def _load_align_spec(align_run_dir: Path) -> AlignSpec:
     split_to_conditions: dict[int, list[str]] = {}
     for split_id, g in df.groupby("split_id", sort=True):
         split_to_conditions[int(split_id)] = g["condition"].astype(str).tolist()
+    row_values = {
+        (int(row["split_id"]), str(row["condition"])): row
+        for row in df.to_dict(orient="records")
+    }
 
     return AlignSpec(
         run_dir=align_run_dir,
         columns=[str(c) for c in df.columns.tolist()],
         split_to_conditions=split_to_conditions,
+        row_values=row_values,
     )
 
 
@@ -205,11 +263,16 @@ def _align_spec_from_metrics_csv(metrics_csv: Path) -> AlignSpec:
     split_to_conditions: dict[int, list[str]] = {}
     for split_id, g in df.groupby("split_id", sort=True):
         split_to_conditions[int(split_id)] = g["condition"].astype(str).tolist()
+    row_values = {
+        (int(row["split_id"]), str(row["condition"])): row
+        for row in df.to_dict(orient="records")
+    }
 
     return AlignSpec(
         run_dir=metrics_csv.parent,
         columns=[str(c) for c in df.columns.tolist()],
         split_to_conditions=split_to_conditions,
+        row_values=row_values,
     )
 
 
@@ -226,6 +289,7 @@ def _build_align_spec_from_splits(
         run_dir=Path("."),
         columns=list(columns or DEFAULT_METRIC_COLUMNS),
         split_to_conditions=split_to_conditions,
+        row_values={},
     )
 
 
@@ -361,8 +425,13 @@ def _compute_row(
     pred_mean: np.ndarray,
     pert_reference: np.ndarray,
     out_columns: list[str],
+    align_row_values: dict[str, object] | None = None,
 ) -> dict:
     row: dict[str, object] = {c: np.nan for c in out_columns}
+    if align_row_values:
+        for key, val in align_row_values.items():
+            if key in row:
+                row[key] = val
     row["condition"] = cond
     row["split_id"] = int(split_id)
     row["n_ensemble"] = int(n_ensemble)
@@ -384,12 +453,17 @@ def _compute_row(
     pred_vec = pred_mean[deg_idx].reshape(-1)
     ctrl_vec = ctrl_mean_all[deg_idx].reshape(-1)
 
-    denom = mse(true_vec, ctrl_vec)
-    nmse_val = float(mse(true_vec, pred_vec) / denom) if denom > 0 else np.nan
+    mse_ctrl_val = float(mse(true_vec, ctrl_vec))
+    mse_pred_val = float(mse(true_vec, pred_vec))
+    nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
     try:
         pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
     except Exception:
         pearson_val = np.nan
+    deg_mean_r2_val = regression_r2_safe(
+        true_vec - ctrl_vec,
+        pred_vec - ctrl_vec,
+    )
 
     systema = pearson_delta_reference_metrics(
         X_true=true_mean.reshape(-1),
@@ -398,10 +472,15 @@ def _compute_row(
         top20_de_idxs=deg_idx,
     )
 
+    row["mse_pred"] = mse_pred_val
+    row["mse_ctrl"] = mse_ctrl_val
     row["nmse"] = nmse_val
     row["pearson"] = pearson_val
+    row["deg_mean_r2"] = float(deg_mean_r2_val)
     row["systema_corr_all_allpert"] = float(systema.get("corr_all_allpert", np.nan))
     row["systema_corr_20de_allpert"] = float(systema.get("corr_20de_allpert", np.nan))
+    row["systema_corr_all_r2"] = float(systema.get("corr_all_r2", np.nan))
+    row["systema_corr_deg_r2"] = float(systema.get("corr_deg_r2", np.nan))
 
     # scPRAM metrics intentionally not computed for Systema baselines.
     for k in list(row.keys()):
@@ -493,6 +572,7 @@ def _run_one_method(
                 pred_mean=pred_mean,
                 pert_reference=pert_reference,
                 out_columns=align.columns,
+                align_row_values=align.row_values.get((int(split_id), str(cond))),
             )
             rows.append(row)
 

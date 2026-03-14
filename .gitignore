@@ -29,6 +29,9 @@ nul
 .tmp_test_utils/
 _tmp_*
 run_*.log
+tmp/pdfs/
+output/
+output/pdf/
 
 # Training outputs / caches
 artifacts/

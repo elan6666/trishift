@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from scripts.tests._helpers import temp_dir
 from scripts.trishift.analysis.deg20_experiment import (
+    _pred_deg20,
     load_condition_payload,
     run_deg20_experiment,
     select_representative_conditions,
@@ -66,6 +67,28 @@ def _single_row_payload() -> dict:
     }
 
 
+def _multirow_negative_pred_payload() -> dict:
+    gene_names = np.array([f"G{i}" for i in range(6)], dtype=object)
+    ctrl = np.full((6, 6), 1.0, dtype=np.float32)
+    truth = np.full((6, 6), 1.0, dtype=np.float32)
+    truth[:, 0] += 4.0
+    truth[:, 1] += 3.0
+    pred = np.full((6, 6), 1.0, dtype=np.float32)
+    pred[:, 0] += 4.5
+    pred[:, 1] += 2.5
+    pred[:, 4] = -0.5
+    return {
+        "Z+ctrl": {
+            "Pred_full": pred,
+            "Ctrl_full": ctrl,
+            "Truth_full": truth,
+            "gene_name_full": gene_names,
+            "DE_idx": np.array([0, 1], dtype=int),
+            "DE_name": np.array(["G0", "G1"], dtype=object),
+        }
+    }
+
+
 def test_run_deg20_experiment_adaptive_uses_scanpy_and_effect_size():
     with temp_dir() as tmp:
         root = Path(tmp)
@@ -99,6 +122,66 @@ def test_run_deg20_experiment_adaptive_uses_scanpy_and_effect_size():
         assert int(gears_row["common_degs_at_20"]) >= 2
         assert (tri_result.out_dir / "per_condition_metrics.csv").exists()
         assert (tri_result.out_dir / "deg_gene_lists_long.csv").exists()
+
+
+def test_pred_deg20_adaptive_falls_back_to_effect_size_for_negative_predictions():
+    payload = _multirow_negative_pred_payload()["Z+ctrl"]
+    pred_genes, mode_used = _pred_deg20(
+        pred=np.asarray(payload["Pred_full"], dtype=np.float32),
+        ctrl=np.asarray(payload["Ctrl_full"], dtype=np.float32),
+        gene_names=np.asarray(payload["gene_name_full"]).astype(str),
+        condition="Z+ctrl",
+        pred_deg_mode="adaptive",
+        remove_perturbed_genes=True,
+    )
+    assert mode_used == "scanpy_rank"
+    assert len(set(pred_genes[:5]) & {"G0", "G1"}) >= 1
+
+
+def test_pred_deg20_ttest_non_dropout_matches_truth_style_filtering():
+    payload = _multirow_payload()["X+ctrl"]
+    pred_genes, mode_used = _pred_deg20(
+        pred=np.asarray(payload["Pred_full"], dtype=np.float32),
+        ctrl=np.asarray(payload["Ctrl_full"], dtype=np.float32),
+        gene_names=np.asarray(payload["gene_name_full"]).astype(str),
+        condition="X+ctrl",
+        pred_deg_mode="ttest_non_dropout",
+        remove_perturbed_genes=True,
+    )
+    assert mode_used == "ttest_non_dropout"
+    assert "X" not in pred_genes
+    assert len(set(pred_genes[:5]) & {"G0", "G1"}) >= 1
+
+
+def test_pred_deg20_effect_size_non_dropout_filters_dropout_genes():
+    gene_names = np.array(["G0", "G1", "G2", "G3"], dtype=object)
+    ctrl = np.array(
+        [
+            [0.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+            [0.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    pred = np.array(
+        [
+            [0.0, 4.0, 2.5, 1.0],
+            [0.0, 4.0, 2.5, 1.0],
+            [0.0, 4.0, 2.5, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    pred_genes, mode_used = _pred_deg20(
+        pred=pred,
+        ctrl=ctrl,
+        gene_names=gene_names.astype(str),
+        condition="X+ctrl",
+        pred_deg_mode="effect_size_non_dropout",
+        remove_perturbed_genes=False,
+    )
+    assert mode_used == "effect_size_non_dropout"
+    assert pred_genes[0] == "G1"
+    assert pred_genes[1] == "G2"
 
 
 def test_run_deg20_experiment_summaries_are_macro_over_conditions():
