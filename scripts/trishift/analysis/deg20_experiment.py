@@ -1021,7 +1021,7 @@ def run_deg20_experiment(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Run multi-condition scPRAM-style DEG20 downstream experiment from exported pkl files.")
+    ap = argparse.ArgumentParser(description="Run multi-condition DEG20 downstream experiment from exported pkl files.")
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--model_name", required=True, choices=sorted(DEFAULT_RESULT_ROOTS.keys()))
     ap.add_argument("--split_ids", default="1")
