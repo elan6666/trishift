@@ -29,6 +29,7 @@ DEFAULT_RESULT_ROOTS = {
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
 }
+DEFAULT_DEG_CACHE_ROOT = REPO_ROOT / "artifacts" / "cache" / "degs"
 
 
 @dataclass
@@ -104,6 +105,10 @@ def _remove_perturbed_genes(genes: list[str], condition: str) -> list[str]:
     return [g for g in genes if str(g) not in perturbed]
 
 
+def _safe_token(text: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(text))
+
+
 def _payload_item_arrays(
     obj: dict[str, Any],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -137,11 +142,69 @@ def _payload_item_arrays(
 def _truth_deg20(
     *,
     condition: str,
+    truth: np.ndarray,
+    ctrl: np.ndarray,
     gene_names: np.ndarray,
     deg_idx: np.ndarray,
     deg_name: np.ndarray,
+    truth_deg_mode: str,
     remove_perturbed_genes: bool,
+    n_degs: int = 20,
 ) -> tuple[list[str], np.ndarray]:
+    mode_key = str(truth_deg_mode).strip().lower()
+    if mode_key not in {"payload", "scanpy", "effect_size", "effect_size_non_dropout", "ttest_non_dropout"}:
+        raise ValueError(
+            "truth_deg_mode must be one of: payload, scanpy, effect_size, effect_size_non_dropout, ttest_non_dropout"
+        )
+    if mode_key == "scanpy":
+        names = _pred_deg20_scanpy_rank(
+            pred=truth,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
+        )
+        name_to_idx = {str(g): i for i, g in enumerate(gene_names.astype(str).tolist())}
+        idx = [int(name_to_idx[g]) for g in names if g in name_to_idx]
+        return names[:n_degs], np.asarray(idx[:n_degs], dtype=int)
+    if mode_key == "effect_size":
+        names = _pred_deg20_effect_size(
+            pred=truth,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
+        )
+        name_to_idx = {str(g): i for i, g in enumerate(gene_names.astype(str).tolist())}
+        idx = [int(name_to_idx[g]) for g in names if g in name_to_idx]
+        return names[:n_degs], np.asarray(idx[:n_degs], dtype=int)
+    if mode_key == "effect_size_non_dropout":
+        names = _pred_deg20_effect_size_non_dropout(
+            pred=truth,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
+        )
+        name_to_idx = {str(g): i for i, g in enumerate(gene_names.astype(str).tolist())}
+        idx = [int(name_to_idx[g]) for g in names if g in name_to_idx]
+        return names[:n_degs], np.asarray(idx[:n_degs], dtype=int)
+    if mode_key == "ttest_non_dropout":
+        names = _pred_deg20_ttest_non_dropout(
+            pred=truth,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            condition=condition,
+            remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
+        )
+        name_to_idx = {str(g): i for i, g in enumerate(gene_names.astype(str).tolist())}
+        idx = [int(name_to_idx[g]) for g in names if g in name_to_idx]
+        return names[:n_degs], np.asarray(idx[:n_degs], dtype=int)
+
     names = [str(g) for g in deg_name.tolist()] if deg_name.size > 0 else [str(gene_names[i]) for i in deg_idx.tolist()]
     idx = [int(i) for i in deg_idx.tolist() if 0 <= int(i) < gene_names.shape[0]]
     if remove_perturbed_genes:
@@ -149,7 +212,92 @@ def _truth_deg20(
         keep = set(filtered_names)
         idx = [i for i in idx if str(gene_names[i]) in keep]
         names = filtered_names
-    return names[:20], np.asarray(idx[:20], dtype=int)
+    return names[:n_degs], np.asarray(idx[:n_degs], dtype=int)
+
+
+def _truth_deg_cache_path(
+    *,
+    cache_root: Path,
+    pkl_path: Path,
+    truth_deg_mode: str,
+    remove_perturbed_genes: bool,
+    n_degs: int,
+) -> Path:
+    mode_key = _safe_token(str(truth_deg_mode).strip().lower())
+    keep_key = "drop_pert" if remove_perturbed_genes else "keep_pert"
+    return cache_root / f"{pkl_path.stem}__truth_{mode_key}__top{int(n_degs)}__{keep_key}.pkl"
+
+
+def _build_truth_deg_cache_for_payload(
+    *,
+    payload: dict[str, Any],
+    truth_deg_mode: str,
+    remove_perturbed_genes: bool,
+    n_degs: int,
+) -> dict[str, Any]:
+    conditions: dict[str, dict[str, Any]] = {}
+    for condition, obj in payload.items():
+        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj)
+        truth_genes, truth_idx = _truth_deg20(
+            condition=str(condition),
+            truth=truth,
+            ctrl=ctrl,
+            gene_names=gene_names,
+            deg_idx=deg_idx,
+            deg_name=deg_name,
+            truth_deg_mode=truth_deg_mode,
+            remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
+        )
+        conditions[str(condition)] = {
+            "truth_deg20": list(truth_genes),
+            "truth_deg_idx": np.asarray(truth_idx, dtype=int),
+        }
+    return {
+        "truth_deg_mode": str(truth_deg_mode).strip().lower(),
+        "remove_perturbed_genes": bool(remove_perturbed_genes),
+        "n_degs": int(n_degs),
+        "conditions": conditions,
+    }
+
+
+def _load_or_build_truth_deg_cache(
+    *,
+    payload: dict[str, Any],
+    pkl_path: Path,
+    truth_deg_mode: str,
+    remove_perturbed_genes: bool,
+    cache_root: Path,
+    n_degs: int,
+) -> dict[str, Any]:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_path = _truth_deg_cache_path(
+        cache_root=cache_root,
+        pkl_path=pkl_path,
+        truth_deg_mode=truth_deg_mode,
+        remove_perturbed_genes=remove_perturbed_genes,
+        n_degs=n_degs,
+    )
+    if cache_path.exists():
+        with cache_path.open("rb") as fh:
+            cached = pickle.load(fh)
+        if (
+            isinstance(cached, dict)
+            and str(cached.get("truth_deg_mode", "")).strip().lower() == str(truth_deg_mode).strip().lower()
+            and bool(cached.get("remove_perturbed_genes", True)) == bool(remove_perturbed_genes)
+            and int(cached.get("n_degs", n_degs)) == int(n_degs)
+            and isinstance(cached.get("conditions"), dict)
+        ):
+            return cached
+    cached = _build_truth_deg_cache_for_payload(
+        payload=payload,
+        truth_deg_mode=truth_deg_mode,
+        remove_perturbed_genes=remove_perturbed_genes,
+        n_degs=n_degs,
+    )
+    with cache_path.open("wb") as fh:
+        pickle.dump(cached, fh)
+    return cached
 
 
 def _pred_deg20_effect_size(
@@ -159,13 +307,14 @@ def _pred_deg20_effect_size(
     gene_names: np.ndarray,
     condition: str,
     remove_perturbed_genes: bool,
+    n_degs: int,
 ) -> list[str]:
     scores = np.abs(pred.mean(axis=0) - ctrl.mean(axis=0))
     order = np.argsort(-scores, kind="stable")
     ranked = [str(gene_names[i]) for i in order.tolist()]
     if remove_perturbed_genes:
         ranked = _remove_perturbed_genes(ranked, condition)
-    return ranked[:20]
+    return ranked[:n_degs]
 
 
 def _compute_nonzero_non_dropout(
@@ -186,6 +335,7 @@ def _pred_deg20_effect_size_non_dropout(
     gene_names: np.ndarray,
     condition: str,
     remove_perturbed_genes: bool,
+    n_degs: int,
 ) -> list[str]:
     pred_mean = np.asarray(pred.mean(axis=0)).ravel()
     ctrl_mean = np.asarray(ctrl.mean(axis=0)).ravel()
@@ -196,7 +346,7 @@ def _pred_deg20_effect_size_non_dropout(
     ranked = [str(gene_names[i]) for i in order.tolist() if str(gene_names[i]) in keep]
     if remove_perturbed_genes:
         ranked = _remove_perturbed_genes(ranked, condition)
-    return ranked[:20]
+    return ranked[:n_degs]
 
 
 def _prepare_scanpy_rank_matrix(
@@ -220,6 +370,7 @@ def _pred_deg20_ttest_non_dropout(
     gene_names: np.ndarray,
     condition: str,
     remove_perturbed_genes: bool,
+    n_degs: int,
 ) -> list[str]:
     if pred.ndim != 2 or ctrl.ndim != 2:
         raise ValueError("pred/ctrl must be 2D for t-test ranking")
@@ -232,6 +383,7 @@ def _pred_deg20_ttest_non_dropout(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         )
     x = np.vstack([ctrl, pred]).astype(np.float32, copy=False)
     if not np.isfinite(x).all():
@@ -241,6 +393,7 @@ def _pred_deg20_ttest_non_dropout(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         )
     obs = pd.DataFrame(
         {
@@ -266,7 +419,7 @@ def _pred_deg20_ttest_non_dropout(
     ranked = [g for g in ranked if g in keep]
     if remove_perturbed_genes:
         ranked = _remove_perturbed_genes(ranked, condition)
-    return ranked[:20]
+    return ranked[:n_degs]
 
 
 def _pred_deg20_scanpy_rank(
@@ -276,6 +429,7 @@ def _pred_deg20_scanpy_rank(
     gene_names: np.ndarray,
     condition: str,
     remove_perturbed_genes: bool,
+    n_degs: int,
 ) -> list[str]:
     x = _prepare_scanpy_rank_matrix(pred=pred, ctrl=ctrl)
     obs = pd.DataFrame(
@@ -297,7 +451,7 @@ def _pred_deg20_scanpy_rank(
     ranked = [str(g) for g in list(names)]
     if remove_perturbed_genes:
         ranked = _remove_perturbed_genes(ranked, condition)
-    return ranked[:20]
+    return ranked[:n_degs]
 
 
 def _scanpy_rank_is_safe(
@@ -325,6 +479,7 @@ def _pred_deg20(
     condition: str,
     pred_deg_mode: str,
     remove_perturbed_genes: bool,
+    n_degs: int = 20,
 ) -> tuple[list[str], str]:
     mode_key = str(pred_deg_mode).strip().lower()
     if mode_key not in {
@@ -344,6 +499,7 @@ def _pred_deg20(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         ), "effect_size_fallback"
     if mode_key == "effect_size_non_dropout":
         return _pred_deg20_effect_size_non_dropout(
@@ -352,6 +508,7 @@ def _pred_deg20(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         ), "effect_size_non_dropout"
     if mode_key == "ttest_non_dropout":
         return _pred_deg20_ttest_non_dropout(
@@ -360,6 +517,7 @@ def _pred_deg20(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         ), "ttest_non_dropout"
     if mode_key == "scanpy":
         return _pred_deg20_scanpy_rank(
@@ -368,6 +526,7 @@ def _pred_deg20(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         ), "scanpy_rank"
     if _scanpy_rank_is_safe(pred=pred, ctrl=ctrl):
         return _pred_deg20_scanpy_rank(
@@ -376,6 +535,7 @@ def _pred_deg20(
             gene_names=gene_names,
             condition=condition,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         ), "scanpy_rank"
     return _pred_deg20_effect_size(
         pred=pred,
@@ -383,6 +543,7 @@ def _pred_deg20(
         gene_names=gene_names,
         condition=condition,
         remove_perturbed_genes=remove_perturbed_genes,
+        n_degs=n_degs,
     ), "effect_size_fallback"
 
 
@@ -410,20 +571,34 @@ def _condition_rows_from_payload(
     split_id: int,
     pkl_path: Path,
     payload: dict[str, Any],
+    truth_deg_mode: str,
     pred_deg_mode: str,
     remove_perturbed_genes: bool,
+    truth_deg_cache: dict[str, Any] | None = None,
+    n_degs: int = 20,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     gene_rows: list[dict[str, Any]] = []
     for condition, obj in payload.items():
         pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj)
-        truth_deg20, truth_deg_idx = _truth_deg20(
-            condition=str(condition),
-            gene_names=gene_names,
-            deg_idx=deg_idx,
-            deg_name=deg_name,
-            remove_perturbed_genes=remove_perturbed_genes,
-        )
+        cached_cond = None
+        if truth_deg_cache is not None:
+            cached_cond = (truth_deg_cache.get("conditions", {}) or {}).get(str(condition))
+        if cached_cond is not None:
+            truth_deg20 = [str(g) for g in cached_cond.get("truth_deg20", [])]
+            truth_deg_idx = np.asarray(cached_cond.get("truth_deg_idx", []), dtype=int)
+        else:
+            truth_deg20, truth_deg_idx = _truth_deg20(
+                condition=str(condition),
+                truth=truth,
+                ctrl=ctrl,
+                gene_names=gene_names,
+                deg_idx=deg_idx,
+                deg_name=deg_name,
+                truth_deg_mode=truth_deg_mode,
+                remove_perturbed_genes=remove_perturbed_genes,
+                n_degs=n_degs,
+            )
         pred_deg20, pred_mode_used = _pred_deg20(
             pred=pred,
             ctrl=ctrl,
@@ -431,6 +606,7 @@ def _condition_rows_from_payload(
             condition=str(condition),
             pred_deg_mode=pred_deg_mode,
             remove_perturbed_genes=remove_perturbed_genes,
+            n_degs=n_degs,
         )
         overlap = _overlap_metrics(truth_deg20, pred_deg20)
         common_deg20 = [g for g in pred_deg20 if g in set(truth_deg20)]
@@ -438,7 +614,7 @@ def _condition_rows_from_payload(
             X_true=truth,
             X_pred=pred,
             deg_idx=truth_deg_idx,
-            n_degs=20,
+            n_degs=int(n_degs),
             sample_ratio=0.8,
             times=100,
         )
@@ -449,6 +625,8 @@ def _condition_rows_from_payload(
             "condition": str(condition),
             "focus_key": f"{int(split_id)}:{str(condition)}",
             "pkl_path": str(pkl_path),
+            "deg_top_k": int(n_degs),
+            "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
             "pred_deg_mode_used": str(pred_mode_used),
             **overlap,
             "scpram_r2_degs_mean_mean": float(scpram["scpram_r2_degs_mean_mean"]),
@@ -472,6 +650,8 @@ def _condition_rows_from_payload(
                         "list_type": str(list_type),
                         "rank": int(rank),
                         "gene": str(gene),
+                        "deg_top_k": int(n_degs),
+                        "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
                         "pred_deg_mode_used": str(pred_mode_used),
                     }
                 )
@@ -496,6 +676,7 @@ def _summarize_by_split(per_condition_df: pd.DataFrame) -> pd.DataFrame:
             "model_name": str(split_df["model_name"].iloc[0]),
             "dataset": str(split_df["dataset"].iloc[0]),
             "split_id": int(split_id),
+            "deg_top_k": int(pd.to_numeric(split_df["deg_top_k"], errors="coerce").iloc[0]),
             "n_conditions": int(len(split_df)),
             "n_scanpy_rank": int(split_df["pred_deg_mode_used"].eq("scanpy_rank").sum()),
             "n_effect_size_fallback": int(split_df["pred_deg_mode_used"].eq("effect_size_fallback").sum()),
@@ -513,6 +694,7 @@ def _summarize_dataset(split_summary_df: pd.DataFrame) -> pd.DataFrame:
     row: dict[str, Any] = {
         "model_name": str(split_summary_df["model_name"].iloc[0]),
         "dataset": str(split_summary_df["dataset"].iloc[0]),
+        "deg_top_k": int(pd.to_numeric(split_summary_df["deg_top_k"], errors="coerce").iloc[0]),
         "n_splits": int(split_summary_df["split_id"].nunique()),
     }
     for col in numeric_cols:
@@ -636,16 +818,22 @@ def summarize_condition_payload(
     *,
     payload_item: dict[str, Any],
     condition: str,
+    truth_deg_mode: str = "payload",
     pred_deg_mode: str = "adaptive",
+    n_degs: int = 20,
     remove_perturbed_genes: bool = True,
 ) -> dict[str, Any]:
     pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(payload_item)
     truth_deg20, truth_deg_idx = _truth_deg20(
         condition=str(condition),
+        truth=truth,
+        ctrl=ctrl,
         gene_names=gene_names,
         deg_idx=deg_idx,
         deg_name=deg_name,
+        truth_deg_mode=truth_deg_mode,
         remove_perturbed_genes=remove_perturbed_genes,
+        n_degs=n_degs,
     )
     pred_deg20, pred_mode_used = _pred_deg20(
         pred=pred,
@@ -654,6 +842,7 @@ def summarize_condition_payload(
         condition=str(condition),
         pred_deg_mode=pred_deg_mode,
         remove_perturbed_genes=remove_perturbed_genes,
+        n_degs=n_degs,
     )
     common_deg20 = [g for g in pred_deg20 if g in set(truth_deg20)]
     return {
@@ -664,6 +853,8 @@ def summarize_condition_payload(
         "gene_name_full": gene_names,
         "truth_deg20": truth_deg20,
         "truth_deg_idx": truth_deg_idx,
+        "deg_top_k": int(n_degs),
+        "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
         "pred_deg20": pred_deg20,
         "common_deg20": common_deg20,
         "pred_deg_mode_used": str(pred_mode_used),
@@ -675,6 +866,7 @@ def build_mean_var_scatter(
     payload_item: dict[str, Any],
     truth_deg_idx: np.ndarray,
     title_prefix: str,
+    n_degs: int = 20,
 ) -> tuple[plt.Figure, plt.Figure]:
     pred, _, truth, gene_names, _, _ = _payload_item_arrays(payload_item)
     degs = np.asarray(truth_deg_idx, dtype=int).reshape(-1)
@@ -689,7 +881,7 @@ def build_mean_var_scatter(
     ax_mean.scatter(truth_mean, pred_mean, s=18, alpha=0.8)
     ax_mean.set_xlabel("Truth mean")
     ax_mean.set_ylabel("Pred mean")
-    ax_mean.set_title(f"{title_prefix}: DEG20 mean")
+    ax_mean.set_title(f"{title_prefix}: DEG{int(n_degs)} mean")
     for x, y, label in zip(truth_mean[:10], pred_mean[:10], labels[:10]):
         ax_mean.text(float(x), float(y), str(label), fontsize=8)
 
@@ -697,7 +889,7 @@ def build_mean_var_scatter(
     ax_var.scatter(truth_var, pred_var, s=18, alpha=0.8)
     ax_var.set_xlabel("Truth var")
     ax_var.set_ylabel("Pred var")
-    ax_var.set_title(f"{title_prefix}: DEG20 variance")
+    ax_var.set_title(f"{title_prefix}: DEG{int(n_degs)} variance")
     for x, y, label in zip(truth_var[:10], pred_var[:10], labels[:10]):
         ax_var.text(float(x), float(y), str(label), fontsize=8)
     return fig_mean, fig_var
@@ -712,10 +904,13 @@ def run_deg20_experiment(
     out_root: str | Path | None = None,
     variant_tag: str | None = None,
     focus_conditions: list[str] | None = None,
+    truth_deg_mode: str = "payload",
     pred_deg_mode: str = "adaptive",
+    n_degs: int = 20,
     enrichment_mode: str = "export_only",
     enrichment_library: str = "Reactome_2022",
     remove_perturbed_genes: bool = True,
+    truth_deg_cache_root: str | Path | None = None,
 ) -> DEG20ExperimentResult:
     dataset_key = str(dataset).strip()
     model_key = _normalize_model_name(model_name)
@@ -723,6 +918,11 @@ def run_deg20_experiment(
     result_root = _result_root(model_key, dataset_key, result_dir)
     out_base = Path(out_root).resolve() if out_root else result_root / f"deg20_downstream_{_ts_local()}"
     out_base.mkdir(parents=True, exist_ok=True)
+    truth_cache_root_path = (
+        Path(truth_deg_cache_root).resolve()
+        if truth_deg_cache_root
+        else DEFAULT_DEG_CACHE_ROOT.resolve()
+    )
 
     rows: list[dict[str, Any]] = []
     gene_rows: list[dict[str, Any]] = []
@@ -740,14 +940,27 @@ def run_deg20_experiment(
             payload = pickle.load(f)
         if not isinstance(payload, dict):
             raise TypeError(f"Unexpected payload type at {pkl_path}: {type(payload)}")
+        truth_deg_cache = None
+        if str(truth_deg_mode).strip().lower() != "payload":
+            truth_deg_cache = _load_or_build_truth_deg_cache(
+                payload=payload,
+                pkl_path=pkl_path,
+                truth_deg_mode=truth_deg_mode,
+                remove_perturbed_genes=remove_perturbed_genes,
+                cache_root=truth_cache_root_path,
+                n_degs=n_degs,
+            )
         split_rows, split_gene_rows = _condition_rows_from_payload(
             model_name=model_key,
             dataset=dataset_key,
             split_id=int(split_id),
             pkl_path=pkl_path,
             payload=payload,
+            truth_deg_mode=truth_deg_mode,
             pred_deg_mode=pred_deg_mode,
             remove_perturbed_genes=remove_perturbed_genes,
+            truth_deg_cache=truth_deg_cache,
+            n_degs=n_degs,
         )
         rows.extend(split_rows)
         gene_rows.extend(split_gene_rows)
@@ -784,10 +997,13 @@ def run_deg20_experiment(
         "split_ids": split_list,
         "result_root": str(result_root),
         "variant_tag": str(variant_tag or ""),
+        "n_degs": int(n_degs),
+        "truth_deg_mode": str(truth_deg_mode),
         "pred_deg_mode": str(pred_deg_mode),
         "enrichment_mode": str(enrichment_mode),
         "enrichment_library": str(enrichment_library),
         "remove_perturbed_genes": bool(remove_perturbed_genes),
+        "truth_deg_cache_root": str(truth_cache_root_path),
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -813,6 +1029,18 @@ def main() -> None:
     ap.add_argument("--out_root", default="")
     ap.add_argument("--variant_tag", default="")
     ap.add_argument("--focus_conditions", default="")
+    ap.add_argument("--n_degs", type=int, default=20)
+    ap.add_argument(
+        "--truth_deg_mode",
+        default="payload",
+        choices=[
+            "payload",
+            "scanpy",
+            "effect_size",
+            "effect_size_non_dropout",
+            "ttest_non_dropout",
+        ],
+    )
     ap.add_argument(
         "--pred_deg_mode",
         default="adaptive",
@@ -838,6 +1066,8 @@ def main() -> None:
         out_root=str(args.out_root).strip() or None,
         variant_tag=str(args.variant_tag).strip() or None,
         focus_conditions=focus_conditions or None,
+        n_degs=int(args.n_degs),
+        truth_deg_mode=str(args.truth_deg_mode).strip(),
         pred_deg_mode=str(args.pred_deg_mode).strip(),
         enrichment_mode=str(args.enrichment_mode).strip(),
         enrichment_library=str(args.enrichment_library).strip(),

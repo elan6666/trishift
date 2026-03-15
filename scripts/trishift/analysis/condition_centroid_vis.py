@@ -137,6 +137,45 @@ def _feature_arrays(
     return pred, truth, ctrl, genes, used
 
 
+def _global_gene_space(payload: dict[str, Any], feature_mode: str) -> np.ndarray | None:
+    mode_key = str(feature_mode).strip().lower()
+    if mode_key != "deg":
+        return None
+    names: list[str] = []
+    for condition in sorted(payload.keys()):
+        item = payload[condition]
+        if not isinstance(item, dict):
+            continue
+        _pred, _truth, _ctrl, genes, _mode_used = _feature_arrays(payload=item, feature_mode=feature_mode)
+        names.extend([str(g) for g in genes.tolist()])
+    if not names:
+        return None
+    return np.asarray(sorted(set(names)), dtype=object)
+
+
+def _align_vector_to_gene_space(
+    vector: np.ndarray,
+    genes: np.ndarray,
+    global_genes: np.ndarray | None,
+) -> np.ndarray:
+    vec = np.asarray(vector, dtype=np.float32).reshape(-1)
+    local_genes = np.asarray(genes).astype(str).reshape(-1)
+    if global_genes is None:
+        return vec
+    global_names = np.asarray(global_genes).astype(str).reshape(-1)
+    if local_genes.shape[0] != vec.shape[0]:
+        raise ValueError("Local gene names must match the vector dimension")
+    if global_names.shape[0] == local_genes.shape[0] and np.array_equal(global_names, local_genes):
+        return vec
+    aligned = np.zeros(global_names.shape[0], dtype=np.float32)
+    index_map = {str(g): i for i, g in enumerate(global_names.tolist())}
+    for i, gene in enumerate(local_genes.tolist()):
+        j = index_map.get(str(gene))
+        if j is not None:
+            aligned[j] = float(vec[i])
+    return aligned
+
+
 def _centroid_rows(
     *,
     condition: str,
@@ -144,6 +183,8 @@ def _centroid_rows(
     pred: np.ndarray,
     truth: np.ndarray,
     ctrl: np.ndarray | None,
+    genes: np.ndarray,
+    global_genes: np.ndarray | None,
     feature_mode_used: str,
     feature_dim: int,
     include_ctrl: bool,
@@ -151,6 +192,9 @@ def _centroid_rows(
     truth_centroid = truth.mean(axis=0).astype(np.float32, copy=False)
     pred_centroid = pred.mean(axis=0).astype(np.float32, copy=False)
     ctrl_centroid = None if ctrl is None or ctrl.shape[0] == 0 else ctrl.mean(axis=0).astype(np.float32, copy=False)
+    truth_plot = _align_vector_to_gene_space(truth_centroid, genes, global_genes)
+    pred_plot = _align_vector_to_gene_space(pred_centroid, genes, global_genes)
+    ctrl_plot = None if ctrl_centroid is None else _align_vector_to_gene_space(ctrl_centroid, genes, global_genes)
 
     point_rows = [
         {
@@ -162,7 +206,7 @@ def _centroid_rows(
             "n_truth": int(truth.shape[0]),
             "n_pred": int(pred.shape[0]),
             "n_ctrl": (0 if ctrl is None else int(ctrl.shape[0])),
-            "vector": truth_centroid,
+            "vector": truth_plot,
         },
         {
             "split_id": int(split_id),
@@ -173,10 +217,10 @@ def _centroid_rows(
             "n_truth": int(truth.shape[0]),
             "n_pred": int(pred.shape[0]),
             "n_ctrl": (0 if ctrl is None else int(ctrl.shape[0])),
-            "vector": pred_centroid,
+            "vector": pred_plot,
         },
     ]
-    if include_ctrl and ctrl_centroid is not None:
+    if include_ctrl and ctrl_plot is not None:
         point_rows.append(
             {
                 "split_id": int(split_id),
@@ -187,7 +231,7 @@ def _centroid_rows(
                 "n_truth": int(truth.shape[0]),
                 "n_pred": int(pred.shape[0]),
                 "n_ctrl": int(ctrl.shape[0]),
-                "vector": ctrl_centroid,
+                "vector": ctrl_plot,
             }
         )
 
@@ -226,17 +270,20 @@ def _build_points_and_metrics(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     point_rows: list[dict[str, Any]] = []
     metric_rows: list[dict[str, Any]] = []
+    global_genes = _global_gene_space(payload, feature_mode)
     for condition in sorted(payload.keys()):
         item = payload[condition]
         if not isinstance(item, dict):
             continue
-        pred, truth, ctrl, _genes, mode_used = _feature_arrays(payload=item, feature_mode=feature_mode)
+        pred, truth, ctrl, genes, mode_used = _feature_arrays(payload=item, feature_mode=feature_mode)
         rows, metrics = _centroid_rows(
             condition=condition,
             split_id=split_id,
             pred=pred,
             truth=truth,
             ctrl=ctrl,
+            genes=genes,
+            global_genes=global_genes,
             feature_mode_used=mode_used,
             feature_dim=int(pred.shape[1]),
             include_ctrl=include_ctrl,

@@ -67,6 +67,8 @@ defaults_overrides:
     lambda_z: 1
     deg_weight: 1
     lambda_expr_mse: 0
+    lambda_neg_expr: 2
+    neg_expr_penalty: mae
   ablation:
     stage1_use_train_split: true
     topk_strategy: random
@@ -88,7 +90,7 @@ defaults_overrides:
       predict_shift: true
       predict_delta: false
       shift_repr_dim: null
-      shift_input_source: latent_mu
+      shift_input_source: state
       cond_pool_mode: sum
       cond_l2_norm: false
       use_cross_attention: false
@@ -110,5 +112,5 @@ defaults_overrides:
       use_batch_norm: true
       use_layer_norm: false
       dropout: 0.0
-      use_residual_head: false
+      use_residual_head: true
 paths_overrides: {}

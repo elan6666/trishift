@@ -124,6 +124,10 @@ loss:
   deg_weight: 1
   # 额外表达 MSE 权重（0 表示关闭）。
   lambda_expr_mse: 0
+  # 预测表达负值惩罚权重（0 表示关闭）。
+  lambda_neg_expr: 0.0
+  # 负值惩罚形式：mse=平方惩罚，mae=线性惩罚。
+  neg_expr_penalty: mse
 
 ablation:
   # Stage1 是否使用 train split 的 ctrl+pert（false 则仅 ctrl）。

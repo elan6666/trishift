@@ -91,6 +91,8 @@ class LossConfig:
     lambda_z: float
     deg_weight: float
     lambda_expr_mse: float
+    lambda_neg_expr: float
+    neg_expr_penalty: str
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,9 @@ def _extract_loss(defaults: dict) -> LossConfig:
     loss_cfg = defaults.get("loss", {})
     gamma = float(loss_cfg.get("gamma", 1.0))
     lambda_dir = float(loss_cfg.get("lambda_dir", 1.0))
+    neg_expr_penalty = str(loss_cfg.get("neg_expr_penalty", "mse")).strip().lower()
+    if neg_expr_penalty not in {"mse", "mae"}:
+        raise ValueError("loss.neg_expr_penalty must be one of: mse, mae")
     return LossConfig(
         gamma=gamma,
         lambda_dir=lambda_dir,
@@ -129,6 +134,8 @@ def _extract_loss(defaults: dict) -> LossConfig:
         lambda_z=float(loss_cfg.get("lambda_z", 1.0)),
         deg_weight=float(loss_cfg.get("deg_weight", 1.0)),
         lambda_expr_mse=float(loss_cfg.get("lambda_expr_mse", 0.0)),
+        lambda_neg_expr=float(loss_cfg.get("lambda_neg_expr", 0.0)),
+        neg_expr_penalty=neg_expr_penalty,
     )
 
 
@@ -520,6 +527,8 @@ def _make_stage1_cache_signature(
     resolved_stage1_batch_size: int,
     resolved_stage1_lr: float,
     resolved_stage1_beta: float,
+    resolved_stage1_lambda_neg_expr: float,
+    resolved_stage1_neg_expr_penalty: str,
     base_seed: int,
     perf: PerfConfig,
 ) -> str:
@@ -532,6 +541,8 @@ def _make_stage1_cache_signature(
         "resolved_stage1_batch_size": int(resolved_stage1_batch_size),
         "resolved_stage1_lr": float(resolved_stage1_lr),
         "resolved_stage1_beta": float(resolved_stage1_beta),
+        "resolved_stage1_lambda_neg_expr": float(resolved_stage1_lambda_neg_expr),
+        "resolved_stage1_neg_expr_penalty": str(resolved_stage1_neg_expr_penalty),
         "base_seed": int(base_seed),
         "amp": bool(perf.amp),
         "grad_accum_steps": int(perf.grad_accum_steps),
@@ -927,6 +938,8 @@ def run_dataset_with_paths(
         resolved_stage1_batch_size=stage1_batch_size,
         resolved_stage1_lr=stage1_lr,
         resolved_stage1_beta=stage1_beta,
+        resolved_stage1_lambda_neg_expr=loss.lambda_neg_expr,
+        resolved_stage1_neg_expr_penalty=loss.neg_expr_penalty,
         base_seed=base_seed,
         perf=perf,
     )
@@ -1002,6 +1015,8 @@ def run_dataset_with_paths(
                     lr=stage1_lr,
                     beta=stage1_beta,
                     deg_weight=stage1_deg_weight,
+                    lambda_neg_expr=loss.lambda_neg_expr,
+                    neg_expr_penalty=loss.neg_expr_penalty,
                     ecs_enable=bool(stage1_ecs_cfg.get("enable", False)),
                     ecs_epochs=int(stage1_ecs_cfg.get("epochs", 10)),
                     ecs_lr=float(stage1_ecs_cfg.get("lr", 1e-4)),
@@ -1068,6 +1083,8 @@ def run_dataset_with_paths(
                 lambda_dir_expr=loss.lambda_dir_expr,
                 deg_weight=loss.deg_weight,
                 lambda_expr_mse=loss.lambda_expr_mse,
+                lambda_neg_expr=loss.lambda_neg_expr,
+                neg_expr_penalty=loss.neg_expr_penalty,
             )
         elif train_mode == "sequential":
             train_logs["stage23_sequential"] = model.train_stage23_sequential(
@@ -1099,6 +1116,8 @@ def run_dataset_with_paths(
                 topk_strategy=topk_strategy,
                 sample_soft_ctrl=sample_soft_ctrl,
                 lambda_expr_mse=loss.lambda_expr_mse,
+                lambda_neg_expr=loss.lambda_neg_expr,
+                neg_expr_penalty=loss.neg_expr_penalty,
                 per_condition_ot=per_condition_ot,
                 disable_loss_z_supervision=disable_loss_z_supervision,
                 reuse_ot_cache=reuse_ot_cache,
@@ -1132,6 +1151,8 @@ def run_dataset_with_paths(
                 sample_soft_ctrl=sample_soft_ctrl,
                 latent_loss_type=latent_loss_type,
                 lambda_expr_mse=loss.lambda_expr_mse,
+                lambda_neg_expr=loss.lambda_neg_expr,
+                neg_expr_penalty=loss.neg_expr_penalty,
                 per_condition_ot=per_condition_ot,
                 disable_loss_z_supervision=disable_loss_z_supervision,
                 reuse_ot_cache=reuse_ot_cache,

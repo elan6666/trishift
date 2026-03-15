@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from trishift import _utils
-from trishift.TriShift import _stage1_ecs_loss, _weighted_stage1_recon_loss
+from trishift.TriShift import _negative_penalty, _stage1_ecs_loss, _weighted_stage1_recon_loss
 
 from scripts.tests._helpers import make_data_and_model, make_tiny_pbmc_adata, train_stage1_and_cache
 
@@ -98,6 +98,23 @@ def test_stage1_ecs_loss_negative_similarity_is_relued():
     assert torch.allclose(loss, expected)
 
 
+def test_stage1_negative_penalty_only_hits_negative_predictions():
+    x_pred = torch.tensor([[-0.5, 0.2], [0.0, -1.0]], dtype=torch.float32)
+    penalty = _negative_penalty(x_pred, lambda_neg_expr=2.0, penalty_mode="mse")
+    expected = 2.0 * torch.tensor((0.25 + 0.0 + 0.0 + 1.0) / 4.0, dtype=torch.float32)
+    assert torch.allclose(penalty, expected)
+
+    zero_penalty = _negative_penalty(x_pred, lambda_neg_expr=0.0, penalty_mode="mse")
+    assert torch.allclose(zero_penalty, torch.zeros((), dtype=torch.float32))
+
+
+def test_negative_penalty_mae_only_hits_negative_predictions():
+    x_pred = torch.tensor([[-0.5, 0.2], [0.0, -1.0]], dtype=torch.float32)
+    penalty = _negative_penalty(x_pred, lambda_neg_expr=2.0, penalty_mode="mae")
+    expected = 2.0 * torch.tensor((0.5 + 0.0 + 0.0 + 1.0) / 4.0, dtype=torch.float32)
+    assert torch.allclose(penalty, expected)
+
+
 def test_stage1_deg_weight_on_pert_pool_runs():
     data, model = make_data_and_model()
     logs = model.train_stage1_vae(
@@ -112,6 +129,24 @@ def test_stage1_deg_weight_on_pert_pool_runs():
         grad_accum_steps=1,
     )
     assert "epochs" in logs and len(logs["epochs"]) == 1
+
+
+def test_stage1_negative_penalty_logs_term():
+    data, model = make_data_and_model(model_init_overrides={"vae_noise_rate": 0.0})
+    logs = model.train_stage1_vae(
+        data.adata_all,
+        epochs=1,
+        batch_size=8,
+        lr=1e-3,
+        lambda_neg_expr=0.5,
+        neg_expr_penalty="mae",
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_accum_steps=1,
+    )
+    assert "loss_expr_neg" in logs["epochs"][0]
+    assert float(logs["epochs"][0]["loss_expr_neg"]) >= 0.0
 
 
 def test_stage1_ecs_finetune_runs_after_phase1_and_logs():
@@ -369,6 +404,88 @@ def test_stage23_sequential_predict_shift_false_skips_stage2():
     assert logs["stage2"][0].get("stage2_skipped_predict_shift_false", False) is True
 
 
+def test_expression_loss_negative_penalty_only_hits_negative_predictions():
+    _, model = make_data_and_model()
+    x_true = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    x_ctrl = torch.tensor([[0.5, 0.0]], dtype=torch.float32)
+    x_pred = torch.tensor([[-0.5, 0.25]], dtype=torch.float32)
+    cond = ["pert_a"]
+    nonzero_idx_dict = {"pert_a": np.array([0, 1], dtype=int)}
+
+    base_loss, base_neg = model._compute_expression_loss(
+        x_pred=x_pred,
+        x_true=x_true,
+        x_ctrl=x_ctrl,
+        cond_str=cond,
+        nonzero_idx_dict=nonzero_idx_dict,
+        gamma=0.0,
+        lambda_dir_expr=0.0,
+        deg_idx_dict=None,
+        deg_weight=1.0,
+        lambda_expr_mse=0.0,
+        lambda_neg_expr=0.0,
+        neg_expr_penalty="mse",
+    )
+    penalized_loss, penalized_neg = model._compute_expression_loss(
+        x_pred=x_pred,
+        x_true=x_true,
+        x_ctrl=x_ctrl,
+        cond_str=cond,
+        nonzero_idx_dict=nonzero_idx_dict,
+        gamma=0.0,
+        lambda_dir_expr=0.0,
+        deg_idx_dict=None,
+        deg_weight=1.0,
+        lambda_expr_mse=0.0,
+        lambda_neg_expr=2.0,
+        neg_expr_penalty="mse",
+    )
+    expected_neg = 2.0 * ((0.5**2 + 0.0) / 2.0)
+    assert float(base_neg.item()) == 0.0
+    assert np.isclose(float(penalized_neg.item()), expected_neg)
+    assert np.isclose(float((penalized_loss - base_loss).item()), expected_neg)
+
+
+def test_expression_loss_negative_penalty_mae_mode():
+    _, model = make_data_and_model()
+    x_true = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+    x_ctrl = torch.tensor([[0.5, 0.0]], dtype=torch.float32)
+    x_pred = torch.tensor([[-0.5, 0.25]], dtype=torch.float32)
+    cond = ["pert_a"]
+    nonzero_idx_dict = {"pert_a": np.array([0, 1], dtype=int)}
+    penalized_loss, penalized_neg = model._compute_expression_loss(
+        x_pred=x_pred,
+        x_true=x_true,
+        x_ctrl=x_ctrl,
+        cond_str=cond,
+        nonzero_idx_dict=nonzero_idx_dict,
+        gamma=0.0,
+        lambda_dir_expr=0.0,
+        deg_idx_dict=None,
+        deg_weight=1.0,
+        lambda_expr_mse=0.0,
+        lambda_neg_expr=2.0,
+        neg_expr_penalty="mae",
+    )
+    base_loss, _ = model._compute_expression_loss(
+        x_pred=x_pred,
+        x_true=x_true,
+        x_ctrl=x_ctrl,
+        cond_str=cond,
+        nonzero_idx_dict=nonzero_idx_dict,
+        gamma=0.0,
+        lambda_dir_expr=0.0,
+        deg_idx_dict=None,
+        deg_weight=1.0,
+        lambda_expr_mse=0.0,
+        lambda_neg_expr=0.0,
+        neg_expr_penalty="mse",
+    )
+    expected_neg = 2.0 * ((0.5 + 0.0) / 2.0)
+    assert np.isclose(float(penalized_neg.item()), expected_neg)
+    assert np.isclose(float((penalized_loss - base_loss).item()), expected_neg)
+
+
 def test_stage3_only():
     data, model = make_data_and_model()
     train_stage1_and_cache(model, data)
@@ -387,6 +504,30 @@ def test_stage3_only():
         grad_accum_steps=1,
     )
     assert "epochs" in logs
+
+
+def test_stage3_only_logs_negative_penalty_term():
+    data, model = make_data_and_model(model_init_overrides={"gen_use_residual_head": True})
+    train_stage1_and_cache(model, data)
+    emb_table = torch.tensor(data.embd_df.values, dtype=torch.float32)
+    split = data.split_by_condition(seed=3, test_ratio=0.2, val_ratio=0.2)
+    logs = model.train_stage3_only(
+        split_dict=split,
+        emb_table=emb_table,
+        split_id=1,
+        epochs=1,
+        batch_size=4,
+        lr=1e-3,
+        amp=False,
+        num_workers=0,
+        pin_memory=False,
+        grad_accum_steps=1,
+        lambda_neg_expr=0.5,
+        neg_expr_penalty="mae",
+    )
+    assert "epochs" in logs
+    assert "loss_expr_neg" in logs["epochs"][0]
+    assert float(logs["epochs"][0]["loss_expr_neg"]) >= 0.0
 
 
 def test_stage23_joint_requires_cached_z_mu():
@@ -426,7 +567,9 @@ def main():
     test_stage23_sequential()
     test_stage23_joint_predict_shift_false_skips_shift_head()
     test_stage23_sequential_predict_shift_false_skips_stage2()
+    test_expression_loss_negative_penalty_only_hits_negative_predictions()
     test_stage3_only()
+    test_stage3_only_logs_negative_penalty_term()
     test_stage23_joint_requires_cached_z_mu()
     print("test_train: PASS")
 

@@ -44,6 +44,25 @@ def _legacy_payload(pred_rows: int = 4, truth_rows: int = 5, ctrl_rows: int = 6)
     }
 
 
+def _legacy_payload_mixed_deg_dims() -> dict:
+    return {
+        "A+ctrl": {
+            "Pred": np.array([[3.0, 2.0, 1.0], [3.0, 2.0, 1.0]], dtype=np.float32),
+            "Truth": np.array([[2.0, 4.0, 1.0], [2.0, 4.0, 1.0]], dtype=np.float32),
+            "Ctrl": np.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=np.float32),
+            "DE_idx": np.array([0, 1, 2], dtype=int),
+            "DE_name": np.array(["G0", "G1", "G2"], dtype=object),
+        },
+        "B+ctrl": {
+            "Pred": np.array([[5.0, 1.5], [5.0, 1.5]], dtype=np.float32),
+            "Truth": np.array([[4.0, 2.5], [4.0, 2.5]], dtype=np.float32),
+            "Ctrl": np.array([[1.0, 1.0], [1.0, 1.0]], dtype=np.float32),
+            "DE_idx": np.array([0, 1], dtype=int),
+            "DE_name": np.array(["G1", "G3"], dtype=object),
+        },
+    }
+
+
 def _full_payload() -> dict:
     gene_names = np.array(["G0", "G1", "G2", "G3"], dtype=object)
     pred = np.array([[3.0, 2.0, 1.0, 0.0], [3.0, 2.0, 1.0, 0.0]], dtype=np.float32)
@@ -120,6 +139,26 @@ def test_run_condition_centroid_visualization_supports_all_models_with_deg_paylo
             assert (result.out_dir / "condition_centroid_metrics.csv").exists()
             assert (result.out_dir / "condition_centroid_summary.csv").exists()
             assert "truth_vs_pred_centroid_umap" in result.figure_paths
+
+
+def test_run_condition_centroid_visualization_aligns_mixed_deg_spaces():
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        _write_payload(root / "tri" / "trishift_toy_1_nearest.pkl", _legacy_payload_mixed_deg_dims())
+        result = run_condition_centroid_visualization(
+            model_name="trishift",
+            dataset="toy",
+            split_id=1,
+            result_dir=root / "tri",
+            variant_tag="nearest",
+            feature_mode="deg",
+            include_ctrl=True,
+            plot_delta=True,
+            save_dpi=120,
+        )
+        assert len(result.metrics_df) == 2
+        assert result.points_df["umap1"].notna().all()
+        assert result.points_df["umap2"].notna().all()
 
 
 def test_run_condition_centroid_visualization_full_mode_uses_full_payload():

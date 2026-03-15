@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from scripts.tests._helpers import temp_dir
 from scripts.trishift.analysis.deg20_experiment import (
     _pred_deg20,
+    _truth_deg20,
     load_condition_payload,
     run_deg20_experiment,
     select_representative_conditions,
@@ -184,6 +185,57 @@ def test_pred_deg20_effect_size_non_dropout_filters_dropout_genes():
     assert pred_genes[1] == "G2"
 
 
+def test_truth_deg20_effect_size_non_dropout_uses_truth_vs_ctrl_ranking():
+    payload = _single_row_payload()["Y+ctrl"]
+    truth_genes, truth_idx = _truth_deg20(
+        condition="Y+ctrl",
+        truth=np.asarray(payload["Truth_full"], dtype=np.float32),
+        ctrl=np.asarray(payload["Ctrl_full"], dtype=np.float32),
+        gene_names=np.asarray(payload["gene_name_full"]).astype(str),
+        deg_idx=np.asarray(payload["DE_idx"], dtype=int),
+        deg_name=np.asarray(payload["DE_name"]).astype(str),
+        truth_deg_mode="effect_size_non_dropout",
+        remove_perturbed_genes=True,
+    )
+    assert "Y" not in truth_genes
+    assert truth_genes[:2] == ["G2", "G3"]
+    assert truth_idx.tolist()[:2] == [2, 3]
+
+
+def test_truth_deg20_scanpy_uses_truth_vs_ctrl_ranking():
+    payload = _multirow_payload()["X+ctrl"]
+    truth_genes, truth_idx = _truth_deg20(
+        condition="X+ctrl",
+        truth=np.asarray(payload["Truth_full"], dtype=np.float32),
+        ctrl=np.asarray(payload["Ctrl_full"], dtype=np.float32),
+        gene_names=np.asarray(payload["gene_name_full"]).astype(str),
+        deg_idx=np.asarray(payload["DE_idx"], dtype=int),
+        deg_name=np.asarray(payload["DE_name"]).astype(str),
+        truth_deg_mode="scanpy",
+        remove_perturbed_genes=True,
+    )
+    assert "X" not in truth_genes
+    assert len(set(truth_genes[:5]) & {"G0", "G1"}) >= 1
+    assert len(truth_idx) >= 1
+
+
+def test_truth_deg20_ttest_non_dropout_uses_truth_vs_ctrl_ranking():
+    payload = _multirow_payload()["X+ctrl"]
+    truth_genes, truth_idx = _truth_deg20(
+        condition="X+ctrl",
+        truth=np.asarray(payload["Truth_full"], dtype=np.float32),
+        ctrl=np.asarray(payload["Ctrl_full"], dtype=np.float32),
+        gene_names=np.asarray(payload["gene_name_full"]).astype(str),
+        deg_idx=np.asarray(payload["DE_idx"], dtype=int),
+        deg_name=np.asarray(payload["DE_name"]).astype(str),
+        truth_deg_mode="ttest_non_dropout",
+        remove_perturbed_genes=True,
+    )
+    assert "X" not in truth_genes
+    assert len(set(truth_genes[:5]) & {"G0", "G1"}) >= 1
+    assert len(truth_idx) >= 1
+
+
 def test_run_deg20_experiment_summaries_are_macro_over_conditions():
     with temp_dir() as tmp:
         root = Path(tmp)
@@ -197,6 +249,7 @@ def test_run_deg20_experiment_summaries_are_macro_over_conditions():
             model_name="trishift",
             split_ids="1",
             result_dir=tri_dir,
+            truth_deg_mode="effect_size_non_dropout",
             pred_deg_mode="adaptive",
             enrichment_mode="export_only",
         )
@@ -206,7 +259,74 @@ def test_run_deg20_experiment_summaries_are_macro_over_conditions():
         expected_mean = float(result.per_condition_df["common_degs_at_20"].mean())
         assert np.isclose(float(split_row["common_degs_at_20_mean"]), expected_mean)
         assert int(split_row["n_conditions"]) == 2
+        assert set(result.per_condition_df["truth_deg_mode_used"]) == {"effect_size_non_dropout"}
         assert len(result.dataset_summary_df) == 1
+
+
+def test_non_payload_truth_modes_write_cache_pkls():
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_dir = root / "tri"
+        cache_dir = root / "cache"
+        _write_payload(tri_dir / "trishift_toy_1_nearest.pkl", _multirow_payload())
+
+        run_deg20_experiment(
+            dataset="toy",
+            model_name="trishift",
+            split_ids="1",
+            result_dir=tri_dir,
+            variant_tag="nearest",
+            truth_deg_mode="scanpy",
+            pred_deg_mode="effect_size",
+            enrichment_mode="export_only",
+            truth_deg_cache_root=cache_dir,
+            n_degs=20,
+        )
+        run_deg20_experiment(
+            dataset="toy",
+            model_name="trishift",
+            split_ids="1",
+            result_dir=tri_dir,
+            variant_tag="nearest",
+            truth_deg_mode="effect_size_non_dropout",
+            pred_deg_mode="effect_size",
+            enrichment_mode="export_only",
+            truth_deg_cache_root=cache_dir,
+            n_degs=20,
+        )
+
+        scanpy_cache = cache_dir / "trishift_toy_1_nearest__truth_scanpy__top20__drop_pert.pkl"
+        effect_nd_cache = cache_dir / "trishift_toy_1_nearest__truth_effect_size_non_dropout__top20__drop_pert.pkl"
+        assert scanpy_cache.exists()
+        assert effect_nd_cache.exists()
+
+
+def test_run_deg20_experiment_respects_n_degs():
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_dir = root / "tri"
+        cache_dir = root / "cache"
+        _write_payload(tri_dir / "trishift_toy_1_nearest.pkl", _multirow_payload())
+
+        result = run_deg20_experiment(
+            dataset="toy",
+            model_name="trishift",
+            split_ids="1",
+            result_dir=tri_dir,
+            variant_tag="nearest",
+            truth_deg_mode="effect_size_non_dropout",
+            pred_deg_mode="effect_size_non_dropout",
+            enrichment_mode="export_only",
+            truth_deg_cache_root=cache_dir,
+            n_degs=3,
+        )
+
+        row = result.per_condition_df.iloc[0]
+        assert int(row["deg_top_k"]) == 3
+        assert int(row["truth_deg_count"]) == 3
+        assert int(row["pred_deg_count"]) == 3
+        cache_path = cache_dir / "trishift_toy_1_nearest__truth_effect_size_non_dropout__top3__drop_pert.pkl"
+        assert cache_path.exists()
 
 
 def test_load_condition_payload_reads_model_specific_file():

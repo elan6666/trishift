@@ -185,6 +185,23 @@ def _stage1_ecs_loss(
     return torch.mean(1 - (cos_sim - float(threshold)) ** 2)
 
 
+def _negative_penalty(
+    x_pred: torch.Tensor,
+    *,
+    lambda_neg_expr: float,
+    penalty_mode: str = "mse",
+) -> torch.Tensor:
+    if float(lambda_neg_expr) <= 0.0:
+        return torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
+    mode_key = str(penalty_mode).strip().lower()
+    neg_part = F.relu(-x_pred)
+    if mode_key == "mse":
+        return float(lambda_neg_expr) * neg_part.pow(2).mean()
+    if mode_key == "mae":
+        return float(lambda_neg_expr) * neg_part.mean()
+    raise ValueError("neg_expr_penalty must be one of: mse, mae")
+
+
 class _TopKTrainDataset(Dataset):
     def __init__(
         self,
@@ -1047,7 +1064,9 @@ class TriShift:
         deg_idx_dict: dict | None,
         deg_weight: float,
         lambda_expr_mse: float,
-    ) -> torch.Tensor:
+        lambda_neg_expr: float,
+        neg_expr_penalty: str = "mse",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         loss_expr = gears_loss(
             x_pred,
             x_true,
@@ -1061,7 +1080,15 @@ class TriShift:
         )
         if lambda_expr_mse > 0:
             loss_expr = loss_expr + lambda_expr_mse * F.mse_loss(x_pred, x_true)
-        return loss_expr
+        loss_expr_neg = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
+        if lambda_neg_expr > 0:
+            loss_expr_neg = _negative_penalty(
+                x_pred,
+                lambda_neg_expr=lambda_neg_expr,
+                penalty_mode=neg_expr_penalty,
+            )
+            loss_expr = loss_expr + loss_expr_neg
+        return loss_expr, loss_expr_neg
 
     @staticmethod
     def _compute_latent_supervision_loss(
@@ -1180,6 +1207,8 @@ class TriShift:
         lr: float,
         beta: float = 1.0,
         deg_weight: float = 1.0,
+        lambda_neg_expr: float = 0.0,
+        neg_expr_penalty: str = "mse",
         deg_key_obs_key: str | None = None,
         ecs_enable: bool = False,
         ecs_epochs: int = 10,
@@ -1207,6 +1236,8 @@ class TriShift:
             batch_size: Batch size for training.
             lr: Learning rate for VAE optimizer.
             beta: KL weight for ELBO.
+            lambda_neg_expr: Non-negativity penalty weight on stage1 reconstruction.
+            neg_expr_penalty: Negative penalty mode: mse or mae.
             deg_key_obs_key: Optional obs column used to look up DEG weighting keys.
             ecs_enable: Whether to run ECS finetuning after phase1 early stopping.
             ecs_epochs: ECS finetune epochs.
@@ -1232,8 +1263,14 @@ class TriShift:
         print(f"[stage1] start vae training: epochs={epochs}, batch_size={batch_size}")
         beta = float(beta)
         deg_weight = float(deg_weight)
+        lambda_neg_expr = float(lambda_neg_expr)
+        neg_expr_penalty = str(neg_expr_penalty).strip().lower()
         if deg_weight <= 0:
             raise ValueError("stage1 deg_weight must be positive")
+        if lambda_neg_expr < 0:
+            raise ValueError("stage1 lambda_neg_expr must be non-negative")
+        if neg_expr_penalty not in {"mse", "mae"}:
+            raise ValueError("stage1 neg_expr_penalty must be one of: mse, mae")
         ecs_sched_gamma = float(ecs_sched_gamma)
         ecs_weight = float(ecs_weight)
         ecs_threshold = float(ecs_threshold)
@@ -1262,7 +1299,9 @@ class TriShift:
         )
         print(
             f"[stage1] deg_weight={deg_weight}, "
-            f"deg_weight_active={str(deg_weight_active).lower()}"
+            f"deg_weight_active={str(deg_weight_active).lower()}, "
+            f"lambda_neg_expr={lambda_neg_expr}, "
+            f"neg_expr_penalty={neg_expr_penalty}"
         )
         if not deg_weight_active:
             print(f"[stage1] deg_weight inactive reason={deg_reason}")
@@ -1312,7 +1351,7 @@ class TriShift:
         def _compute_base_loss(
             x_batch: torch.Tensor,
             cond_batch: list[str],
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             x_recon, _, loss_kl = self.net.vae.forward(x_batch)
             if deg_weight_active:
                 loss_rec = _weighted_stage1_recon_loss(
@@ -1324,10 +1363,15 @@ class TriShift:
                 )
             else:
                 loss_rec = ((x_batch - x_recon) ** 2).sum(dim=1)
+            loss_neg = _negative_penalty(
+                x_recon,
+                lambda_neg_expr=lambda_neg_expr,
+                penalty_mode=neg_expr_penalty,
+            )
             base_loss = (
                 0.5 * loss_rec + 0.5 * beta * (loss_kl * self.net.vae.kl_weight)
-            ).mean()
-            return base_loss, loss_rec, loss_kl
+            ).mean() + loss_neg
+            return base_loss, loss_rec, loss_kl, loss_neg
 
         def _run_stage1_phase(
             *,
@@ -1365,6 +1409,7 @@ class TriShift:
                 total_loss_acc = 0.0
                 recon_acc = 0.0
                 kl_acc = 0.0
+                neg_acc = 0.0
                 ecs_acc = 0.0
                 optimizer.zero_grad(set_to_none=True)
                 for step, (x_batch, cond_batch) in enumerate(
@@ -1373,7 +1418,7 @@ class TriShift:
                     x_batch = x_batch.to(self.device, non_blocking=True)
                     try:
                         with torch.cuda.amp.autocast(enabled=use_amp):
-                            base_loss, loss_rec, loss_kl = _compute_base_loss(x_batch, cond_batch)
+                            base_loss, loss_rec, loss_kl, loss_neg = _compute_base_loss(x_batch, cond_batch)
                             loss_ecs = torch.zeros((), device=x_batch.device, dtype=base_loss.dtype)
                             if include_ecs:
                                 mu = self.net.vae.encode_mu(x_batch)
@@ -1396,16 +1441,19 @@ class TriShift:
                     total_loss_acc += total_loss.item()
                     recon_acc += loss_rec.mean().item()
                     kl_acc += loss_kl.mean().item()
+                    neg_acc += loss_neg.item()
                     ecs_acc += loss_ecs.item() if include_ecs else 0.0
 
                 avg_total = total_loss_acc / max(len(loader), 1)
                 avg_recon = recon_acc / max(len(loader), 1)
                 avg_kl = kl_acc / max(len(loader), 1)
+                avg_neg = neg_acc / max(len(loader), 1)
                 avg_ecs = ecs_acc / max(len(loader), 1) if include_ecs else 0.0
                 row = {
                     "total_loss": avg_total,
                     "recon": avg_recon,
                     "kl": avg_kl,
+                    "loss_expr_neg": avg_neg,
                     "ecs": avg_ecs,
                     "val_loss": None,
                 }
@@ -1421,7 +1469,7 @@ class TriShift:
                             x_batch = x_batch.to(self.device, non_blocking=True)
                             try:
                                 with torch.cuda.amp.autocast(enabled=use_amp):
-                                    base_loss, _, _ = _compute_base_loss(x_batch, cond_batch)
+                                    base_loss, _, _, _ = _compute_base_loss(x_batch, cond_batch)
                                     loss_ecs = torch.zeros(
                                         (), device=x_batch.device, dtype=base_loss.dtype
                                     )
@@ -1578,6 +1626,8 @@ class TriShift:
         sample_soft_ctrl: bool = True,
         latent_loss_type: str = "gears",
         lambda_expr_mse: float = 0.0,
+        lambda_neg_expr: float = 0.0,
+        neg_expr_penalty: str = "mse",
         per_condition_ot: bool = False,
         disable_loss_z_supervision: bool = False,
         reuse_ot_cache: bool = False,
@@ -1608,6 +1658,8 @@ class TriShift:
             lambda_dir_z: Direction loss weight for latent shift.
             lambda_z: Latent loss weight.
             deg_weight: Upweight factor for DE genes in expression loss.
+            lambda_neg_expr: Non-negativity penalty weight on predicted expression.
+            neg_expr_penalty: Negative penalty mode: mse or mae.
             disable_loss_z_supervision: If true, do not supervise delta_z (no loss_z).
 
         Returns:
@@ -1621,7 +1673,9 @@ class TriShift:
         if lambda_dir_z is None:
             lambda_dir_z = lambda_dir
         print(
-            f"[stage23] start joint training: mode={mode}, k={k}, split_id={split_id}, epochs={epochs}"
+            "[stage23] start joint training: "
+            f"mode={mode}, k={k}, split_id={split_id}, epochs={epochs}, "
+            f"lambda_neg_expr={lambda_neg_expr}, neg_expr_penalty={neg_expr_penalty}"
         )
         use_shift_head = self._use_shift_head()
         if use_shift_head:
@@ -1779,6 +1833,7 @@ class TriShift:
         for epoch in range(epochs):
             epoch_loss = 0.0
             epoch_loss_expr = 0.0
+            epoch_loss_expr_neg = 0.0
             epoch_loss_z = 0.0
             optimizer.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu, _, delta_target) in enumerate(
@@ -1797,7 +1852,7 @@ class TriShift:
                     else:
                         x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
                         shift_pred = None
-                    loss_expr = self._compute_expression_loss(
+                    loss_expr, loss_expr_neg = self._compute_expression_loss(
                         x_pred=x_pred,
                         x_true=x_true,
                         x_ctrl=x_ctrl,
@@ -1808,6 +1863,8 @@ class TriShift:
                         deg_idx_dict=deg_idx_dict,
                         deg_weight=deg_weight,
                         lambda_expr_mse=lambda_expr_mse,
+                        lambda_neg_expr=lambda_neg_expr,
+                        neg_expr_penalty=neg_expr_penalty,
                     )
                     if disable_loss_z_supervision:
                         loss_z = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
@@ -1832,6 +1889,7 @@ class TriShift:
                     optimizer.zero_grad(set_to_none=True)
                 epoch_loss += loss.item() * grad_accum_steps
                 epoch_loss_expr += loss_expr.item()
+                epoch_loss_expr_neg += loss_expr_neg.item()
                 epoch_loss_z += loss_z.item()
 
             denom = max(len(loader), 1)
@@ -1855,7 +1913,7 @@ class TriShift:
                         else:
                             x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
                             shift_pred = None
-                        loss_expr = self._compute_expression_loss(
+                        loss_expr, _ = self._compute_expression_loss(
                             x_pred=x_pred,
                             x_true=x_true,
                             x_ctrl=x_ctrl,
@@ -1866,6 +1924,8 @@ class TriShift:
                             deg_idx_dict=deg_idx_dict,
                             deg_weight=deg_weight,
                             lambda_expr_mse=lambda_expr_mse,
+                            lambda_neg_expr=lambda_neg_expr,
+                            neg_expr_penalty=neg_expr_penalty,
                         )
 
                         if disable_loss_z_supervision:
@@ -1892,6 +1952,7 @@ class TriShift:
                 {
                     "loss": avg_loss,
                     "loss_expr": epoch_loss_expr / denom,
+                    "loss_expr_neg": epoch_loss_expr_neg / denom,
                     "loss_z": epoch_loss_z / denom,
                     "val_loss": val_loss,
                 }
@@ -1946,6 +2007,8 @@ class TriShift:
         topk_strategy: str = "random",
         sample_soft_ctrl: bool = True,
         lambda_expr_mse: float = 0.0,
+        lambda_neg_expr: float = 0.0,
+        neg_expr_penalty: str = "mse",
         per_condition_ot: bool = False,
         disable_loss_z_supervision: bool = False,
         reuse_ot_cache: bool = False,
@@ -1979,6 +2042,8 @@ class TriShift:
             lambda_dir: Direction loss weight (fallback).
             lambda_dir_expr: Direction loss weight for expression.
             deg_weight: Upweight factor for DE genes in expression loss.
+            lambda_neg_expr: Non-negativity penalty weight on predicted expression.
+            neg_expr_penalty: Negative penalty mode: mse or mae.
             disable_loss_z_supervision: If true, skip stage2 delta supervision and
                 learn shift implicitly from stage3 expression loss.
 
@@ -1991,7 +2056,9 @@ class TriShift:
         if lambda_dir_expr is None:
             lambda_dir_expr = lambda_dir
         print(
-            f"[stage23] start sequential training: mode={mode}, k={k}, split_id={split_id}"
+            "[stage23] start sequential training: "
+            f"mode={mode}, k={k}, split_id={split_id}, lambda_neg_expr={lambda_neg_expr}, "
+            f"neg_expr_penalty={neg_expr_penalty}"
         )
         use_shift_head = self._use_shift_head()
         if use_shift_head:
@@ -2243,6 +2310,7 @@ class TriShift:
         stopper = _EarlyStopper(patience_stage3, min_delta_stage3)
         for epoch in range(epochs_stage3):
             epoch_loss = 0.0
+            epoch_loss_expr_neg = 0.0
             opt_gen.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu, _, _) in enumerate(
                 tqdm(loader, desc=f"stage3 {epoch+1}/{epochs_stage3}", leave=False)
@@ -2261,7 +2329,7 @@ class TriShift:
                         x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
                     else:
                         x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
-                    loss_expr = self._compute_expression_loss(
+                    loss_expr, loss_expr_neg = self._compute_expression_loss(
                         x_pred=x_pred,
                         x_true=x_true,
                         x_ctrl=x_ctrl,
@@ -2272,6 +2340,8 @@ class TriShift:
                         deg_idx_dict=deg_idx_dict,
                         deg_weight=deg_weight,
                         lambda_expr_mse=lambda_expr_mse,
+                        lambda_neg_expr=lambda_neg_expr,
+                        neg_expr_penalty=neg_expr_penalty,
                     )
                     loss = loss_expr / grad_accum_steps
                 scaler.scale(loss).backward()
@@ -2280,6 +2350,7 @@ class TriShift:
                     scaler.update()
                     opt_gen.zero_grad(set_to_none=True)
                 epoch_loss += loss.item() * grad_accum_steps
+                epoch_loss_expr_neg += loss_expr_neg.item()
             avg_loss = epoch_loss / max(len(loader), 1)
             val_loss = None
             if val_loader is not None:
@@ -2300,7 +2371,7 @@ class TriShift:
                             x_pred = self.net.gen(x_ctrl, cond_vec, shift_repr)
                         else:
                             x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
-                        loss_expr = self._compute_expression_loss(
+                        loss_expr, _ = self._compute_expression_loss(
                             x_pred=x_pred,
                             x_true=x_true,
                             x_ctrl=x_ctrl,
@@ -2311,13 +2382,21 @@ class TriShift:
                             deg_idx_dict=deg_idx_dict,
                             deg_weight=deg_weight,
                             lambda_expr_mse=lambda_expr_mse,
+                            lambda_neg_expr=lambda_neg_expr,
+                            neg_expr_penalty=neg_expr_penalty,
                         )
                         val_total += loss_expr.item()
                 val_loss = val_total / max(len(val_loader), 1)
                 self.net.gen.train()
                 if use_shift_head and disable_loss_z_supervision:
                     self.net.shift.train()
-            logs_stage3.append({"loss": avg_loss, "val_loss": val_loss})
+            logs_stage3.append(
+                {
+                    "loss": avg_loss,
+                    "loss_expr_neg": epoch_loss_expr_neg / max(len(loader), 1),
+                    "val_loss": val_loss,
+                }
+            )
             sched_gen.step()
             monitor = val_loss if val_loss is not None else avg_loss
             improved, should_stop = stopper.update(monitor)
@@ -2359,6 +2438,8 @@ class TriShift:
         lambda_dir_expr: float | None = None,
         deg_weight: float = 1.0,
         lambda_expr_mse: float = 0.0,
+        lambda_neg_expr: float = 0.0,
+        neg_expr_penalty: str = "mse",
         shuffle: bool = True,
     ) -> dict:
         """Train generator only with random control pairing (stage3-only mode).
@@ -2381,6 +2462,8 @@ class TriShift:
             lambda_dir: Direction loss weight (fallback).
             lambda_dir_expr: Direction loss weight for expression.
             deg_weight: Upweight factor for DE genes in expression loss.
+            lambda_neg_expr: Non-negativity penalty weight on predicted expression.
+            neg_expr_penalty: Negative penalty mode: mse or mae.
             shuffle: Shuffle control/pert pairing.
 
         Returns:
@@ -2391,7 +2474,10 @@ class TriShift:
         if lambda_dir_expr is None:
             lambda_dir_expr = lambda_dir
         self.hparams["stage3_only"] = True
-        print(f"[stage3_only] start: split_id={split_id}, epochs={epochs}")
+        print(
+            f"[stage3_only] start: split_id={split_id}, epochs={epochs}, "
+            f"lambda_neg_expr={lambda_neg_expr}, neg_expr_penalty={neg_expr_penalty}"
+        )
 
         train_adata = split_dict["train"]
         train_ctrl = train_adata[train_adata.obs[self.data.label_key].astype(str) == self.data.ctrl_label]
@@ -2459,6 +2545,7 @@ class TriShift:
         logs = []
         for epoch in range(epochs):
             epoch_loss = 0.0
+            epoch_loss_expr_neg = 0.0
             opt_gen.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str) in enumerate(
                 tqdm(loader, desc=f"stage3_only {epoch+1}/{epochs}", leave=False)
@@ -2468,7 +2555,7 @@ class TriShift:
                 cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
-                    loss_expr = self._compute_expression_loss(
+                    loss_expr, loss_expr_neg = self._compute_expression_loss(
                         x_pred=x_pred,
                         x_true=x_true,
                         x_ctrl=x_ctrl,
@@ -2479,6 +2566,8 @@ class TriShift:
                         deg_idx_dict=deg_idx_dict,
                         deg_weight=deg_weight,
                         lambda_expr_mse=lambda_expr_mse,
+                        lambda_neg_expr=lambda_neg_expr,
+                        neg_expr_penalty=neg_expr_penalty,
                     )
                     loss = loss_expr / grad_accum_steps
                 scaler.scale(loss).backward()
@@ -2487,6 +2576,7 @@ class TriShift:
                     scaler.update()
                     opt_gen.zero_grad(set_to_none=True)
                 epoch_loss += loss_expr.item()
+                epoch_loss_expr_neg += loss_expr_neg.item()
 
             avg_loss = epoch_loss / max(len(loader), 1)
             val_loss = None
@@ -2499,7 +2589,7 @@ class TriShift:
                         x_true = x_true.to(self.device, non_blocking=True)
                         cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
                         x_pred = self.net.gen.forward_no_delta(x_ctrl, cond_vec)
-                        loss_expr = self._compute_expression_loss(
+                        loss_expr, _ = self._compute_expression_loss(
                             x_pred=x_pred,
                             x_true=x_true,
                             x_ctrl=x_ctrl,
@@ -2510,12 +2600,20 @@ class TriShift:
                             deg_idx_dict=deg_idx_dict,
                             deg_weight=deg_weight,
                             lambda_expr_mse=lambda_expr_mse,
+                            lambda_neg_expr=lambda_neg_expr,
+                            neg_expr_penalty=neg_expr_penalty,
                         )
                         val_total += loss_expr.item()
                 val_loss = val_total / max(len(val_loader), 1)
                 self.net.gen.train()
 
-            logs.append({"loss": avg_loss, "val_loss": val_loss})
+            logs.append(
+                {
+                    "loss": avg_loss,
+                    "loss_expr_neg": epoch_loss_expr_neg / max(len(loader), 1),
+                    "val_loss": val_loss,
+                }
+            )
             sched_gen.step()
             monitor = val_loss if val_loss is not None else avg_loss
             improved, should_stop = stopper.update(monitor)
