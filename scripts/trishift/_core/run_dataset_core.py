@@ -155,21 +155,10 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "mse_pred",
         "mse_ctrl",
         "deg_mean_r2",
-        "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
-        "systema_corr_all_r2",
         "systema_corr_deg_r2",
-        "r2_degs_var_mean",
-        "r2_all_var_mean",
-        "scpram_r2_all_mean_mean",
-        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
-        "scpram_r2_all_mean_std",
-        "scpram_r2_all_var_std",
-        "scpram_r2_degs_mean_std",
-        "scpram_r2_degs_var_std",
-        "scpram_wasserstein_all_sum",
         "scpram_wasserstein_degs_sum",
     ]
     exclude_keys = {"split_id", "n_ensemble"}
@@ -913,17 +902,40 @@ def run_dataset_with_paths(
     stage1_ecs_cfg = dict(stage1_cfg.get("ecs", {}))
 
     metrics_all_by_tag: dict[str, list[pd.DataFrame]] = {}
-    n_splits = (
-        int(run_cfg.get("n_splits", dataset_cfg["multi_split_default"]))
-        if run_cfg.get("multi_split", False)
-        else 1
-    )
+    split_ids_raw = run_cfg.get("split_ids", None)
+    split_ids: list[int] = []
+    if split_ids_raw is not None:
+        if not isinstance(split_ids_raw, (list, tuple)):
+            raise TypeError("run.split_ids must be a list of positive integers")
+        seen_split_ids: set[int] = set()
+        for raw in split_ids_raw:
+            try:
+                split_id_val = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("run.split_ids must contain positive integers") from exc
+            if split_id_val <= 0:
+                raise ValueError("run.split_ids must contain positive integers")
+            if split_id_val in seen_split_ids:
+                continue
+            seen_split_ids.add(split_id_val)
+            split_ids.append(split_id_val)
+        if not split_ids:
+            raise ValueError("run.split_ids must not be empty when provided")
+        n_splits = len(split_ids)
+    else:
+        n_splits = (
+            int(run_cfg.get("n_splits", dataset_cfg["multi_split_default"]))
+            if run_cfg.get("multi_split", False)
+            else 1
+        )
+        split_ids = list(range(1, n_splits + 1))
     if fast:
         stage1_epochs = 1
         stage23_epochs = 1
         stage2_epochs = 1
         stage3_epochs = 1
-        n_splits = 1
+        split_ids = split_ids[:1]
+        n_splits = len(split_ids)
         n_eval_ensemble = min(n_eval_ensemble, 20)
     eval_modes_to_run = (
         ["random_train_ctrl", "nearest_genept_ot_pool"]
@@ -945,8 +957,8 @@ def run_dataset_with_paths(
     )
     z_mu_cache_dir = Path("artifacts") / "cache" / "z_mu"
     z_mu_cache_dir.mkdir(parents=True, exist_ok=True)
-    for split_id in range(1, n_splits + 1):
-        print(f"[run] split {split_id}/{n_splits}")
+    for split_idx, split_id in enumerate(split_ids, start=1):
+        print(f"[run] split {split_idx}/{n_splits} (split_id={split_id})")
         set_seeds(base_seed)
         subgroup_df = None
         if name == "norman":

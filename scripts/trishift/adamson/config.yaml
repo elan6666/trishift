@@ -14,7 +14,7 @@ defaults_overrides:
   seed: 24
   run:
     multi_split: true
-    n_splits: 5
+    n_splits: 1
   performance:
     amp: false
     num_workers: 0

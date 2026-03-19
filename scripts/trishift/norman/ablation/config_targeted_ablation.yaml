@@ -1,0 +1,13 @@
+dataset: norman
+
+sweep:
+  split_ids:
+  - 2
+  - 5
+  run_ids:
+  - 8
+  gpu_lock: none
+  output_root: artifacts/ablation/norman
+  output_suffix: targeted_ablation_split25_shift_input_state_only
+
+baseline_config: scripts/trishift/norman/config.yaml

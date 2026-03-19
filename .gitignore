@@ -24,12 +24,14 @@ nul
 .backup/
 .claude/
 .qoder/
+tmp/
 .tmp/
 .tmp_*
 .tmp_test_utils/
 _tmp_*
 run_*.log
 tmp/pdfs/
+scripts/trishift/norman/ablation/tmp/
 output/
 output/pdf/
 

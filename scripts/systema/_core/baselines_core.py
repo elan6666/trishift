@@ -64,22 +64,8 @@ DEFAULT_METRIC_COLUMNS = [
     "nmse",
     "pearson",
     "deg_mean_r2",
-    "systema_corr_all_allpert",
     "systema_corr_20de_allpert",
-    "systema_corr_all_r2",
     "systema_corr_deg_r2",
-    "r2_degs_var_mean",
-    "r2_all_var_mean",
-    "scpram_r2_all_mean_mean",
-    "scpram_r2_all_var_mean",
-    "scpram_r2_degs_mean_mean",
-    "scpram_r2_degs_var_mean",
-    "scpram_r2_all_mean_std",
-    "scpram_r2_all_var_std",
-    "scpram_r2_degs_mean_std",
-    "scpram_r2_degs_var_std",
-    "scpram_wasserstein_all_sum",
-    "scpram_wasserstein_degs_sum",
     "split_id",
     "n_ensemble",
 ]
@@ -129,22 +115,8 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "mse_pred",
         "mse_ctrl",
         "deg_mean_r2",
-        "systema_corr_all_allpert",
         "systema_corr_20de_allpert",
-        "systema_corr_all_r2",
         "systema_corr_deg_r2",
-        "r2_degs_var_mean",
-        "r2_all_var_mean",
-        "scpram_r2_all_mean_mean",
-        "scpram_r2_all_var_mean",
-        "scpram_r2_degs_mean_mean",
-        "scpram_r2_degs_var_mean",
-        "scpram_r2_all_mean_std",
-        "scpram_r2_all_var_std",
-        "scpram_r2_degs_mean_std",
-        "scpram_r2_degs_var_std",
-        "scpram_wasserstein_all_sum",
-        "scpram_wasserstein_degs_sum",
     ]
     exclude_keys = {"split_id", "n_ensemble"}
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
@@ -477,15 +449,8 @@ def _compute_row(
     row["nmse"] = nmse_val
     row["pearson"] = pearson_val
     row["deg_mean_r2"] = float(deg_mean_r2_val)
-    row["systema_corr_all_allpert"] = float(systema.get("corr_all_allpert", np.nan))
     row["systema_corr_20de_allpert"] = float(systema.get("corr_20de_allpert", np.nan))
-    row["systema_corr_all_r2"] = float(systema.get("corr_all_r2", np.nan))
     row["systema_corr_deg_r2"] = float(systema.get("corr_deg_r2", np.nan))
-
-    # scPRAM metrics intentionally not computed for Systema baselines.
-    for k in list(row.keys()):
-        if str(k).startswith("scpram_"):
-            row[k] = np.nan
     return row
 
 

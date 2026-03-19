@@ -42,13 +42,11 @@ def pearson_delta_reference_metrics(
         (top20_de_idxs >= 0) & (top20_de_idxs < int(delta_true_allpert.size))
     ]
     out = {
-        "corr_all_allpert": pearsonr(delta_true_allpert, delta_pred_allpert)[0],
         "corr_20de_allpert": pearsonr(
             delta_true_allpert[top20_de_idxs], delta_pred_allpert[top20_de_idxs]
         )[0]
         if top20_de_idxs.size > 0
         else np.nan,
-        "corr_all_r2": _regression_r2_safe(delta_true_allpert, delta_pred_allpert),
         "corr_deg_r2": _regression_r2_safe(
             delta_true_allpert[top20_de_idxs], delta_pred_allpert[top20_de_idxs]
         )
@@ -223,37 +221,34 @@ def compute_scpram_metrics_from_arrays(
     degs = [int(i) for i in deg_idx.tolist() if 0 <= int(i) < X_true.shape[1]]
     degs = degs[: int(n_degs)]
 
-    r2_mean, r2_std = get_pearson2_from_df(
-        df_case=df_case,
-        df_pred=df_pred,
-        degs=degs,
-        sample_ratio=sample_ratio,
-        times=times,
-    )
-    r2_reg_mean, _ = get_regression_r2_from_df(
-        df_case=df_case,
-        df_pred=df_pred,
-        degs=degs,
-        sample_ratio=sample_ratio,
-        times=times,
-    )
-    wd_all, wd_top = get_wasserstein_distance_from_df(
-        df_case=df_case,
-        df_pred=df_pred,
-        top_genes=degs,
-        cal_type="sum",
+    data = np.zeros((times, 2), dtype=np.float64)
+    for i in range(times):
+        stim = df_case.sample(frac=sample_ratio, random_state=i)
+        pred = df_pred.sample(frac=sample_ratio, random_state=i)
+
+        if len(degs) > 0:
+            stim_degs_mean = stim.loc[:, degs].mean().values.reshape(1, -1)
+            pred_degs_mean = pred.loc[:, degs].mean().values.reshape(1, -1)
+            stim_degs_var = stim.loc[:, degs].var().values.reshape(1, -1)
+            pred_degs_var = pred.loc[:, degs].var().values.reshape(1, -1)
+            r2_degs_mean = (np.corrcoef(stim_degs_mean, pred_degs_mean)[0, 1]) ** 2
+            r2_degs_var = (np.corrcoef(stim_degs_var, pred_degs_var)[0, 1]) ** 2
+        else:
+            r2_degs_mean = np.nan
+            r2_degs_var = np.nan
+        data[i, :] = [r2_degs_mean, r2_degs_var]
+
+    deg_stats = pd.DataFrame(data, columns=["r2_degs_mean", "r2_degs_var"]).mean(axis=0)
+    wd_top = float(
+        np.sum(
+            [
+                wasserstein_distance(df_pred.loc[:, gene].values, df_case.loc[:, gene].values)
+                for gene in degs
+            ]
+        )
     )
     return {
-        "scpram_r2_all_mean_mean": float(r2_mean["r2_all_mean"]),
-        "scpram_r2_all_var_mean": float(r2_mean["r2_all_var"]),
-        "scpram_r2_degs_mean_mean": float(r2_mean["r2_degs_mean"]),
-        "scpram_r2_degs_var_mean": float(r2_mean["r2_degs_var"]),
-        "scpram_r2_all_mean_std": float(r2_std["r2_all_mean"]),
-        "scpram_r2_all_var_std": float(r2_std["r2_all_var"]),
-        "scpram_r2_degs_mean_std": float(r2_std["r2_degs_mean"]),
-        "scpram_r2_degs_var_std": float(r2_std["r2_degs_var"]),
-        "scpram_wasserstein_all_sum": float(wd_all),
+        "scpram_r2_degs_mean_mean": float(deg_stats["r2_degs_mean"]),
+        "scpram_r2_degs_var_mean": float(deg_stats["r2_degs_var"]),
         "scpram_wasserstein_degs_sum": float(wd_top),
-        "r2_all_var_mean": float(r2_reg_mean["r2_all_var_reg"]),
-        "r2_degs_var_mean": float(r2_reg_mean["r2_degs_var_reg"]),
     }
