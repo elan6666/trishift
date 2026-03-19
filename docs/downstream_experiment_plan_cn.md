@@ -16,6 +16,13 @@
 - `Norman` 组合扰动 subgroup 评估
 - 现有 `deg20` notebook 与配套分析脚本
 
+另外，这份计划默认采用以下收缩原则：
+
+- 不再把已经完成的 `UMAP / centroid / Systema baseline` 重新写成新增实验
+- 主文优先保留 `mean_systema_corr_20de_allpert`
+- 不再主推 `mean_systema_corr_all_allpert`
+- 网络相关实验优先做 `network-lite`，不直接上 full GRN
+
 ---
 
 ## 2. 当前已完成的下游实验基础
@@ -29,9 +36,7 @@
   - `nmse`
   - `deg_mean_r2`
 - `Systema` 风格参考系指标：
-  - `systema_corr_all_allpert`
   - `systema_corr_20de_allpert`
-  - `systema_corr_all_r2`
   - `systema_corr_deg_r2`
 - `scPRAM` 风格单细胞分布指标：
   - `scpram_r2_all_mean_mean`
@@ -46,6 +51,26 @@
 - [src/trishift/_external_metrics.py](/e:/CODE/trishift/src/trishift/_external_metrics.py)
 - [scripts/trishift/_core/run_dataset_core.py](/e:/CODE/trishift/scripts/trishift/_core/run_dataset_core.py)
 - [docs/eval_metrics_guide_cn.md](/e:/CODE/trishift/docs/eval_metrics_guide_cn.md)
+
+建议主文优先指标为：
+
+- `pearson`
+- `nmse`
+- `deg_mean_r2`
+- `systema_corr_20de_allpert`
+- `systema_corr_deg_r2`
+- `scpram_r2_degs_mean_mean`
+- `scpram_r2_degs_var_mean`
+- `scpram_wasserstein_degs_sum`
+- `centroid_dist`
+- `delta_cosine`
+
+其中：
+
+- `systema_corr_all_allpert`
+- `systema_corr_all_r2`
+
+更适合放 supplementary 或内部分析，不建议继续作为主卖点。
 
 ### 2.2 已有 baseline
 
@@ -97,6 +122,15 @@
 
 - 你们已经具备组合扰动难度分层评估的基础
 - 但尚未单独分析组合的非加性 interaction 本身
+
+### 2.6 已完成但不再重复扩展的模块
+
+以下内容当前应视为“已完成基础”，不再作为新的主实验方向：
+
+- 再新增一套 `UMAP` 可视化
+- 再新增一套 `centroid` 可视化
+- 重新把 `Systema baseline` 当成从零开始的新实验
+- 再扩更多整体表达相关性指标
 
 ---
 
@@ -511,14 +545,15 @@ Delta_nonadd_pred_AB
 
 ---
 
-## 3.6 实验六：网络 / 因果一致性分析
+## 3.6 实验六：scGPT 启发的机制扩展分析
 
 ### 3.6.1 目的
 
 回答：
 
-- 预测表达对了，是否意味着调控逻辑也对
-- 对关键 regulator 的下游 target 方向是否一致
+- 模型是否不仅预测对表达，还恢复了更高层的机制结构
+- 模型是否能帮助定位 perturbation identity、gene program 或 target-set
+- 在不直接做 full GRN reconstruction 的情况下，是否能提供有说服力的 network-lite 证据
 
 ### 3.6.2 当前基础
 
@@ -527,55 +562,137 @@ Delta_nonadd_pred_AB
 - perturbation identity
 - truth/pred expression
 - DEG list
+- `Norman` 组合扰动与 subgroup 划分
+
+额外参考来源：
+
+- [external/scGPT-main/scgpt正式版.pdf](/e:/CODE/trishift/external/scGPT-main/scgpt正式版.pdf)
+- [Tutorial_GRN.ipynb](/e:/CODE/trishift/external/scGPT-main/tutorials/Tutorial_GRN.ipynb)
+- [Tutorial_Attention_GRN.ipynb](/e:/CODE/trishift/external/scGPT-main/tutorials/Tutorial_Attention_GRN.ipynb)
 
 当前缺的是：
 
-- network-level target consistency 评估
+- reverse perturbation prediction
+- gene program / target-set consistency
+- 更轻量的 GRN-like 机制分析
 
-### 3.6.3 建议做法
+### 3.6.3 子实验 A：reverse perturbation prediction
 
-选取一部分有清晰 regulator-target 先验的 perturbation，检查：
+目的：
 
-- truth 中被显著推高/压低的 target
-- pred 是否保持相同方向
+- 给定真实扰动后的状态
+- 在候选 perturbation 集合中检索最可能的 source perturbation
+- 检查正确 perturbation 的 top-1 / top-k 排名
 
-如果有外部 GRN 或 TF-target 数据库，可进一步做：
+建议做法：
 
-- target recovery
-- direction agreement
-- enrichment consistency
+- 对每个真实 test condition，使用 `Truth` 或 `Truth centroid` 作为 query
+- 对所有 candidate condition，生成 `Pred` 或使用 `Pred centroid`
+- 用以下相似度排序：
+  - `centroid distance`
+  - `delta cosine`
+  - DEG / pathway similarity
+- 特别在 `Norman` 上分析：
+  - 真值是否能把正确组合扰动排到前列
+  - 是否能区分真实组合和近似的单扰动 / 错误组合
 
-### 3.6.4 建议指标
+建议指标：
 
-- target sign accuracy
-- TF-target enrichment recovery
-- regulator-target hit@k
-- edge direction agreement
+- top-1 accuracy
+- top-5 / top-10 hit rate
+- MRR
+- correct-combo rank
 
-### 3.6.5 建议图
+### 3.6.4 子实验 B：gene program / target-set consistency
 
-- regulator-target bubble plot
-- target-rank comparison
-- edge-sign agreement summary
+目的：
 
-### 3.6.6 输入与输出
+- 检查模型恢复的是否是一整组生物学程序
+- 而不只是少量 top DEG
+
+建议做法：
+
+先做两层，优先第一层：
+
+1. truth-derived program
+   - 用 truth top-k DEG、truth pathway gene set 或 truth enrichment 结果定义 gene program
+   - 观察 pred 是否恢复同一 program 的方向和强度
+
+2. external target set
+   - 对已知 regulator perturbation，引入外部 TF-target 或 pathway gene set
+   - 比较 truth 和 pred 对该 gene set 的 effect / enrichment / rank
+
+说明：
+
+- 这里的 `target-set consistency` 更接近 `scGPT` 的 network-lite 思路
+- 不等于严格 full GRN reconstruction
+
+建议指标：
+
+- target-set effect correlation
+- target-set sign consistency
+- target-set enrichment recovery
+- pathway / target-set hit@k
+
+### 3.6.5 子实验 C：GRN-lite 解释分析
+
+目的：
+
+- 借鉴 `scGPT` 的 gene embedding / attention probing 思路
+- 但避免直接做最重的 causal GRN benchmark
+
+建议做法：
+
+- 如果后续模型内部表示允许解释：
+  - 做 regulator-specific importance ranking
+  - 做 target-set overlap
+  - 做 gene program clustering / enrichment
+- 如果当前模型不方便做 attention 解释：
+  - 只保留 gene program / target-set consistency 即可
+
+### 3.6.6 暂不优先：full GRN / causal network reconstruction
+
+这部分先明确降级：
+
+- 不作为当前主文必做实验
+- 更适合 supplement 或后续版本
+
+原因：
+
+- 需要外部先验质量足够高
+- 需要额外设计 edge-level benchmark
+- 当前实现成本高，且容易把主线带偏
+
+### 3.6.7 输入与输出
 
 输入：
 
-- perturbation gene
-- truth/pred differential effect
-- 外部调控网络先验
+- perturbation candidate 集合
+- truth/pred expression 或 centroid
+- truth/pred DEG list
+- 外部 TF-target / pathway / program 先验（可选）
 
 输出建议：
 
-- `network_consistency_metrics.csv`
-- `target_sign_accuracy.csv`
-- `tf_target_recovery.png`
+- `reverse_perturbation_metrics.csv`
+- `reverse_perturbation_summary.csv`
+- `target_set_consistency.csv`
+- `target_set_enrichment_summary.csv`
+- `reverse_perturbation_barplot.png`
+- `target_set_overlap_plot.png`
 
-### 3.6.7 主文价值
+### 3.6.8 主文价值
 
-实现成本最高，但如果做出来，最适合用来提升论文层次。  
-更适合放 supplement 或第二轮增强。
+推荐定位：
+
+- `reverse perturbation prediction`
+  - 可以作为主文增强分析
+- `gene program / target-set consistency`
+  - 很适合主文扩展或 supplement
+- `GRN-lite`
+  - 适合 supplement
+- `full GRN / causal reconstruction`
+  - 暂缓
 
 ---
 
@@ -585,9 +702,9 @@ Delta_nonadd_pred_AB
 
 最值得先做，且最容易转化为论文主文结果：
 
-1. `Systema` 完整基线面板
-2. pathway / mechanism 恢复
-3. Norman 组合扰动非加性分析
+1. pathway / mechanism 恢复
+2. Norman 组合扰动非加性分析
+3. `Systema` 主表整合与强 baseline 对比
 
 ## 4.2 第二优先级
 
@@ -595,12 +712,15 @@ Delta_nonadd_pred_AB
 
 4. 单细胞异质性恢复
 5. 分层鲁棒性基准实验
+6. reverse perturbation prediction
 
 ## 4.3 第三优先级
 
 更偏机制拔高：
 
-6. 网络 / 因果一致性分析
+7. gene program / target-set consistency
+8. GRN-lite 分析
+9. full GRN / causal consistency（暂缓）
 
 ---
 
@@ -610,9 +730,9 @@ Delta_nonadd_pred_AB
 
 建议先完成：
 
-1. `Systema` 主表整合
-2. pathway enrichment
-3. Norman non-additive residual
+1. pathway enrichment
+2. Norman non-additive residual
+3. `Systema` 主表整合
 
 原因：
 
@@ -625,6 +745,7 @@ Delta_nonadd_pred_AB
 
 4. heterogeneity case study
 5. stratified robustness panel
+6. reverse perturbation prediction
 
 原因：
 
@@ -634,7 +755,9 @@ Delta_nonadd_pred_AB
 
 最后视时间决定是否补：
 
-6. network / causal consistency
+7. target-set consistency
+8. GRN-lite
+9. full GRN / causal consistency
 
 ---
 
@@ -656,7 +779,8 @@ Delta_nonadd_pred_AB
    - non-additive residual
 5. 补充材料：
    - stratified robustness
-   - network / causal consistency
+   - reverse perturbation prediction
+   - target-set consistency / GRN-lite
 
 ---
 
@@ -664,8 +788,9 @@ Delta_nonadd_pred_AB
 
 当前最值得补的不是再加一个类似 Pearson 的新指标，而是：
 
-- 用 `Systema` 强 baseline 证明你们真有增益
 - 用 pathway / mechanism 证明你们恢复了正确生物学
 - 用 Norman non-additive residual 证明你们学到了组合 interaction
+- 用 `Systema` 强 baseline 证明你们真有增益
+- 再以 reverse perturbation 或 target-set consistency 作为机制增强项
 
 这三项最值得优先推进。
