@@ -109,10 +109,22 @@ def _safe_token(text: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(text))
 
 
+def _normalize_space(space: str | None) -> str:
+    key = str(space or "auto").strip().lower()
+    if key not in {"auto", "full_gene", "deg"}:
+        raise ValueError("space must be one of: auto, full_gene, deg")
+    return key
+
+
 def _payload_item_arrays(
     obj: dict[str, Any],
+    *,
+    space: str = "auto",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    if all(k in obj for k in ["Pred_full", "Ctrl_full", "Truth_full", "gene_name_full"]):
+    space_key = _normalize_space(space)
+    has_full = all(k in obj for k in ["Pred_full", "Ctrl_full", "Truth_full", "gene_name_full"])
+    use_full = has_full and space_key in {"auto", "full_gene"}
+    if use_full:
         pred = np.asarray(obj["Pred_full"], dtype=np.float32)
         ctrl = np.asarray(obj["Ctrl_full"], dtype=np.float32)
         truth = np.asarray(obj["Truth_full"], dtype=np.float32)
@@ -120,6 +132,8 @@ def _payload_item_arrays(
         deg_idx = np.asarray(obj["DE_idx"], dtype=int).reshape(-1)
         deg_name = np.asarray(obj["DE_name"]).astype(str)
     else:
+        if space_key == "full_gene" and not has_full:
+            raise ValueError("full_gene space requested but payload does not contain full-gene arrays")
         pred = np.asarray(obj["Pred"], dtype=np.float32)
         ctrl = np.asarray(obj["Ctrl"], dtype=np.float32)
         truth = np.asarray(obj["Truth"], dtype=np.float32)
@@ -222,10 +236,12 @@ def _truth_deg_cache_path(
     truth_deg_mode: str,
     remove_perturbed_genes: bool,
     n_degs: int,
+    space: str = "auto",
 ) -> Path:
     mode_key = _safe_token(str(truth_deg_mode).strip().lower())
     keep_key = "drop_pert" if remove_perturbed_genes else "keep_pert"
-    return cache_root / f"{pkl_path.stem}__truth_{mode_key}__top{int(n_degs)}__{keep_key}.pkl"
+    space_key = _safe_token(_normalize_space(space))
+    return cache_root / f"{pkl_path.stem}__truth_{mode_key}__top{int(n_degs)}__{keep_key}__space_{space_key}.pkl"
 
 
 def _build_truth_deg_cache_for_payload(
@@ -234,10 +250,11 @@ def _build_truth_deg_cache_for_payload(
     truth_deg_mode: str,
     remove_perturbed_genes: bool,
     n_degs: int,
+    space: str = "auto",
 ) -> dict[str, Any]:
     conditions: dict[str, dict[str, Any]] = {}
     for condition, obj in payload.items():
-        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj)
+        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj, space=space)
         truth_genes, truth_idx = _truth_deg20(
             condition=str(condition),
             truth=truth,
@@ -257,6 +274,7 @@ def _build_truth_deg_cache_for_payload(
         "truth_deg_mode": str(truth_deg_mode).strip().lower(),
         "remove_perturbed_genes": bool(remove_perturbed_genes),
         "n_degs": int(n_degs),
+        "space": _normalize_space(space),
         "conditions": conditions,
     }
 
@@ -269,6 +287,7 @@ def _load_or_build_truth_deg_cache(
     remove_perturbed_genes: bool,
     cache_root: Path,
     n_degs: int,
+    space: str = "auto",
 ) -> dict[str, Any]:
     cache_root.mkdir(parents=True, exist_ok=True)
     cache_path = _truth_deg_cache_path(
@@ -277,6 +296,7 @@ def _load_or_build_truth_deg_cache(
         truth_deg_mode=truth_deg_mode,
         remove_perturbed_genes=remove_perturbed_genes,
         n_degs=n_degs,
+        space=space,
     )
     if cache_path.exists():
         with cache_path.open("rb") as fh:
@@ -286,6 +306,7 @@ def _load_or_build_truth_deg_cache(
             and str(cached.get("truth_deg_mode", "")).strip().lower() == str(truth_deg_mode).strip().lower()
             and bool(cached.get("remove_perturbed_genes", True)) == bool(remove_perturbed_genes)
             and int(cached.get("n_degs", n_degs)) == int(n_degs)
+            and str(cached.get("space", "auto")).strip().lower() == _normalize_space(space)
             and isinstance(cached.get("conditions"), dict)
         ):
             return cached
@@ -294,6 +315,7 @@ def _load_or_build_truth_deg_cache(
         truth_deg_mode=truth_deg_mode,
         remove_perturbed_genes=remove_perturbed_genes,
         n_degs=n_degs,
+        space=space,
     )
     with cache_path.open("wb") as fh:
         pickle.dump(cached, fh)
@@ -576,11 +598,12 @@ def _condition_rows_from_payload(
     remove_perturbed_genes: bool,
     truth_deg_cache: dict[str, Any] | None = None,
     n_degs: int = 20,
+    space: str = "auto",
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     gene_rows: list[dict[str, Any]] = []
     for condition, obj in payload.items():
-        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj)
+        pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(obj, space=space)
         cached_cond = None
         if truth_deg_cache is not None:
             cached_cond = (truth_deg_cache.get("conditions", {}) or {}).get(str(condition))
@@ -626,6 +649,7 @@ def _condition_rows_from_payload(
             "focus_key": f"{int(split_id)}:{str(condition)}",
             "pkl_path": str(pkl_path),
             "deg_top_k": int(n_degs),
+            "space_used": _normalize_space(space) if _normalize_space(space) != "auto" else ("full_gene" if all(k in obj for k in ["Pred_full", "Ctrl_full", "Truth_full", "gene_name_full"]) else "deg"),
             "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
             "pred_deg_mode_used": str(pred_mode_used),
             **overlap,
@@ -651,6 +675,7 @@ def _condition_rows_from_payload(
                         "rank": int(rank),
                         "gene": str(gene),
                         "deg_top_k": int(n_degs),
+                        "space_used": row["space_used"],
                         "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
                         "pred_deg_mode_used": str(pred_mode_used),
                     }
@@ -818,12 +843,13 @@ def summarize_condition_payload(
     *,
     payload_item: dict[str, Any],
     condition: str,
-    truth_deg_mode: str = "payload",
-    pred_deg_mode: str = "adaptive",
-    n_degs: int = 20,
+    truth_deg_mode: str = "effect_size_non_dropout",
+    pred_deg_mode: str = "effect_size_non_dropout",
+    n_degs: int = 100,
     remove_perturbed_genes: bool = True,
+    space: str = "auto",
 ) -> dict[str, Any]:
-    pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(payload_item)
+    pred, ctrl, truth, gene_names, deg_idx, deg_name = _payload_item_arrays(payload_item, space=space)
     truth_deg20, truth_deg_idx = _truth_deg20(
         condition=str(condition),
         truth=truth,
@@ -854,6 +880,7 @@ def summarize_condition_payload(
         "truth_deg20": truth_deg20,
         "truth_deg_idx": truth_deg_idx,
         "deg_top_k": int(n_degs),
+        "space_used": _normalize_space(space) if _normalize_space(space) != "auto" else ("full_gene" if all(k in payload_item for k in ["Pred_full", "Ctrl_full", "Truth_full", "gene_name_full"]) else "deg"),
         "truth_deg_mode_used": str(truth_deg_mode).strip().lower(),
         "pred_deg20": pred_deg20,
         "common_deg20": common_deg20,
@@ -867,8 +894,9 @@ def build_mean_var_scatter(
     truth_deg_idx: np.ndarray,
     title_prefix: str,
     n_degs: int = 20,
+    space: str = "auto",
 ) -> tuple[plt.Figure, plt.Figure]:
-    pred, _, truth, gene_names, _, _ = _payload_item_arrays(payload_item)
+    pred, _, truth, gene_names, _, _ = _payload_item_arrays(payload_item, space=space)
     degs = np.asarray(truth_deg_idx, dtype=int).reshape(-1)
     degs = degs[(degs >= 0) & (degs < pred.shape[1])]
     pred_mean = pred.mean(axis=0)[degs]
@@ -904,13 +932,14 @@ def run_deg20_experiment(
     out_root: str | Path | None = None,
     variant_tag: str | None = None,
     focus_conditions: list[str] | None = None,
-    truth_deg_mode: str = "payload",
-    pred_deg_mode: str = "adaptive",
-    n_degs: int = 20,
+    truth_deg_mode: str = "effect_size_non_dropout",
+    pred_deg_mode: str = "effect_size_non_dropout",
+    n_degs: int = 100,
     enrichment_mode: str = "export_only",
     enrichment_library: str = "Reactome_2022",
     remove_perturbed_genes: bool = True,
     truth_deg_cache_root: str | Path | None = None,
+    space: str = "auto",
 ) -> DEG20ExperimentResult:
     dataset_key = str(dataset).strip()
     model_key = _normalize_model_name(model_name)
@@ -949,6 +978,7 @@ def run_deg20_experiment(
                 remove_perturbed_genes=remove_perturbed_genes,
                 cache_root=truth_cache_root_path,
                 n_degs=n_degs,
+                space=space,
             )
         split_rows, split_gene_rows = _condition_rows_from_payload(
             model_name=model_key,
@@ -961,6 +991,7 @@ def run_deg20_experiment(
             remove_perturbed_genes=remove_perturbed_genes,
             truth_deg_cache=truth_deg_cache,
             n_degs=n_degs,
+            space=space,
         )
         rows.extend(split_rows)
         gene_rows.extend(split_gene_rows)
@@ -1004,6 +1035,7 @@ def run_deg20_experiment(
         "enrichment_library": str(enrichment_library),
         "remove_perturbed_genes": bool(remove_perturbed_genes),
         "truth_deg_cache_root": str(truth_cache_root_path),
+        "space": _normalize_space(space),
     }
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
@@ -1029,10 +1061,10 @@ def main() -> None:
     ap.add_argument("--out_root", default="")
     ap.add_argument("--variant_tag", default="")
     ap.add_argument("--focus_conditions", default="")
-    ap.add_argument("--n_degs", type=int, default=20)
+    ap.add_argument("--n_degs", type=int, default=100)
     ap.add_argument(
         "--truth_deg_mode",
-        default="payload",
+        default="effect_size_non_dropout",
         choices=[
             "payload",
             "scanpy",
@@ -1043,7 +1075,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--pred_deg_mode",
-        default="adaptive",
+        default="effect_size_non_dropout",
         choices=[
             "adaptive",
             "scanpy",
@@ -1055,6 +1087,7 @@ def main() -> None:
     ap.add_argument("--enrichment_mode", default="export_only", choices=["export_only", "run_if_available", "disabled"])
     ap.add_argument("--enrichment_library", default="Reactome_2022")
     ap.add_argument("--keep_perturbed_genes", action="store_true")
+    ap.add_argument("--space", default="auto", choices=["auto", "full_gene", "deg"])
     args = ap.parse_args()
 
     focus_conditions = [x.strip() for x in str(args.focus_conditions).split(",") if x.strip()]
@@ -1072,6 +1105,7 @@ def main() -> None:
         enrichment_mode=str(args.enrichment_mode).strip(),
         enrichment_library=str(args.enrichment_library).strip(),
         remove_perturbed_genes=not bool(args.keep_perturbed_genes),
+        space=str(args.space).strip(),
     )
     print(f"[deg20] out_dir={result.out_dir}")
     print(result.dataset_summary_df.to_string(index=False))

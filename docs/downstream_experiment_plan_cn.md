@@ -1,8 +1,8 @@
-# TriShift 下游实验计划
+# TriShift 下游实验计划（Bioinformatics 投稿版）
 
 ## 1. 目标
 
-这份计划面向当前仓库已经具备的评估与可视化能力，目标不是重复增加相似指标，而是系统补全以下三类证据：
+这份计划面向当前仓库已经具备的评估与可视化能力，目标不是重复增加相似指标，而是为 `Bioinformatics` 风格的方法论文补齐最关键的三类证据：
 
 1. 模型是否超越强 baseline，而不只是优于弱 baseline。
 2. 模型是否恢复了更高层次的生物学信号，而不只是表达均值或 DEG overlap。
@@ -22,6 +22,13 @@
 - 主文优先保留 `mean_systema_corr_20de_allpert`
 - 不再主推 `mean_systema_corr_all_allpert`
 - 网络相关实验优先做 `network-lite`，不直接上 full GRN
+- 下游实验不追求“大而全”，而是围绕主文主线做高信息密度收束
+
+进一步地，本文默认采用如下投稿导向：
+
+1. 主文只保留最能证明方法 advance 的 4 类下游实验。
+2. 其余分析降级到 supplement 或后续版本，避免主线发散。
+3. 所有下游实验都要服务于一个问题：`TriShift` 是否在真实生物任务上相较强 baseline 提供了稳健、可解释、可复现的增益。
 
 ---
 
@@ -134,18 +141,37 @@
 
 ---
 
-## 3. 建议新增的 6 个下游实验
+## 3. 投稿导向的下游实验结构
 
-## 3.1 实验一：Systema 完整基线面板
+结合 `scGPT` 的任务组织方式以及 `Bioinformatics` 对方法论文的常见预期，建议不要把所有下游方向并列成“都要做完”的主实验，而是分成三层：
 
-### 3.1.1 目的
+1. 主文核心实验
+2. 补充增强实验
+3. 暂缓或后续工作
+
+`scGPT` 的经验是：
+
+- `perturbation prediction`
+- `GRN inference`
+- `attention-based GRN`
+
+是分开的任务线，而不是强行塞进一个主结果包里。  
+对 `TriShift` 更稳妥的做法也是一样：主文先把 perturbation prediction 的核心 biological validation 做扎实，再把机制扩展控制在 `network-lite` 范围内。
+
+---
+
+## 4. 主文核心的 4 个下游实验
+
+## 4.1 实验一：Systema 完整基线面板
+
+### 4.1.1 目的
 
 回答两个问题：
 
 1. `TriShift` 是否超越强 baseline，而不是只超越弱 baseline。
 2. 模型是否真正学到了 perturbation-specific signal，而不是只利用了 systematic variation。
 
-### 3.1.2 当前基础
+### 4.1.2 当前基础
 
 已具备：
 
@@ -155,7 +181,7 @@
 
 但尚未完全组织成主文级基线面板。
 
-### 3.1.3 建议补充内容
+### 4.1.3 建议补充内容
 
 - 把以下方法放进统一结果表：
   - `Systema nonctl-mean`
@@ -165,10 +191,10 @@
   - `Scouter`
   - `GEARS`
   - `GenePert`
-- 补充 `centroid accuracy` 风格指标
-- 对数据集的 systematic variation 强弱做排序或分层
+- 可补充 `centroid accuracy` 风格指标，但不作为主结果唯一支撑
+- 建议按 `overall + subgroup + hard split` 三个层次组织，而不是只给 overall mean
 
-### 3.1.4 输入与输出
+### 4.1.4 输入与输出
 
 输入：
 
@@ -182,25 +208,27 @@
 - `systema_baseline_barplot.png`
 - `systema_centroid_accuracy_plot.png`
 
-### 3.1.5 主文价值
+### 4.1.5 主文价值
 
-这项实验最适合放主文，因为它直接回答：
+这项实验必须进主文，因为它直接回答：
 
 - 你们是不是比强 baseline 更好
 - gain 是否稳健
 
+这也是 `Bioinformatics` 最看重的证据之一：新方法必须和现有 state-of-the-art 在真实生物数据上做直接比较，而不是只展示单模型结果。
+
 ---
 
-## 3.2 实验二：Pathway / Mechanism 恢复
+## 4.2 实验二：Pathway / Mechanism 恢复
 
-### 3.2.1 目的
+### 4.2.1 目的
 
 把现有的 DEG overlap 提升到 pathway / mechanism 层面，回答：
 
 - 模型恢复的是否是正确的生物过程
 - 即使单基因 overlap 不完美，pathway 排名是否仍然接近真实
 
-### 3.2.2 当前基础
+### 4.2.2 当前基础
 
 已具备：
 
@@ -210,26 +238,26 @@
 - `deg20` notebook
 - 现有 DEG downstream 流程
 
-### 3.2.3 建议数据库
+### 4.2.3 建议数据库
 
 - `Reactome`
 - `MSigDB Hallmark`
 - `GO Biological Process`
 
-### 3.2.4 建议指标
+### 4.2.4 建议指标
 
 - top-N enriched pathway overlap
 - truth vs pred `NES` Pearson / Spearman
 - pathway `Jaccard`
 - pathway `hit@k`
 
-### 3.2.5 建议图
+### 4.2.5 建议图
 
 - truth / pred pathway top barplot
 - `NES` scatter
 - representative condition heatmap
 
-### 3.2.6 输入与输出
+### 4.2.6 输入与输出
 
 输入：
 
@@ -243,97 +271,20 @@
 - `pathway_overlap_summary.csv`
 - `pathway_nes_scatter.png`
 
-### 3.2.7 主文价值
+### 4.2.7 主文价值
 
-这项实验很适合放主文或主文扩展结果，因为它比单纯 `common_degs_at_k` 更有生物学解释力。
-
----
-
-## 3.3 实验三：单细胞异质性恢复
-
-### 3.3.1 目的
-
-回答：
-
-- 模型是否只是学到了均值
-- 还是保留了细胞层面的响应异质性
-
-### 3.3.2 当前基础
-
-已具备：
-
-- `scpram_r2_*_var_*`
-- `scpram_wasserstein_*`
-- UMAP
-- centroid 可视化
-
-当前缺的是：
-
-- 把异质性从压缩指标变成更直观的生物现象分析
-
-### 3.3.3 建议定义 response score
-
-可选两种：
-
-1. 到 ctrl centroid 的距离：
-
-```text
-s_i = ||x_i - mu_ctrl||_2
-```
-
-2. 在真实 delta 方向上的投影：
-
-```text
-s_i = <x_i - mu_ctrl, Delta_truth_hat>
-```
-
-### 3.3.4 建议指标
-
-- response score Wasserstein
-- response score KS statistic
-- high-responder fraction error
-- cluster-wise response correlation
-
-### 3.3.5 建议图
-
-- truth vs pred violin
-- truth vs pred histogram
-- cluster-specific response boxplot
-
-### 3.3.6 输入与输出
-
-输入：
-
-- `Truth_full`
-- `Pred_full`
-- `Ctrl_full`
-- 可选 cell cluster label
-
-输出建议：
-
-- `response_score_per_cell.csv`
-- `response_distribution_summary.csv`
-- `response_violin.png`
-- `response_histogram.png`
-
-### 3.3.7 主文价值
-
-这项更适合主文补充图或 supplement，因为它能解释：
-
-- 为什么某些模型均值指标不错，但细胞分布仍有偏差
+这项实验强烈建议进主文，因为它比单纯 `common_degs_at_k` 更有生物学解释力，也更符合 `Bioinformatics` 对 “novel method + real biological insight” 的期待。
 
 ---
 
-## 3.4 实验四：Norman 组合扰动非加性分析
+## 4.3 实验三：Norman 组合扰动非加性分析
 
-### 3.4.1 目的
-
-回答：
+### 4.3.1 目的
 
 - 模型是否学到了组合扰动 interaction
 - 而不只是把两个单扰动简单叠加
 
-### 3.4.2 当前基础
+### 4.3.2 当前基础
 
 已具备：
 
@@ -344,7 +295,7 @@ s_i = <x_i - mu_ctrl, Delta_truth_hat>
 
 - non-additive residual 分析
 
-### 3.4.3 核心公式
+### 4.3.3 核心公式
 
 定义相对 ctrl 的效应：
 
@@ -369,7 +320,7 @@ Delta_nonadd_pred_AB
 
 然后比较两者。
 
-### 3.4.4 含义
+### 4.3.4 含义
 
 - 若 residual 接近 0：
   - 说明组合效应接近简单可加
@@ -380,20 +331,20 @@ Delta_nonadd_pred_AB
 
 - 模型有没有学到 interaction 本身
 
-### 3.4.5 建议指标
+### 4.3.5 建议指标
 
 - non-additive Pearson
 - non-additive R2
 - synergy sign accuracy
 - interaction strength MAE
 
-### 3.4.6 建议图
+### 4.3.6 建议图
 
 - truth vs pred non-additive scatter
 - per-gene residual heatmap
 - subgroup 柱状图：`seen0/seen1/seen2`
 
-### 3.4.7 输入与输出
+### 4.3.7 输入与输出
 
 输入：
 
@@ -407,16 +358,16 @@ Delta_nonadd_pred_AB
 - `norman_nonadd_scatter.png`
 - `norman_nonadd_by_subgroup.png`
 
-### 3.4.8 主文价值
+### 4.3.8 主文价值
 
 这项非常值得进主文，因为 Norman 的价值本来就在组合扰动泛化。  
 这项实验能把“泛化到组合条件”提升成“学到组合 interaction”。
 
 ---
 
-## 3.5 实验五：分层鲁棒性基准实验
+## 4.4 实验四：分层鲁棒性基准实验
 
-### 3.5.1 目的
+### 4.4.1 目的
 
 这项实验不是新模型，也不是新单一指标。  
 它的目标是：
@@ -424,14 +375,14 @@ Delta_nonadd_pred_AB
 - 把你们现有的指标按任务难度切开看
 - 判断模型是“整体都稳”，还是“只在简单条件上好”
 
-### 3.5.2 为什么要做
+### 4.4.2 为什么要做
 
 仅看 overall mean 有两个问题：
 
 1. 简单条件和困难条件会被平均掉
 2. 审稿人无法判断模型的泛化边界
 
-### 3.5.3 当前基础
+### 4.4.3 当前基础
 
 你们已经有一部分分层基础：
 
@@ -443,7 +394,7 @@ Delta_nonadd_pred_AB
 
 这已经是一种 stratified benchmark。
 
-### 3.5.4 建议新增分层维度
+### 4.4.4 建议新增分层维度
 
 #### A. 按组合可见性分层
 
@@ -500,7 +451,7 @@ Delta_nonadd_pred_AB
 
 - 看模型在 harder biology 上是否退化更快
 
-### 3.5.5 推荐直接复用的指标
+### 4.4.5 推荐直接复用的指标
 
 不需要再造新指标，直接复用现有：
 
@@ -512,14 +463,14 @@ Delta_nonadd_pred_AB
 - `common_degs_at_k`
 - `centroid_dist`
 
-### 3.5.6 推荐图
+### 4.4.6 推荐图
 
 - subgroup barplot
 - difficulty vs performance scatter
 - model win-rate heatmap
 - strata boxplot
 
-### 3.5.7 输入与输出
+### 4.4.7 输入与输出
 
 输入：
 
@@ -535,7 +486,7 @@ Delta_nonadd_pred_AB
 - `stratified_boxplot.png`
 - `difficulty_scatter.png`
 
-### 3.5.8 主文价值
+### 4.4.8 主文价值
 
 这项非常适合主文结果组织，因为它不要求发明新方法，只要求更清楚地说明：
 
@@ -545,9 +496,35 @@ Delta_nonadd_pred_AB
 
 ---
 
-## 3.6 实验六：scGPT 启发的机制扩展分析
+## 5. 补充增强实验
 
-### 3.6.1 目的
+## 5.1 单细胞异质性恢复
+
+### 5.1.1 定位
+
+这项实验有价值，但建议降级到 supplement 或主文补充图，不作为四个主结果模块之一。
+
+### 5.1.2 保留原因
+
+- 它能解释为什么某些模型均值指标不错，但细胞分布仍有偏差
+- 你们已经有 `scpram_r2_*_var_*` 和 `Wasserstein` 指标，补一个更直观的响应分布分析成本不高
+
+### 5.1.3 建议最小实现
+
+- 定义 `response score`
+- 画 truth / pred violin 或 histogram
+- 报告：
+  - response score Wasserstein
+  - KS statistic
+  - high-responder fraction error
+
+不建议在这部分继续扩成新的主 benchmark。
+
+---
+
+## 5.2 scGPT 启发的机制扩展分析
+
+### 5.2.1 目的
 
 回答：
 
@@ -555,7 +532,7 @@ Delta_nonadd_pred_AB
 - 模型是否能帮助定位 perturbation identity、gene program 或 target-set
 - 在不直接做 full GRN reconstruction 的情况下，是否能提供有说服力的 network-lite 证据
 
-### 3.6.2 当前基础
+### 5.2.2 当前基础
 
 已具备：
 
@@ -576,7 +553,7 @@ Delta_nonadd_pred_AB
 - gene program / target-set consistency
 - 更轻量的 GRN-like 机制分析
 
-### 3.6.3 子实验 A：reverse perturbation prediction
+### 5.2.3 子实验 A：reverse perturbation prediction
 
 目的：
 
@@ -603,7 +580,7 @@ Delta_nonadd_pred_AB
 - MRR
 - correct-combo rank
 
-### 3.6.4 子实验 B：gene program / target-set consistency
+### 5.2.4 子实验 B：gene program / target-set consistency
 
 目的：
 
@@ -634,7 +611,7 @@ Delta_nonadd_pred_AB
 - target-set enrichment recovery
 - pathway / target-set hit@k
 
-### 3.6.5 子实验 C：GRN-lite 解释分析
+### 5.2.5 子实验 C：GRN-lite 解释分析
 
 目的：
 
@@ -650,7 +627,7 @@ Delta_nonadd_pred_AB
 - 如果当前模型不方便做 attention 解释：
   - 只保留 gene program / target-set consistency 即可
 
-### 3.6.6 暂不优先：full GRN / causal network reconstruction
+### 5.2.6 暂不优先：full GRN / causal network reconstruction
 
 这部分先明确降级：
 
@@ -663,7 +640,7 @@ Delta_nonadd_pred_AB
 - 需要额外设计 edge-level benchmark
 - 当前实现成本高，且容易把主线带偏
 
-### 3.6.7 输入与输出
+### 5.2.7 输入与输出
 
 输入：
 
@@ -681,12 +658,12 @@ Delta_nonadd_pred_AB
 - `reverse_perturbation_barplot.png`
 - `target_set_overlap_plot.png`
 
-### 3.6.8 主文价值
+### 5.2.8 主文价值
 
 推荐定位：
 
 - `reverse perturbation prediction`
-  - 可以作为主文增强分析
+  - 更适合作为 supplement 或主文增强分析
 - `gene program / target-set consistency`
   - 很适合主文扩展或 supplement
 - `GRN-lite`
@@ -694,27 +671,58 @@ Delta_nonadd_pred_AB
 - `full GRN / causal reconstruction`
   - 暂缓
 
+这里建议明确借鉴 `scGPT` 的组织方式，而不是照搬其任务总量：
+
+- `scGPT` 把 `perturbation`、`GRN`、`attention-based GRN` 分成独立分析线
+- `TriShift` 主文中只保留与 perturbation prediction 主线直接相关的 `network-lite` 证据
+- 不建议把 full GRN 作为当前投稿版本的主线工作包
+
 ---
 
-## 4. 优先级建议
+## 6. Bioinformatics 对齐要求
 
-## 4.1 第一优先级
+为了更符合 `Bioinformatics` 风格的方法论文，这份计划还应明确满足以下要求：
+
+1. 必须与强 baseline 做直接比较，而不是只给单模型结果。
+2. 必须使用真实生物数据，并且明确 train / validation / independent test 或 multi-split 设定。
+3. 不能只展示 marginal metric gain，还要有更高层次 biological validation。
+4. 需要可复现性支撑：
+   - 固定 split protocol
+   - 多 split 汇总
+   - 误差条或显著性检验
+   - 代码、配置、脚本、结果重现实验流程
+5. 不宜把大量相似指标堆成主文卖点；更重要的是清楚回答科学问题。
+
+因此，主文建议采用如下最小充分实验包：
+
+1. 强 baseline 主表
+2. pathway / mechanism recovery
+3. Norman non-additive interaction
+4. stratified robustness
+
+其余分析进入 supplement。
+
+---
+
+## 7. 优先级建议
+
+## 7.1 第一优先级
 
 最值得先做，且最容易转化为论文主文结果：
 
-1. pathway / mechanism 恢复
-2. Norman 组合扰动非加性分析
-3. `Systema` 主表整合与强 baseline 对比
+1. `Systema` 主表整合与强 baseline 对比
+2. pathway / mechanism 恢复
+3. Norman 组合扰动非加性分析
+4. 分层鲁棒性基准实验
 
-## 4.2 第二优先级
+## 7.2 第二优先级
 
 更适合补充说明模型行为：
 
-4. 单细胞异质性恢复
-5. 分层鲁棒性基准实验
+5. 单细胞异质性恢复
 6. reverse perturbation prediction
 
-## 4.3 第三优先级
+## 7.3 第三优先级
 
 更偏机制拔高：
 
@@ -724,34 +732,36 @@ Delta_nonadd_pred_AB
 
 ---
 
-## 5. 建议的执行顺序
+## 8. 建议的执行顺序
 
-## 5.1 第一阶段：快速产出主文增量
+## 8.1 第一阶段：快速产出主文增量
 
 建议先完成：
 
-1. pathway enrichment
-2. Norman non-additive residual
-3. `Systema` 主表整合
+1. `Systema` 主表整合
+2. pathway enrichment
+3. Norman non-additive residual
+4. stratified robustness
 
 原因：
 
 - 和现有代码最容易衔接
 - 最容易形成高信息密度的主文图
+- 最符合 `Bioinformatics` 对 methods paper 的审稿预期
 
-## 5.2 第二阶段：增强解释力
+## 8.2 第二阶段：增强解释力
 
 建议再完成：
 
-4. heterogeneity case study
-5. stratified robustness panel
+5. heterogeneity case study
 6. reverse perturbation prediction
 
 原因：
 
 - 能解释模型为什么在某些数据集或某些 subgroup 上更强
+- 适合作为 supplement 或 rebuttal 弹药
 
-## 5.3 第三阶段：机制拔高
+## 8.3 第三阶段：机制拔高
 
 最后视时间决定是否补：
 
@@ -761,7 +771,7 @@ Delta_nonadd_pred_AB
 
 ---
 
-## 6. 论文组织建议
+## 9. 论文组织建议
 
 如果后续写论文，建议把下游实验组织成下面的叙事顺序：
 
@@ -769,28 +779,30 @@ Delta_nonadd_pred_AB
    - overall metrics
    - Systema baseline comparison
 2. 生物学有效性：
-   - DEG recovery
    - pathway recovery
-3. 条件级与细胞级结构：
-   - centroid / UMAP
-   - heterogeneity analysis
-4. 组合泛化：
+3. 组合泛化：
    - Norman subgroup
    - non-additive residual
+4. 泛化边界：
+   - stratified robustness
 5. 补充材料：
+   - DEG recovery
+   - centroid / UMAP
+   - heterogeneity analysis
    - stratified robustness
    - reverse perturbation prediction
    - target-set consistency / GRN-lite
 
 ---
 
-## 7. 一句话版本
+## 10. 一句话版本
 
-当前最值得补的不是再加一个类似 Pearson 的新指标，而是：
+当前最值得补的不是再加一个类似 Pearson 的新指标，也不是把所有机制实验一次性做满，而是：
 
+- 用 `Systema` 强 baseline 证明你们真有增益
 - 用 pathway / mechanism 证明你们恢复了正确生物学
 - 用 Norman non-additive residual 证明你们学到了组合 interaction
-- 用 `Systema` 强 baseline 证明你们真有增益
-- 再以 reverse perturbation 或 target-set consistency 作为机制增强项
+- 用 stratified robustness 说明 gain 在 hard case 上是否仍然成立
+- 再以 reverse perturbation 或 target-set consistency 作为补充增强项
 
-这三项最值得优先推进。
+主文先把这四项做扎实，比把六到九项下游实验都铺开，更符合 `Bioinformatics` 的方法论文要求。

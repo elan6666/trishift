@@ -14,7 +14,7 @@ import time
 REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.common.yaml_utils import dump_yaml, load_yaml_file, merged_dict
+from scripts.common.yaml_utils import dump_yaml, load_yaml_file
 
 
 def _ts_local() -> str:
@@ -40,15 +40,47 @@ def _safe_git_commit(repo_root: Path) -> str | None:
     return out.decode("utf-8", "replace").strip() or None
 
 
-def _read_mean_pearson(run_dir: Path) -> float | None:
-    p = run_dir / "mean_pearson.txt"
-    if not p.exists():
-        return None
+def _parse_mean_metrics(run_dir: Path) -> dict[str, float | None]:
+    metrics = {
+        "mean_pearson_nearest": None,
+        "mean_nmse_nearest": None,
+        "mean_deg_mean_r2_nearest": None,
+    }
+    candidates = [
+        run_dir / "mean_pearson_nearest.txt",
+        run_dir / "mean_pearson.txt",
+    ]
+    target = next((p for p in candidates if p.exists()), None)
+    if target is None:
+        return metrics
     try:
-        first = p.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
-        return float(first)
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception:
-        return None
+        return metrics
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:
+            continue
+        if i == 0:
+            try:
+                metrics["mean_pearson_nearest"] = float(line)
+            except Exception:
+                pass
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        try:
+            val = float(str(value).strip())
+        except Exception:
+            continue
+        key = str(key).strip()
+        if key == "mean_pearson":
+            metrics["mean_pearson_nearest"] = val
+        elif key == "mean_nmse":
+            metrics["mean_nmse_nearest"] = val
+        elif key == "mean_deg_mean_r2":
+            metrics["mean_deg_mean_r2_nearest"] = val
+    return metrics
 
 
 def _read_summary_rows(path: Path) -> list[dict]:
@@ -120,65 +152,35 @@ class RunSpec:
     idx: int
     label: str
     defaults_overrides: dict
-    paths_overrides: dict
 
 
 def _build_runs() -> list[RunSpec]:
     runs: list[RunSpec] = []
 
-    def add(label: str, defaults_overrides: dict | None = None, paths_overrides: dict | None = None) -> None:
+    def add(label: str, defaults_overrides: dict) -> None:
         runs.append(
             RunSpec(
                 idx=len(runs) + 1,
                 label=label,
-                defaults_overrides=defaults_overrides or {},
-                paths_overrides=paths_overrides or {},
+                defaults_overrides=defaults_overrides,
             )
         )
 
     add(
-        "E1_lambda1_ecs_true",
-        {
-            "loss": {"lambda_neg_expr": 1},
-            "train": {"stage1": {"ecs": {"enable": True}}},
-        },
+        "ablation_shift_input_latent_mu",
+        {"model": {"stage2": {"shift_input_source": "latent_mu"}}},
     )
     add(
-        "E2_state_heads1",
-        {
-            "model": {
-                "stage2": {
-                    "shift_input_source": "state",
-                    "cross_attn_heads": 1,
-                }
-            }
-        },
+        "ablation_cross_attn_heads_4",
+        {"model": {"stage2": {"cross_attn_heads": 4}}},
     )
     add(
-        "E3_state_shiftrepr_null",
-        {
-            "model": {
-                "stage2": {
-                    "shift_input_source": "state",
-                    "shift_repr_dim": None,
-                }
-            }
-        },
+        "ablation_shift_repr_dim_16",
+        {"model": {"stage2": {"shift_repr_dim": 16}}},
     )
-    add("E4_ktopk_300", {"k_topk": 300})
     add(
-        "E5_lambda1_ecs_true_state_null_heads1",
-        {
-            "loss": {"lambda_neg_expr": 1},
-            "train": {"stage1": {"ecs": {"enable": True}}},
-            "model": {
-                "stage2": {
-                    "shift_input_source": "state",
-                    "shift_repr_dim": None,
-                    "cross_attn_heads": 1,
-                }
-            },
-        },
+        "ablation_ecs_weight5_epochs20",
+        {"train": {"stage1": {"ecs": {"enable": False, "weight": 5, "epochs": 20}}}},
     )
     return runs
 
@@ -186,64 +188,93 @@ def _build_runs() -> list[RunSpec]:
 def _load_local_config(path: Path) -> dict:
     obj = load_yaml_file(path)
     dataset = str(obj.get("dataset", "")).strip()
-    if dataset != "norman":
-        raise ValueError(f"Expected dataset: norman in {path}, got {dataset!r}")
+    if dataset != "adamson":
+        raise ValueError(f"Expected dataset: adamson in {path}, got {dataset!r}")
     sweep = obj.get("sweep") or {}
-    baseline_config = str(obj.get("baseline_config", "")).strip()
-    if not isinstance(sweep, dict) or not baseline_config:
-        raise TypeError(f"sweep must be a mapping and baseline_config is required in {path}")
-    return {"dataset": dataset, "sweep": sweep, "baseline_config": baseline_config}
+    baseline_defaults = str(obj.get("baseline_defaults", "")).strip()
+    baseline_paths = str(obj.get("baseline_paths", "")).strip()
+    refs = obj.get("reference_results") or {}
+    if not isinstance(sweep, dict) or not baseline_defaults or not baseline_paths:
+        raise TypeError(f"Invalid targeted ablation config: {path}")
+    if not isinstance(refs, dict):
+        raise TypeError(f"reference_results must be a mapping in {path}")
+    return {
+        "dataset": dataset,
+        "sweep": sweep,
+        "baseline_defaults": baseline_defaults,
+        "baseline_paths": baseline_paths,
+        "reference_results": refs,
+    }
+
+
+def _write_pathway_manifest(
+    *,
+    sweep_root: Path,
+    reference_results: dict,
+    selected_runs: list[RunSpec],
+) -> Path:
+    runs = [
+        {
+            "label": "state",
+            "result_dir": str((REPO_ROOT / str(reference_results["state"])).resolve()),
+            "variant_tag": "nearest",
+        },
+        {
+            "label": "best",
+            "result_dir": str((REPO_ROOT / str(reference_results["best"])).resolve()),
+            "variant_tag": "nearest",
+        },
+    ]
+    for spec in selected_runs:
+        runs.append(
+            {
+                "label": spec.label,
+                "result_dir": str((sweep_root / f"{spec.idx:02d}_{spec.label}").resolve()),
+                "variant_tag": "nearest",
+            }
+        )
+    manifest_path = sweep_root / "pathway_trishift_runs.json"
+    manifest_path.write_text(
+        json.dumps({"runs": runs}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return manifest_path
 
 
 def main() -> None:
-    local_cfg_path = Path(__file__).with_name("config_targeted_ablation.yaml")
+    local_cfg_path = Path(__file__).with_name("config_state_targeted_ablation.yaml")
     local_cfg = _load_local_config(local_cfg_path)
     sweep_cfg = local_cfg["sweep"]
-    dataset = "norman"
+    dataset = "adamson"
 
-    parser = argparse.ArgumentParser(
-        description="Run targeted Norman TriShift ablations on selected splits"
-    )
+    parser = argparse.ArgumentParser(description="Run Adamson state-based targeted TriShift ablations")
     parser.add_argument(
         "--run_ids",
         default=_normalize_run_ids_default(sweep_cfg.get("run_ids", "")),
-        help="comma-separated run ids to execute (e.g. 1,3,5)",
+        help="comma-separated run ids to execute (e.g. 1,3)",
     )
     parser.add_argument("--reuse_root", default="", help="reuse existing sweep root directory")
     parser.add_argument("--keep_going", action="store_true")
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument(
         "--gpu_lock",
-        default=str(sweep_cfg.get("gpu_lock", "none")),
+        default=str(sweep_cfg.get("gpu_lock", "gpu0")),
         help="GPU mutex lock name. Use 'none' to disable locking.",
     )
     parser.add_argument("--gpu_lock_timeout_sec", type=float, default=24 * 3600)
     parser.add_argument(
         "--suffix",
-        default=str(sweep_cfg.get("output_suffix", "targeted_ablation_split25")),
+        default=str(sweep_cfg.get("output_suffix", "state_targeted_ablation")),
         help="output directory suffix (timestamp prefix added)",
     )
     args = parser.parse_args()
 
-    baseline_cfg_path = (REPO_ROOT / str(local_cfg["baseline_config"])).resolve()
-    baseline_cfg = load_yaml_file(baseline_cfg_path)
-    base_cfg = baseline_cfg.get("base") or {}
-    baseline_defaults_overrides = baseline_cfg.get("defaults_overrides") or {}
-    baseline_paths_overrides = baseline_cfg.get("paths_overrides") or {}
-    if not isinstance(base_cfg, dict):
-        raise TypeError(f"baseline base must be a mapping: {baseline_cfg_path}")
-    if not isinstance(baseline_defaults_overrides, dict) or not isinstance(baseline_paths_overrides, dict):
-        raise TypeError(f"baseline overrides must be mappings: {baseline_cfg_path}")
+    baseline_defaults_path = (REPO_ROOT / str(local_cfg["baseline_defaults"])).resolve()
+    baseline_paths_path = (REPO_ROOT / str(local_cfg["baseline_paths"])).resolve()
+    baseline_defaults = load_yaml_file(baseline_defaults_path)
+    baseline_paths = load_yaml_file(baseline_paths_path)
 
-    base_defaults_path = (REPO_ROOT / str(base_cfg.get("defaults", "configs/defaults.yaml"))).resolve()
-    base_paths_path = (REPO_ROOT / str(base_cfg.get("paths", "configs/paths.yaml"))).resolve()
-    base_defaults = load_yaml_file(base_defaults_path)
-    base_paths = load_yaml_file(base_paths_path)
-
-    baseline_defaults = merged_dict(base_defaults, baseline_defaults_overrides)
-    baseline_paths = merged_dict(base_paths, baseline_paths_overrides)
-
-    split_ids_raw = sweep_cfg.get("split_ids", [2, 5])
+    split_ids_raw = sweep_cfg.get("split_ids", [1, 2, 3, 4, 5])
     if not isinstance(split_ids_raw, list) or not split_ids_raw:
         raise ValueError("sweep.split_ids must be a non-empty list")
     split_ids = [int(x) for x in split_ids_raw]
@@ -278,33 +309,11 @@ def main() -> None:
         }
     }
 
-    sweep_config_out = {
-        "dataset": dataset,
-        "config_source": str(local_cfg_path),
-        "baseline_config": str(baseline_cfg_path),
-        "baseline_defaults": str(base_defaults_path),
-        "baseline_paths": str(base_paths_path),
-        "sweep": {
-            "split_ids": split_ids,
-            "gpu_lock": str(args.gpu_lock),
-            "gpu_lock_timeout_sec": float(args.gpu_lock_timeout_sec),
-            "suffix": str(args.suffix),
-            "dry_run": bool(args.dry_run),
-            "keep_going": bool(args.keep_going),
-            "run_ids": requested_ids,
-        },
-        "global_defaults_overrides": global_defaults_overrides,
-        "runs": [
-            {
-                "idx": int(spec.idx),
-                "label": spec.label,
-                "defaults_overrides": spec.defaults_overrides,
-                "paths_overrides": spec.paths_overrides,
-            }
-            for spec in runs
-        ],
-    }
-    dump_yaml(sweep_root / "sweep_config.yaml", sweep_config_out, allow_unicode=False)
+    manifest_path = _write_pathway_manifest(
+        sweep_root=sweep_root,
+        reference_results=local_cfg["reference_results"],
+        selected_runs=selected_runs,
+    )
 
     sweep_meta = {
         "dataset": dataset,
@@ -317,18 +326,26 @@ def main() -> None:
         "gpu_lock": str(args.gpu_lock),
         "gpu_lock_path": (str(gpu_lock_path) if gpu_lock_path is not None else None),
         "gpu_lock_timeout_sec": float(args.gpu_lock_timeout_sec),
-        "baseline_config": str(baseline_cfg_path),
-        "baseline_defaults": str(base_defaults_path),
-        "baseline_paths": str(base_paths_path),
+        "baseline_defaults": str(baseline_defaults_path),
+        "baseline_paths": str(baseline_paths_path),
         "global_defaults_overrides": global_defaults_overrides,
         "config_source": str(local_cfg_path),
+        "pathway_manifest": str(manifest_path),
     }
     (sweep_root / "sweep_meta.json").write_text(
         json.dumps(sweep_meta, indent=2, sort_keys=False), encoding="utf-8"
     )
 
     summary_path = sweep_root / "summary.csv"
-    summary_fields = ["idx", "label", "status", "run_dir", "mean_pearson"]
+    summary_fields = [
+        "idx",
+        "label",
+        "status",
+        "run_dir",
+        "mean_pearson_nearest",
+        "mean_nmse_nearest",
+        "mean_deg_mean_r2_nearest",
+    ]
     summary_rows: list[dict] = _read_summary_rows(summary_path)
 
     def upsert_row(new_row: dict) -> None:
@@ -366,29 +383,28 @@ def main() -> None:
         run_dir = sweep_root / f"{spec.idx:02d}_{spec.label}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        if (run_dir / "metrics.csv").exists():
+        if (run_dir / "metrics_nearest.csv").exists() or (run_dir / "mean_pearson_nearest.txt").exists():
+            metrics = _parse_mean_metrics(run_dir)
             upsert_row(
                 {
                     "idx": spec.idx,
                     "label": spec.label,
                     "status": "skipped_exists",
                     "run_dir": str(run_dir),
-                    "mean_pearson": _read_mean_pearson(run_dir),
+                    **metrics,
                 }
             )
             flush_summary()
             continue
 
         defaults_run = copy.deepcopy(baseline_defaults)
-        paths_run = copy.deepcopy(baseline_paths)
         _deep_update(defaults_run, copy.deepcopy(global_defaults_overrides))
         _deep_update(defaults_run, copy.deepcopy(spec.defaults_overrides))
-        _deep_update(paths_run, copy.deepcopy(spec.paths_overrides))
 
         defaults_path = run_dir / "defaults.yaml"
         paths_path = run_dir / "paths.yaml"
         dump_yaml(defaults_path, defaults_run, allow_unicode=False)
-        dump_yaml(paths_path, paths_run, allow_unicode=False)
+        dump_yaml(paths_path, baseline_paths, allow_unicode=False)
 
         run_meta = {
             "idx": spec.idx,
@@ -400,7 +416,6 @@ def main() -> None:
             "run_dir": str(run_dir),
             "global_defaults_overrides": global_defaults_overrides,
             "defaults_overrides": spec.defaults_overrides,
-            "paths_overrides": spec.paths_overrides,
             "gpu_lock": str(args.gpu_lock),
             "gpu_lock_path": (str(gpu_lock_path) if gpu_lock_path is not None else None),
             "split_ids": split_ids,
@@ -431,7 +446,9 @@ def main() -> None:
                     "label": spec.label,
                     "status": "dry_run",
                     "run_dir": str(run_dir),
-                    "mean_pearson": None,
+                    "mean_pearson_nearest": None,
+                    "mean_nmse_nearest": None,
+                    "mean_deg_mean_r2_nearest": None,
                 }
             )
             flush_summary()
@@ -474,7 +491,7 @@ def main() -> None:
                 "label": spec.label,
                 "status": status,
                 "run_dir": str(run_dir),
-                "mean_pearson": _read_mean_pearson(run_dir),
+                **_parse_mean_metrics(run_dir),
             }
         )
         flush_summary()

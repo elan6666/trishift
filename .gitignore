@@ -24,6 +24,7 @@ nul
 .backup/
 .claude/
 .qoder/
+.workbuddy/
 tmp/
 .tmp/
 .tmp_*

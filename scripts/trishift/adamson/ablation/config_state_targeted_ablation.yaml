@@ -1,0 +1,25 @@
+dataset: adamson
+
+sweep:
+  split_ids:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  run_ids:
+  - 1
+  - 2
+  - 3
+  - 4
+  gpu_lock: gpu0
+  output_root: artifacts/ablation/adamson
+  output_suffix: state_targeted_ablation
+  pathway_output_name: pathway_compare
+
+baseline_defaults: artifacts/results/adamson/state/defaults_used.yaml
+baseline_paths: configs/paths.yaml
+
+reference_results:
+  state: artifacts/results/adamson/state
+  best: artifacts/results/adamson/best

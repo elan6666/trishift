@@ -14,7 +14,7 @@ defaults_overrides:
   seed: 24
   run:
     multi_split: true
-    n_splits: 1
+    n_splits: 5
   performance:
     amp: false
     num_workers: 0
@@ -30,10 +30,10 @@ defaults_overrides:
       deg_weight: 1
       ecs:
         enable: false
-        epochs: 10
+        epochs: 20
         lr: 0.0001
         sched_gamma: 0.9
-        weight: 10.0
+        weight: 5
         threshold: 0.8
         patience: 5
         min_delta: 0.001
@@ -67,8 +67,8 @@ defaults_overrides:
     lambda_z: 1
     deg_weight: 1
     lambda_expr_mse: 0
-    lambda_neg_expr: 2
-    neg_expr_penalty: mae
+    lambda_neg_expr: 0.5
+    neg_expr_penalty: mse
   ablation:
     stage1_use_train_split: true
     topk_strategy: random
@@ -89,8 +89,8 @@ defaults_overrides:
       - 2048
       predict_shift: true
       predict_delta: false
-      shift_repr_dim: null
-      shift_input_source: state
+      shift_repr_dim: 16
+      shift_input_source: latent_mu
       cond_pool_mode: sum
       cond_l2_norm: false
       use_cross_attention: false

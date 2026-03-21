@@ -67,7 +67,7 @@ defaults_overrides:
     lambda_z: 1
     deg_weight: 1
     lambda_expr_mse: 0
-    lambda_neg_expr: 1
+    lambda_neg_expr: 0
     neg_expr_penalty: mae
   ablation:
     stage1_use_train_split: true

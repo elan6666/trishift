@@ -79,7 +79,7 @@ def run_profile(profile: str) -> None:
         prof["dataset"],
         n_ensemble=int(task_args.get("n_ensemble", 300)),
         base_seed=int(task_args.get("seed", 24)),
-        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", False)),
+        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", True)),
     )
 
 
@@ -543,7 +543,7 @@ def main(argv: list[str] | None = None) -> None:
             else int(args.n_ensemble)
         )
         seed = int(task_args.get("seed", 24)) if int(args.seed) == 24 else int(args.seed)
-        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", False))
+        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", True))
         if bool(args.no_export_notebook_pkl):
             export_notebook_pkl = False
         run_scouter_eval(

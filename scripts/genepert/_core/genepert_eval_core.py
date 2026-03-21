@@ -123,7 +123,7 @@ def run_profile(profile: str) -> None:
     run_genepert_eval(
         prof["dataset"],
         base_seed=int(task_args.get("seed", 24)),
-        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", False)),
+        export_notebook_pkl=bool(task_args.get("export_notebook_pkl", True)),
         alpha_grid=_coerce_alpha_grid(task_args.get("alpha_grid")),
     )
 
@@ -652,7 +652,7 @@ def main(argv: list[str] | None = None) -> None:
         prof = _load_profile(profile)
         task_args = prof["task_args"]
         seed = int(task_args.get("seed", 24)) if int(args.seed) == 24 else int(args.seed)
-        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", False))
+        export_notebook_pkl = bool(task_args.get("export_notebook_pkl", True))
         if bool(args.no_export_notebook_pkl):
             export_notebook_pkl = False
         alpha_grid = _coerce_alpha_grid(task_args.get("alpha_grid"))

@@ -5,9 +5,13 @@ sweep:
   - 2
   - 5
   run_ids:
-  - 8
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
   gpu_lock: none
   output_root: artifacts/ablation/norman
-  output_suffix: targeted_ablation_split25_shift_input_state_only
+  output_suffix: targeted_ablation_split25_custom5
 
 baseline_config: scripts/trishift/norman/config.yaml

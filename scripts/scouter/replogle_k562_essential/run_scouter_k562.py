@@ -19,7 +19,7 @@ def main() -> None:
     task = cfg.get('task_args') or {}
     n_ensemble = int(task.get('n_ensemble', 300)) if int(args.n_ensemble) == 300 else int(args.n_ensemble)
     seed = int(task.get('seed', 24)) if int(args.seed) == 24 else int(args.seed)
-    export_notebook_pkl = bool(task.get('export_notebook_pkl', False))
+    export_notebook_pkl = bool(task.get('export_notebook_pkl', True))
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 

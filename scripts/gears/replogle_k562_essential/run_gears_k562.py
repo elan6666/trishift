@@ -27,7 +27,7 @@ def main() -> None:
     cfg = load_yaml_file(Path(__file__).with_name("config.yaml"))
     task = cfg.get("task_args") or {}
     seed = int(task.get("seed", 24)) if int(args.seed) == 24 else int(args.seed)
-    export_notebook_pkl = bool(task.get("export_notebook_pkl", False))
+    export_notebook_pkl = bool(task.get("export_notebook_pkl", True))
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
