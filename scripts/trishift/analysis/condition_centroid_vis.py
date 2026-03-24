@@ -28,12 +28,14 @@ DEFAULT_RESULT_ROOTS = {
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
+    "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
 }
 
 
 @dataclass
 class ConditionCentroidVisResult:
     out_dir: Path
+    points_raw_df: pd.DataFrame
     points_df: pd.DataFrame
     metrics_df: pd.DataFrame
     summary_df: pd.DataFrame
@@ -195,6 +197,7 @@ def _centroid_rows(
     truth_plot = _align_vector_to_gene_space(truth_centroid, genes, global_genes)
     pred_plot = _align_vector_to_gene_space(pred_centroid, genes, global_genes)
     ctrl_plot = None if ctrl_centroid is None else _align_vector_to_gene_space(ctrl_centroid, genes, global_genes)
+    feature_names = np.asarray(global_genes if global_genes is not None else genes).astype(str)
 
     point_rows = [
         {
@@ -207,6 +210,7 @@ def _centroid_rows(
             "n_pred": int(pred.shape[0]),
             "n_ctrl": (0 if ctrl is None else int(ctrl.shape[0])),
             "vector": truth_plot,
+            "feature_names": feature_names,
         },
         {
             "split_id": int(split_id),
@@ -218,6 +222,7 @@ def _centroid_rows(
             "n_pred": int(pred.shape[0]),
             "n_ctrl": (0 if ctrl is None else int(ctrl.shape[0])),
             "vector": pred_plot,
+            "feature_names": feature_names,
         },
     ]
     if include_ctrl and ctrl_plot is not None:
@@ -232,6 +237,7 @@ def _centroid_rows(
                 "n_pred": int(pred.shape[0]),
                 "n_ctrl": int(ctrl.shape[0]),
                 "vector": ctrl_plot,
+                "feature_names": feature_names,
             }
         )
 
@@ -320,7 +326,7 @@ def _fit_umap(points_df: pd.DataFrame, seed: int, umap_n_neighbors: int | None, 
         )
         emb = reducer.fit_transform(vecs)
         meta = {"n_neighbors": int(n_neighbors), "min_dist": float(umap_min_dist), "embed_mode": "umap"}
-    out = points_df.drop(columns=["vector"]).copy()
+    out = points_df.drop(columns=["vector", "feature_names"], errors="ignore").copy()
     out["umap1"] = emb[:, 0]
     out["umap2"] = emb[:, 1]
     return out, meta
@@ -331,6 +337,11 @@ def _build_delta_points(metrics_df: pd.DataFrame, points_df: pd.DataFrame) -> pd
         (int(row.split_id), str(row.condition), str(row.kind)): row.vector
         for row in points_df.itertuples(index=False)
     }
+    name_map = {
+        (int(row.split_id), str(row.condition), str(row.kind)): np.asarray(row.feature_names).astype(str)
+        for row in points_df.itertuples(index=False)
+        if hasattr(row, "feature_names")
+    }
     rows: list[dict[str, Any]] = []
     for row in metrics_df.itertuples(index=False):
         key_truth = (int(row.split_id), str(row.condition), "Truth")
@@ -338,6 +349,7 @@ def _build_delta_points(metrics_df: pd.DataFrame, points_df: pd.DataFrame) -> pd
         key_ctrl = (int(row.split_id), str(row.condition), "Ctrl")
         if key_ctrl not in vec_map:
             continue
+        feature_names = name_map.get(key_truth, name_map.get(key_ctrl))
         truth_delta = np.asarray(vec_map[key_truth], dtype=np.float32) - np.asarray(vec_map[key_ctrl], dtype=np.float32)
         pred_delta = np.asarray(vec_map[key_pred], dtype=np.float32) - np.asarray(vec_map[key_ctrl], dtype=np.float32)
         rows.append(
@@ -346,6 +358,7 @@ def _build_delta_points(metrics_df: pd.DataFrame, points_df: pd.DataFrame) -> pd
                 "condition": str(row.condition),
                 "kind": "TruthDelta",
                 "vector": truth_delta,
+                "feature_names": feature_names,
             }
         )
         rows.append(
@@ -354,6 +367,7 @@ def _build_delta_points(metrics_df: pd.DataFrame, points_df: pd.DataFrame) -> pd
                 "condition": str(row.condition),
                 "kind": "PredDelta",
                 "vector": pred_delta,
+                "feature_names": feature_names,
             }
         )
     return pd.DataFrame(rows)
@@ -631,6 +645,7 @@ def run_condition_centroid_visualization(
     (out_dir / "run_meta.json").write_text(json.dumps(run_meta, indent=2), encoding="utf-8")
     return ConditionCentroidVisResult(
         out_dir=out_dir,
+        points_raw_df=points_df_raw,
         points_df=points_plot_df,
         metrics_df=metrics_df,
         summary_df=summary_export,

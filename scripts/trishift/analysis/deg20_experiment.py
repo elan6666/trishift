@@ -28,6 +28,7 @@ DEFAULT_RESULT_ROOTS = {
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
+    "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
 }
 DEFAULT_DEG_CACHE_ROOT = REPO_ROOT / "artifacts" / "cache" / "degs"
 

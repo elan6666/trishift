@@ -9,3 +9,4 @@ embeddings:
   emb_b: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GenePT_gene_embedding_ada_text.pickle"
   emb_c: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GPT_3_5_gene_embeddings.pickle"
   emb_d: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GenePT_gene_protein_embedding_model_3_text.pickle"
+scgpt_pretrained_root: "E:\\CODE\\trishift\\artifacts\\models\\scGPT_human"

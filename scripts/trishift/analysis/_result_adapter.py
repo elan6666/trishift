@@ -26,6 +26,7 @@ DEFAULT_PAYLOAD_ROOTS = {
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
+    "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
 }
 
 DATASET_EMBEDDING_KEYS = {
@@ -42,6 +43,7 @@ DEFAULT_MODEL_REQUESTS = [
     "scouter",
     "gears",
     "genepert",
+    "scgpt",
     "systema_nonctl_mean",
     "systema_matching_mean",
 ]
@@ -107,8 +109,8 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
         return ModelSpec(key, "payload", "trishift", "nearest", "TriShift nearest")
     if key == "trishift_random":
         return ModelSpec(key, "payload", "trishift", "random", "TriShift random")
-    if key in {"scouter", "gears", "genepert"}:
-        label_map = {"scouter": "Scouter", "gears": "GEARS", "genepert": "GenePert"}
+    if key in {"scouter", "gears", "genepert", "scgpt"}:
+        label_map = {"scouter": "Scouter", "gears": "GEARS", "genepert": "GenePert", "scgpt": "scGPT"}
         return ModelSpec(key, "payload", key, None, label_map[key])
     if key == "systema_nonctl_mean":
         return ModelSpec(key, "systema", None, None, "Systema nonctl-mean")
