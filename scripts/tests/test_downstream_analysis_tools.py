@@ -237,9 +237,11 @@ def test_run_stratified_benchmark_builds_metadata_and_summary(monkeypatch):
     with temp_dir() as tmp:
         root = Path(tmp)
         tri_root = root / "tri"
+        notebook_cwd = root / "notebooks"
         paths_yaml = root / "paths.yaml"
         h5ad_path = root / "toy.h5ad"
         emb_path = root / "emb.pkl"
+        notebook_cwd.mkdir()
 
         _write_h5ad(h5ad_path)
         _write_embedding_pickle(emb_path)
@@ -267,6 +269,8 @@ def test_run_stratified_benchmark_builds_metadata_and_summary(monkeypatch):
         )
 
         monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        old_cwd = Path.cwd()
+        monkeypatch.chdir(notebook_cwd)
         result = run_stratified_benchmark(
             dataset="adamson",
             models=["trishift_nearest"],
@@ -274,6 +278,7 @@ def test_run_stratified_benchmark_builds_metadata_and_summary(monkeypatch):
             out_root=root / "out",
             paths_path=paths_yaml,
         )
+        monkeypatch.chdir(old_cwd)
         assert not result["metadata_df"].empty
         assert not result["stratified_df"].empty
         assert (result["out_dir"] / "stratified_summary.csv").exists()

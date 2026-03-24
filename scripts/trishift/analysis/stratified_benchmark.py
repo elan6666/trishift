@@ -40,8 +40,59 @@ SUMMARY_METRICS = [
     "systema_corr_deg_r2",
     "scpram_r2_degs_var_mean",
 ]
+DIFFICULTY_METRICS = [
+    "truth_ctrl_shift_norm",
+    "train_test_distance",
+    "deg_count",
+]
 
 LOWER_IS_BETTER = {"nmse"}
+METADATA_COLUMNS = [
+    "dataset",
+    "split_id",
+    "condition",
+    "subgroup",
+    "truth_ctrl_shift_norm",
+    "deg_count",
+    "train_test_distance",
+]
+
+
+def _ordered_labels(values: list[str], preferred: list[str]) -> list[str]:
+    present = [label for label in preferred if label in values]
+    remaining = sorted([label for label in values if label not in preferred])
+    return present + remaining
+
+
+def _model_color_map(model_names: list[str]) -> dict[str, Any]:
+    cmap = plt.get_cmap("tab10")
+    return {name: cmap(idx % 10) for idx, name in enumerate(model_names)}
+
+
+def _available_summary_metrics(df: pd.DataFrame) -> list[str]:
+    if df.empty:
+        return []
+    metrics: list[str] = []
+    for metric in SUMMARY_METRICS:
+        if metric not in df.columns:
+            continue
+        series = pd.to_numeric(df[metric], errors="coerce")
+        if series.notna().any():
+            metrics.append(metric)
+    return metrics
+
+
+def _available_difficulty_metrics(df: pd.DataFrame) -> list[str]:
+    if df.empty:
+        return []
+    metrics: list[str] = []
+    for metric in DIFFICULTY_METRICS:
+        if metric not in df.columns:
+            continue
+        series = pd.to_numeric(df[metric], errors="coerce")
+        if series.notna().any():
+            metrics.append(metric)
+    return metrics
 
 
 def _qcut_labels(series: pd.Series, labels: list[str]) -> tuple[pd.Series, list[float]]:
@@ -70,7 +121,13 @@ def _load_dataset_split(data_name: str, split_id: int, paths_path: str | Path) -
     return data.split_by_condition(seed=int(split_id))
 
 
-def _build_metadata_from_payload(dataset: str, payload: dict[str, Any], split_id: int, train_conds: list[str]) -> pd.DataFrame:
+def _build_metadata_from_payload(
+    dataset: str,
+    payload: dict[str, Any],
+    split_id: int,
+    train_conds: list[str],
+    paths_path: str | Path,
+) -> pd.DataFrame:
     subgroup_lookup: dict[str, str] = {}
     conds = [normalize_condition(str(k)) for k in payload.keys()]
     if dataset == "norman":
@@ -79,7 +136,7 @@ def _build_metadata_from_payload(dataset: str, payload: dict[str, Any], split_id
         subgroup_lookup = {normalize_condition(str(idx)): str(row["subgroup"]) for idx, row in subgroup_df.iterrows()}
 
     train_embs = {
-        normalize_condition(c): condition_embedding(dataset, c)
+        normalize_condition(c): condition_embedding(dataset, c, paths_path=paths_path)
         for c in train_conds
     }
     rows: list[dict[str, Any]] = []
@@ -88,7 +145,7 @@ def _build_metadata_from_payload(dataset: str, payload: dict[str, Any], split_id
         truth_full = np.asarray(item["Truth_full"] if "Truth_full" in item else item["Truth"], dtype=np.float32)
         ctrl_full = np.asarray(item["Ctrl_full"] if "Ctrl_full" in item else item["Ctrl"], dtype=np.float32)
         truth_delta = truth_full.mean(axis=0) - ctrl_full.mean(axis=0)
-        cond_emb = condition_embedding(dataset, cond_key)
+        cond_emb = condition_embedding(dataset, cond_key, paths_path=paths_path)
         dists = [float(np.linalg.norm(cond_emb - emb)) for emb in train_embs.values()] if train_embs else [float("nan")]
         rows.append(
             {
@@ -117,47 +174,232 @@ def _choose_reference_payload_model(dataset: str, models: list[str], split_id: i
     return None
 
 
-def _render_boxplot(df: pd.DataFrame, out_path: Path) -> None:
-    plt.figure(figsize=(8, 5), dpi=220)
-    if df.empty:
-        plt.text(0.5, 0.5, "No stratified rows", ha="center", va="center")
-        plt.axis("off")
-    else:
-        work = df[df["stratum_name"] == "effect_strength_bin"].copy()
-        if work.empty:
-            work = df.copy()
-        labels = sorted(work["stratum_value"].dropna().astype(str).unique().tolist())
-        vals = [pd.to_numeric(work[work["stratum_value"].astype(str) == lab]["pearson"], errors="coerce").dropna().to_numpy() for lab in labels]
-        vals = [v for v in vals if v.size > 0]
-        labels = [lab for lab, v in zip(labels, [pd.to_numeric(work[work["stratum_value"].astype(str) == lab]["pearson"], errors="coerce").dropna().to_numpy() for lab in labels]) if v.size > 0]
-        if vals:
-            plt.boxplot(vals, tick_labels=labels)
-            plt.ylabel("pearson")
-            plt.title("Stratified performance")
-        else:
-            plt.text(0.5, 0.5, "No valid boxplot rows", ha="center", va="center")
-            plt.axis("off")
-    plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close()
+def _render_boxplot(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    fig, ax = plt.subplots(figsize=(10, 5.5), dpi=220)
+    required_cols = {"effect_strength_bin", "model_name", metric}
+    if df.empty or not required_cols.issubset(df.columns):
+        ax.text(0.5, 0.5, "No stratified rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    work = df.copy()
+    work[metric] = pd.to_numeric(work[metric], errors="coerce")
+    work = work.dropna(subset=["effect_strength_bin", "model_name", metric])
+    if work.empty:
+        ax.text(0.5, 0.5, "No valid boxplot rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    stratum_labels = _ordered_labels(
+        work["effect_strength_bin"].astype(str).dropna().unique().tolist(),
+        ["weak", "medium", "strong"],
+    )
+    model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
+    color_map = _model_color_map(model_names)
+
+    base_positions = np.arange(len(stratum_labels)) * (len(model_names) + 1.5)
+    any_box = False
+    for model_idx, model_name in enumerate(model_names):
+        arrays: list[np.ndarray] = []
+        positions: list[float] = []
+        for stratum_idx, stratum_value in enumerate(stratum_labels):
+            vals = pd.to_numeric(
+                work[
+                    (work["effect_strength_bin"].astype(str) == stratum_value)
+                    & (work["model_name"].astype(str) == model_name)
+                ][metric],
+                errors="coerce",
+            ).dropna().to_numpy(dtype=float)
+            if vals.size == 0:
+                continue
+            arrays.append(vals)
+            positions.append(float(base_positions[stratum_idx] + model_idx))
+        if not arrays:
+            continue
+        any_box = True
+        bp = ax.boxplot(
+            arrays,
+            positions=positions,
+            widths=0.7,
+            patch_artist=True,
+            manage_ticks=False,
+        )
+        for patch in bp["boxes"]:
+            patch.set_facecolor(color_map[model_name])
+            patch.set_alpha(0.45)
+        for median in bp["medians"]:
+            median.set_color(color_map[model_name])
+            median.set_linewidth(1.5)
+        for whisker in bp["whiskers"]:
+            whisker.set_color(color_map[model_name])
+        for cap in bp["caps"]:
+            cap.set_color(color_map[model_name])
+
+    if not any_box:
+        ax.text(0.5, 0.5, "No valid boxplot rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    centers = base_positions + (len(model_names) - 1) / 2.0
+    ax.set_xticks(centers, stratum_labels)
+    ax.set_ylabel(metric)
+    ax.set_xlabel("effect_strength_bin")
+    ax.set_title(f"Stratified performance by model ({metric})")
+    ax.grid(axis="y", alpha=0.2)
+    legend_handles = [
+        plt.Line2D([0], [0], color=color_map[name], lw=6, alpha=0.6, label=name)
+        for name in model_names
+    ]
+    ax.legend(handles=legend_handles, frameon=False, ncol=min(4, len(model_names)))
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
-def _render_scatter(df: pd.DataFrame, out_path: Path) -> None:
-    plt.figure(figsize=(6, 5), dpi=220)
-    if df.empty:
-        plt.text(0.5, 0.5, "No difficulty rows", ha="center", va="center")
-        plt.axis("off")
-    else:
-        x = pd.to_numeric(df["train_test_distance"], errors="coerce")
-        y = pd.to_numeric(df["pearson"], errors="coerce")
-        plt.scatter(x, y, alpha=0.7, s=20)
-        plt.xlabel("train_test_distance")
-        plt.ylabel("pearson")
-        plt.title("Difficulty vs performance")
-        plt.grid(alpha=0.2)
-    plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close()
+def _render_scatter(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    fig, ax = plt.subplots(figsize=(7.5, 5.5), dpi=220)
+    required_cols = {"train_test_distance", "model_name", metric}
+    if df.empty or not required_cols.issubset(df.columns):
+        ax.text(0.5, 0.5, "No difficulty rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    work = df.copy()
+    work["train_test_distance"] = pd.to_numeric(work["train_test_distance"], errors="coerce")
+    work[metric] = pd.to_numeric(work[metric], errors="coerce")
+    work = work.dropna(subset=["train_test_distance", metric, "model_name"])
+    if work.empty:
+        ax.text(0.5, 0.5, "No valid difficulty rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
+    color_map = _model_color_map(model_names)
+    for model_name in model_names:
+        g = work[work["model_name"].astype(str) == model_name]
+        ax.scatter(
+            g["train_test_distance"].to_numpy(dtype=float),
+            g[metric].to_numpy(dtype=float),
+            alpha=0.7,
+            s=28,
+            label=model_name,
+            color=color_map[model_name],
+        )
+    ax.set_xlabel("train_test_distance")
+    ax.set_ylabel(metric)
+    ax.set_title(f"Difficulty vs performance ({metric})")
+    ax.grid(alpha=0.2)
+    ax.legend(frameon=False, ncol=min(2, len(model_names)))
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
+
+
+def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    stratum_specs = [
+        ("effect_strength_bin", ["weak", "medium", "strong"]),
+        ("train_distance_bin", ["near", "medium", "far"]),
+        ("deg_difficulty_bin", ["easy", "medium", "hard"]),
+    ]
+    required_cols = {"model_name", "stratum_name", "stratum_value", metric}
+    available_specs = [spec for spec in stratum_specs if spec[0] in summary_df.get("stratum_name", pd.Series(dtype=str)).astype(str).unique().tolist()]
+    if summary_df.empty or not required_cols.issubset(summary_df.columns) or not available_specs:
+        fig, ax = plt.subplots(figsize=(10, 4), dpi=220)
+        ax.text(0.5, 0.5, "No summary rows", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    work = summary_df[["model_name", "stratum_name", "stratum_value", metric]].copy()
+    work[metric] = pd.to_numeric(work[metric], errors="coerce")
+    work = work.dropna(subset=["model_name", "stratum_name", "stratum_value", metric])
+    if work.empty:
+        fig, ax = plt.subplots(figsize=(10, 4), dpi=220)
+        ax.text(0.5, 0.5, f"No valid rows for {metric}", ha="center", va="center")
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(out_path)
+        plt.close(fig)
+        return
+
+    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.6 * len(available_specs), 4.8), dpi=220)
+    axes_arr = np.atleast_1d(axes).ravel()
+    model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
+    color_map = _model_color_map(model_names)
+
+    for ax, (stratum_name, preferred_order) in zip(axes_arr, available_specs):
+        sub = work[work["stratum_name"].astype(str) == stratum_name].copy()
+        if sub.empty:
+            ax.text(0.5, 0.5, f"No rows for {stratum_name}", ha="center", va="center")
+            ax.axis("off")
+            continue
+        order = _ordered_labels(sub["stratum_value"].astype(str).unique().tolist(), preferred_order)
+        x = np.arange(len(order))
+        n_models = max(1, len(model_names))
+        width = min(0.8 / n_models, 0.22)
+        ymax = float(pd.to_numeric(sub[metric], errors="coerce").max()) if len(sub) else 0.0
+        offset_y = max(abs(ymax) * 0.03, 0.02)
+
+        any_bar = False
+        for model_idx, model_name in enumerate(model_names):
+            sub_model = sub[sub["model_name"].astype(str) == model_name].copy()
+            if sub_model.empty:
+                continue
+            any_bar = True
+            sub_map = {str(row["stratum_value"]): float(row[metric]) for _, row in sub_model.iterrows()}
+            vals = [sub_map.get(bin_name, np.nan) for bin_name in order]
+            pos = x + (model_idx - (n_models - 1) / 2.0) * width
+            bars = ax.bar(
+                pos,
+                vals,
+                width=width,
+                color=color_map[model_name],
+                alpha=0.85,
+                label=model_name,
+            )
+            for bar, val in zip(bars, vals):
+                if np.isnan(val):
+                    continue
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.0,
+                    float(val) + offset_y,
+                    f"{float(val):.2f}",
+                    ha="center",
+                    va="bottom",
+                    fontsize=7,
+                )
+        if not any_bar:
+            ax.text(0.5, 0.5, f"No grouped rows for {stratum_name}", ha="center", va="center")
+            ax.axis("off")
+            continue
+        ax.set_xticks(x, order)
+        ax.set_title(f"{metric} by {stratum_name}")
+        ax.set_ylabel(metric)
+        ax.set_xlabel(stratum_name)
+        ax.grid(axis="y", alpha=0.2)
+        ax.legend(frameon=False, ncol=min(2, len(model_names)))
+
+    fig.suptitle(f"Stratified {metric} by model", y=0.99)
+    fig.tight_layout()
+    fig.savefig(out_path)
+    plt.close(fig)
 
 
 def run_stratified_benchmark(
@@ -176,13 +418,16 @@ def run_stratified_benchmark(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     metadata_frames: list[pd.DataFrame] = []
+    metadata_messages: list[str] = []
     thresholds: dict[str, list[float]] = {}
     skipped_models: list[dict[str, Any]] = []
 
     for split_id in split_list:
         ref_model = _choose_reference_payload_model(dataset_key, model_requests, int(split_id))
         if ref_model is None:
-            warn_skip(f"[stratified] no payload-backed reference model for dataset={dataset_key} split={split_id}")
+            message = f"[stratified] no payload-backed reference model for dataset={dataset_key} split={split_id}"
+            metadata_messages.append(message)
+            warn_skip(message)
             continue
         try:
             split_dict = _load_dataset_split(dataset_key, int(split_id), paths_path)
@@ -193,12 +438,19 @@ def run_stratified_benchmark(
                     payload,
                     int(split_id),
                     [normalize_condition(c) for c in split_dict.get("train_conds", [])],
+                    paths_path,
                 )
             )
         except Exception as exc:
-            warn_skip(f"[stratified] skip split={split_id}: {exc}")
+            message = f"[stratified] skip split={split_id}: {exc}"
+            metadata_messages.append(message)
+            warn_skip(message)
 
-    metadata_df = pd.concat(metadata_frames, ignore_index=True).drop_duplicates(["split_id", "condition"]) if metadata_frames else pd.DataFrame()
+    metadata_df = (
+        pd.concat(metadata_frames, ignore_index=True).drop_duplicates(["split_id", "condition"])
+        if metadata_frames
+        else pd.DataFrame(columns=METADATA_COLUMNS)
+    )
     if not metadata_df.empty:
         metadata_df["effect_strength_bin"], thresholds["effect_strength_bin"] = _qcut_labels(
             metadata_df["truth_ctrl_shift_norm"], ["weak", "medium", "strong"]
@@ -209,6 +461,13 @@ def run_stratified_benchmark(
         metadata_df["deg_difficulty_bin"], thresholds["deg_difficulty_bin"] = _qcut_labels(
             metadata_df["deg_count"], ["easy", "medium", "hard"]
         )
+    elif split_list:
+        message = (
+            f"[stratified] metadata_df is empty for dataset={dataset_key}; "
+            "difficulty scatter and stratified summary outputs will be empty"
+        )
+        metadata_messages.append(message)
+        warn_skip(message)
 
     merged_frames: list[pd.DataFrame] = []
     for model_name in model_requests:
@@ -226,6 +485,12 @@ def run_stratified_benchmark(
             continue
         metrics_df["condition"] = metrics_df["condition"].astype(str).map(normalize_condition)
         metrics_df["model_name"] = str(model_name)
+        if not {"split_id", "condition"}.issubset(metadata_df.columns):
+            warn_skip(
+                f"[stratified] metadata unavailable for dataset={dataset_key}; "
+                f"writing metrics without strata for model={model_name}"
+            )
+            metadata_df = pd.DataFrame(columns=METADATA_COLUMNS)
         merged = metrics_df.merge(metadata_df, on=["split_id", "condition"], how="left")
         merged_frames.append(merged)
 
@@ -275,14 +540,23 @@ def run_stratified_benchmark(
         )
     summary_df = pd.DataFrame(summary_rows)
     win_df = pd.DataFrame(win_rows)
+    metric_summary_df = (
+        stratified_df.groupby("model_name", as_index=False)[SUMMARY_METRICS].mean()
+        if not stratified_df.empty
+        else pd.DataFrame(columns=["model_name", *SUMMARY_METRICS])
+    )
+    rendered_metrics = ["pearson"] if "pearson" in summary_df.columns else []
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     merged_df.to_csv(out_dir / "difficulty_scatter.csv", index=False, encoding="utf-8-sig")
     stratified_df.to_csv(out_dir / "stratified_metrics.csv", index=False, encoding="utf-8-sig")
     summary_df.to_csv(out_dir / "stratified_summary.csv", index=False, encoding="utf-8-sig")
     win_df.to_csv(out_dir / "model_winrate_by_strata.csv", index=False, encoding="utf-8-sig")
+    metric_summary_df.to_csv(out_dir / "stratified_metric_means.csv", index=False, encoding="utf-8-sig")
     metadata_df.to_csv(out_dir / "condition_difficulty_metadata.csv", index=False, encoding="utf-8-sig")
-    _render_boxplot(stratified_df, out_dir / "stratified_boxplot.png")
+    _render_boxplot(merged_df, out_dir / "stratified_boxplot.png")
     _render_scatter(merged_df, out_dir / "difficulty_scatter.png")
+    _render_summary_barplot(summary_df, out_dir / "stratified_summary_barplot.png", metric="pearson")
 
     write_run_meta(
         out_dir / "run_meta.json",
@@ -292,6 +566,8 @@ def run_stratified_benchmark(
             "split_ids": split_list,
             "paths_path": str(Path(paths_path).resolve()),
             "thresholds": thresholds,
+            "rendered_metrics": rendered_metrics,
+            "metadata_messages": metadata_messages,
             "skipped_models": skipped_models,
             "out_dir": str(out_dir),
         },
@@ -303,6 +579,9 @@ def run_stratified_benchmark(
         "stratified_df": stratified_df,
         "summary_df": summary_df,
         "win_df": win_df,
+        "metric_summary_df": metric_summary_df,
+        "rendered_metrics": rendered_metrics,
+        "metadata_messages": metadata_messages,
     }
 
 
