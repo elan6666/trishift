@@ -263,6 +263,38 @@ def _render_metric_heatmap(summary_df: pd.DataFrame, out_path: Path) -> None:
     plt.close()
 
 
+def _render_metric_barplot(summary_df: pd.DataFrame, out_path: Path) -> None:
+    plt.figure(figsize=(12, max(4, 0.9 * max(1, len(summary_df)))), dpi=220)
+    if summary_df.empty:
+        plt.text(0.5, 0.5, "No pathway summary available", ha="center", va="center")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(out_path)
+        plt.close()
+        return
+
+    metric_cols = [c for c in summary_df.columns if c != "model_name"]
+    if not metric_cols:
+        plt.text(0.5, 0.5, "No metric columns available", ha="center", va="center")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(out_path)
+        plt.close()
+        return
+
+    plot_df = summary_df.copy().set_index("model_name")
+    plot_df = plot_df[metric_cols].apply(pd.to_numeric, errors="coerce")
+    plot_df.T.plot(kind="bar", ax=plt.gca(), width=0.82)
+    plt.ylabel("mean score")
+    plt.title("Pathway Recovery Metric Means")
+    plt.grid(axis="y", alpha=0.2)
+    plt.xticks(rotation=35, ha="right")
+    plt.legend(title="model", frameon=False, ncol=min(4, len(plot_df.index)))
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+
 def _load_trishift_runs_manifest(path: str | Path) -> list[dict[str, Any]]:
     obj = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(obj, dict):
@@ -412,6 +444,7 @@ def run_pathway_recovery(
     metric_summary_df.to_csv(out_dir / "pathway_metric_means.csv", index=False, encoding="utf-8-sig")
     _render_scatter(corr_df, out_dir / "pathway_nes_scatter.png")
     _render_metric_heatmap(metric_summary_df, out_dir / "pathway_metric_heatmap.png")
+    _render_metric_barplot(metric_summary_df, out_dir / "pathway_metric_barplot.png")
 
     write_run_meta(
         out_dir / "run_meta.json",
