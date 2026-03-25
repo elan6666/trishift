@@ -19,10 +19,13 @@ from scripts.trishift.analysis import baseline_panel as baseline_panel_mod
 from scripts.trishift.analysis import pathway_recovery as pathway_recovery_mod
 from scripts.trishift.analysis import stratified_benchmark as stratified_mod
 from scripts.trishift.analysis.baseline_panel import run_baseline_panel
+from scripts.trishift.analysis.norman_gi_truth_builder import run_norman_gi_truth_builder
+from scripts.trishift.analysis.norman_gi_precision_experiment import run_norman_gi_precision_experiment
 from scripts.trishift.analysis.norman_nonadd_experiment import run_norman_nonadd_experiment
 from scripts.trishift.analysis.pathway_recovery import run_pathway_recovery
 from scripts.trishift.analysis.stratified_benchmark import run_stratified_benchmark
 from scripts.trishift.analysis import deg20_experiment as deg20_mod
+from scripts.trishift.analysis import norman_gi_precision_experiment as gi_precision_mod
 
 
 def _write_pickle(path: Path, obj: object) -> None:
@@ -109,6 +112,41 @@ def _norman_combo_payload_deg_only() -> dict:
         "A+ctrl": item((1.0, 0.5, 0.0)),
         "B+ctrl": item((0.4, 1.2, 0.2)),
         "A+B": item((2.0, 2.3, 0.5)),
+    }
+
+
+def _norman_combo_payload_missing_single() -> dict:
+    payload = _norman_combo_payload()
+    payload.pop("B+ctrl", None)
+    return payload
+
+
+def _norman_combo_payload_multi() -> dict:
+    genes = np.array(["A", "B", "C", "G0", "G1"], dtype=object)
+    ctrl = np.ones((4, 5), dtype=np.float32)
+
+    def item(delta: tuple[float, float]) -> dict:
+        truth = ctrl.copy()
+        pred = ctrl.copy()
+        truth[:, 3] += float(delta[0])
+        truth[:, 4] += float(delta[1])
+        pred[:, 3] += float(delta[0]) + 0.05
+        pred[:, 4] += float(delta[1]) - 0.05
+        return {
+            "Pred_full": pred,
+            "Truth_full": truth,
+            "Ctrl_full": ctrl,
+            "gene_name_full": genes,
+            "DE_idx": np.array([3, 4], dtype=int),
+            "DE_name": np.array(["G0", "G1"], dtype=object),
+        }
+
+    return {
+        "A+ctrl": item((1.0, 0.5)),
+        "B+ctrl": item((0.4, 1.2)),
+        "C+ctrl": item((0.8, 0.3)),
+        "A+B": item((2.0, 2.3)),
+        "A+C": item((1.8, 1.7)),
     }
 
 
@@ -208,11 +246,15 @@ def test_run_norman_nonadd_experiment_outputs_condition_metrics(monkeypatch):
         assert len(result["per_condition_df"]) == 1
         row = result["per_condition_df"].iloc[0]
         assert row["condition"] == "A+B"
-        assert np.isfinite(float(row["interaction_strength_mae"]))
-        assert (result["out_dir"] / "norman_nonadd_summary.csv").exists()
+        assert row["subgroup"] == "seen0"
+        assert np.isfinite(float(row["truth_c1"]))
+        assert np.isfinite(float(row["pred_c1"]))
+        assert np.isfinite(float(row["abs_err_c1"]))
+        assert (result["out_dir"] / "norman_gi_summary.csv").exists()
+        assert (result["out_dir"] / "run_meta.json").exists()
 
 
-def test_run_norman_nonadd_experiment_deg_space_supports_deg_only_payload(monkeypatch):
+def test_run_norman_nonadd_experiment_skips_deg_only_payload(monkeypatch):
     with temp_dir() as tmp:
         root = Path(tmp)
         scouter_root = root / "scouter"
@@ -224,13 +266,142 @@ def test_run_norman_nonadd_experiment_deg_space_supports_deg_only_payload(monkey
             models=["scouter"],
             split_ids="1",
             out_root=root / "out",
-            space="deg",
         )
-        assert len(result["per_condition_df"]) == 1
-        row = result["per_condition_df"].iloc[0]
-        assert row["condition"] == "A+B"
-        assert row["space_used"] == "deg"
-        assert np.isfinite(float(row["nonadd_pearson"]))
+        assert result["per_condition_df"].empty
+        assert not result["skipped_df"].empty
+        row = result["skipped_df"][result["skipped_df"]["condition"] == "A+B"].iloc[0]
+        assert "Missing gene_name_full" in str(row["skip_reason"])
+        assert (result["out_dir"] / "norman_gi_skipped.csv").exists()
+
+
+def test_run_norman_nonadd_experiment_skips_missing_single_and_keeps_other_models(monkeypatch):
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_root = root / "tri"
+        scouter_root = root / "scouter"
+        _write_pickle(tri_root / "norman" / "trishift_norman_1_nearest.pkl", _norman_combo_payload_missing_single())
+        _write_pickle(scouter_root / "norman" / "scouter_norman_1.pkl", _norman_combo_payload())
+
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "scouter", scouter_root)
+        result = run_norman_nonadd_experiment(
+            dataset="norman",
+            models=["trishift_nearest", "scouter"],
+            split_ids="1",
+            out_root=root / "out",
+        )
+        assert set(result["per_condition_df"]["model_name"].astype(str).tolist()) == {"scouter"}
+        assert not result["skipped_df"].empty
+        tri_skip = result["skipped_df"][result["skipped_df"]["model_name"].astype(str) == "trishift_nearest"].iloc[0]
+        assert "missing single perturbation" in str(tri_skip["skip_reason"])
+        assert (result["out_dir"] / "norman_gi_metric_panel.png").exists()
+
+
+def test_run_norman_gi_precision_experiment_outputs_precision_and_coverage(monkeypatch):
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_root = root / "tri"
+        _write_pickle(tri_root / "norman" / "trishift_norman_1_nearest.pkl", _norman_combo_payload_multi())
+
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        monkeypatch.setattr(gi_precision_mod, "GI_TYPE_ORDER", ["synergy", "suppressor"])
+        monkeypatch.setattr(gi_precision_mod, "GI_TYPE_LABELS", {"synergy": "Synergy", "suppressor": "Suppression"})
+        monkeypatch.setattr(
+            gi_precision_mod,
+            "GI_TYPE_SPECS",
+            {
+                "synergy": {"metric_name": "mag", "rank_direction": "max", "truth_label_col": "is_synergy"},
+                "suppressor": {"metric_name": "mag", "rank_direction": "min", "truth_label_col": "is_suppressor"},
+            },
+        )
+        truth_labels = pd.DataFrame(
+            [
+                {"condition": "A+B", "truth_mag": 1.0, "is_synergy": False, "is_suppressor": False},
+                {"condition": "A+C", "truth_mag": 2.0, "is_synergy": True, "is_suppressor": False},
+            ]
+        )
+        truth_labels_path = root / "truth_labels.csv"
+        truth_labels.to_csv(truth_labels_path, index=False)
+
+        result = run_norman_gi_precision_experiment(
+            dataset="norman",
+            models=["trishift_nearest"],
+            split_ids="1",
+            out_root=root / "out",
+            top_k=10,
+            truth_labels_path=truth_labels_path,
+        )
+        assert not result["per_split_df"].empty
+        synergy = result["per_split_df"][result["per_split_df"]["gi_type"] == "synergy"].iloc[0]
+        assert synergy["effective_k"] == 2
+        assert np.isfinite(float(synergy["precision_at_10"]))
+        suppressor = result["per_split_df"][result["per_split_df"]["gi_type"] == "suppressor"].iloc[0]
+        assert np.isnan(float(suppressor["precision_at_10"]))
+        assert suppressor["positive_truth_n"] == 0
+        assert not result["coverage_df"].empty
+        assert (result["out_dir"] / "norman_gi_precision_summary.csv").exists()
+        assert (result["out_dir"] / "norman_gi_precision_barplot.png").exists()
+        assert (result["out_dir"] / "run_meta.json").exists()
+
+
+def test_run_norman_gi_precision_experiment_skips_missing_payload_and_keeps_other_models(monkeypatch):
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_root = root / "tri"
+        scouter_root = root / "scouter"
+        _write_pickle(scouter_root / "norman" / "scouter_norman_1.pkl", _norman_combo_payload_multi())
+
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "scouter", scouter_root)
+        monkeypatch.setattr(gi_precision_mod, "GI_TYPE_ORDER", ["synergy"])
+        monkeypatch.setattr(gi_precision_mod, "GI_TYPE_LABELS", {"synergy": "Synergy"})
+        monkeypatch.setattr(
+            gi_precision_mod,
+            "GI_TYPE_SPECS",
+            {"synergy": {"metric_name": "mag", "rank_direction": "max", "truth_label_col": "is_synergy"}},
+        )
+        truth_labels = pd.DataFrame([{"condition": "A+B", "truth_mag": 2.0, "is_synergy": True}])
+        truth_labels_path = root / "truth_labels.csv"
+        truth_labels.to_csv(truth_labels_path, index=False)
+
+        result = run_norman_gi_precision_experiment(
+            dataset="norman",
+            models=["trishift_nearest", "scouter"],
+            split_ids="1",
+            out_root=root / "out",
+            top_k=10,
+            truth_labels_path=truth_labels_path,
+        )
+        assert set(result["per_split_df"]["model_name"].astype(str).tolist()) == {"scouter"}
+        assert not result["skipped_df"].empty
+        assert "payload unavailable" in " ".join(result["skipped_df"]["skip_reason"].astype(str).tolist())
+        assert (result["out_dir"] / "norman_gi_precision_coverage_barplot.png").exists()
+
+
+def test_run_norman_gi_truth_builder_outputs_local_truth_labels(monkeypatch):
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_root = root / "tri"
+        scouter_root = root / "scouter"
+        _write_pickle(tri_root / "norman" / "trishift_norman_1_nearest.pkl", _norman_combo_payload_multi())
+        _write_pickle(scouter_root / "norman" / "scouter_norman_1.pkl", _norman_combo_payload())
+
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "scouter", scouter_root)
+
+        result = run_norman_gi_truth_builder(
+            dataset="norman",
+            models=["trishift_nearest", "scouter"],
+            split_ids="1",
+            out_root=root / "truth_out",
+            low_quantile=0.25,
+            high_quantile=0.75,
+        )
+        assert not result["truth_df"].empty
+        assert {"condition", "truth_mag", "is_synergy", "is_suppressor", "is_neomorphic", "is_redundancy", "is_epistasis"} <= set(result["truth_df"].columns)
+        assert not result["summary_df"].empty
+        assert (result["out_dir"] / "norman_gi_truth_labels.csv").exists()
+        assert (result["out_dir"] / "run_meta.json").exists()
 
 
 def test_run_stratified_benchmark_builds_metadata_and_summary(monkeypatch):

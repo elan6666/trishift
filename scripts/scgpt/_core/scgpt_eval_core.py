@@ -16,6 +16,10 @@ import pandas as pd
 import torch
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error as mse
+try:
+    from tqdm.auto import tqdm
+except Exception:
+    tqdm = None
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = ROOT / "src"
@@ -79,6 +83,12 @@ DATASET_CONFIG = {
         norman_split=True,
     ),
 }
+
+
+def _progress(iterable, **kwargs):
+    if tqdm is None:
+        return iterable
+    return tqdm(iterable, **kwargs)
 
 
 def _load_profile(profile: str) -> dict:
@@ -587,10 +597,25 @@ def _train_model(
     best_score = float("-inf")
     best_state = copy.deepcopy(model.state_dict())
     patience = 0
+    epoch_iter = _progress(
+        range(1, int(cfg.epochs) + 1),
+        desc="scGPT epochs",
+        total=int(cfg.epochs),
+        leave=True,
+        dynamic_ncols=True,
+    )
 
-    for _epoch in range(1, int(cfg.epochs) + 1):
+    for _epoch in epoch_iter:
         model.train()
-        for batch in train_loader:
+        batch_iter = _progress(
+            train_loader,
+            desc=f"epoch {_epoch}/{int(cfg.epochs)}",
+            total=len(train_loader) if hasattr(train_loader, "__len__") else None,
+            leave=False,
+            dynamic_ncols=True,
+        )
+        train_losses: list[float] = []
+        for batch in batch_iter:
             loss = _forward_batch(
                 batch_data=batch,
                 model=model,
@@ -602,6 +627,10 @@ def _train_model(
                 amp=bool(device.type == "cuda"),
                 device=device,
             )
+            loss_value = float(loss.detach().item())
+            train_losses.append(loss_value)
+            if tqdm is not None and hasattr(batch_iter, "set_postfix"):
+                batch_iter.set_postfix(loss=f"{loss_value:.4f}")
             model.zero_grad()
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -629,12 +658,40 @@ def _train_model(
             best_score = score
             best_state = copy.deepcopy(model.state_dict())
             patience = 0
+            improved = True
         else:
             patience += 1
-            if patience >= int(cfg.early_stop):
-                break
+            improved = False
+        mean_train_loss = float(np.mean(train_losses)) if train_losses else float("nan")
+        if tqdm is not None and hasattr(epoch_iter, "set_postfix"):
+            epoch_iter.set_postfix(
+                train_loss=f"{mean_train_loss:.4f}",
+                val=f"{score:.4f}",
+                best=f"{best_score:.4f}",
+                patience=f"{patience}/{int(cfg.early_stop)}",
+            )
+        print(
+            "[scgpt] "
+            f"epoch={_epoch}/{int(cfg.epochs)} "
+            f"train_loss={mean_train_loss:.4f} "
+            f"val_score={score:.4f} "
+            f"best_score={best_score:.4f} "
+            f"patience={patience}/{int(cfg.early_stop)} "
+            f"improved={str(improved).lower()}",
+            flush=True,
+        )
+        if tqdm is not None and hasattr(batch_iter, "close"):
+            batch_iter.close()
+        if patience >= int(cfg.early_stop):
+            print(
+                f"[scgpt] early stopping at epoch={_epoch} with best_score={best_score:.4f}",
+                flush=True,
+            )
+            break
         scheduler.step()
 
+    if tqdm is not None and hasattr(epoch_iter, "close"):
+        epoch_iter.close()
     model.load_state_dict(best_state)
     model.eval()
     return model

@@ -21,7 +21,6 @@ LOCAL_DATA_ROOT = ROOT / "src" / "data"
 LOCAL_EMBEDDING_PATH = (
     LOCAL_DATA_ROOT / "Data_GeneEmbd" / "GenePT_gene_embedding_ada_text.pickle"
 )
-GENEPERT_EXTERNAL_ROOT = ROOT / "external" / "GenePert-main" / "GenePert-main"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(SRC_ROOT))
@@ -222,19 +221,13 @@ def subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
 
 
 def _require_genepert_class():
-    if not GENEPERT_EXTERNAL_ROOT.exists():
-        raise FileNotFoundError(f"GenePert external source not found: {GENEPERT_EXTERNAL_ROOT}")
-    old_sys_path = list(sys.path)
     try:
-        sys.path.insert(0, str(GENEPERT_EXTERNAL_ROOT))
         mod = importlib.import_module("GenePertExperiment")
     except ImportError as exc:
         raise ImportError(
-            "GenePert is not importable. Ensure external/GenePert-main/GenePert-main is present "
-            "and its dependency stack is installed."
+            "GenePert is not importable. Install the GenePert package/module into the current "
+            "Python environment so `import GenePertExperiment` works."
         ) from exc
-    finally:
-        sys.path = old_sys_path
     return getattr(mod, "GenePertExperiment")
 
 
