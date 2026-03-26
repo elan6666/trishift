@@ -170,6 +170,37 @@ def _write_h5ad(path: Path) -> None:
     ad.AnnData(X=X, obs=obs, var=var).write_h5ad(path)
 
 
+def _write_norman_truth_h5ad(path: Path) -> None:
+    genes = ["G0", "G1", "G2", "G3"]
+    rows = []
+    conditions = [
+        ("ctrl", (0.0, 0.0, 0.0, 0.0)),
+        ("A+ctrl", (1.2, 0.3, 0.1, 0.0)),
+        ("B+ctrl", (0.4, 1.1, 0.2, 0.0)),
+        ("C+ctrl", (0.8, 0.2, 0.9, 0.1)),
+        ("D+ctrl", (0.1, 0.6, 0.2, 1.0)),
+        ("A+B", (1.9, 1.8, 0.5, 0.0)),
+        ("A+C", (2.0, 0.6, 1.4, 0.1)),
+        ("B+C", (0.9, 1.3, 1.1, 0.0)),
+        ("C+D", (0.8, 0.9, 1.2, 1.4)),
+    ]
+    X = []
+    obs_rows = []
+    for condition, delta in conditions:
+        for _ in range(3):
+            X.append(np.asarray(delta, dtype=np.float32))
+            obs_rows.append(
+                {
+                    "condition": condition,
+                    "cell_type": "A549",
+                    "dose_val": "1+1",
+                    "control": 1 if condition == "ctrl" else 0,
+                    "condition_name": f"A549_{condition}_1+1",
+                }
+            )
+    ad.AnnData(X=np.asarray(X, dtype=np.float32), obs=pd.DataFrame(obs_rows), var=pd.DataFrame({"gene_name": genes})).write_h5ad(path)
+
+
 def test_run_baseline_panel_handles_payload_and_systema(monkeypatch):
     with temp_dir() as tmp:
         root = Path(tmp)
@@ -381,24 +412,33 @@ def test_run_norman_gi_precision_experiment_skips_missing_payload_and_keeps_othe
 def test_run_norman_gi_truth_builder_outputs_local_truth_labels(monkeypatch):
     with temp_dir() as tmp:
         root = Path(tmp)
-        tri_root = root / "tri"
-        scouter_root = root / "scouter"
-        _write_pickle(tri_root / "norman" / "trishift_norman_1_nearest.pkl", _norman_combo_payload_multi())
-        _write_pickle(scouter_root / "norman" / "scouter_norman_1.pkl", _norman_combo_payload())
-
-        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
-        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "scouter", scouter_root)
+        h5ad_path = root / "norman_truth.h5ad"
+        _write_norman_truth_h5ad(h5ad_path)
+        monkeypatch.setattr(
+            "scripts.trishift.analysis.norman_gi_truth_builder._resolve_norman_truth_h5ad_path",
+            lambda: h5ad_path,
+        )
 
         result = run_norman_gi_truth_builder(
             dataset="norman",
-            models=["trishift_nearest", "scouter"],
-            split_ids="1",
             out_root=root / "truth_out",
             low_quantile=0.25,
             high_quantile=0.75,
         )
         assert not result["truth_df"].empty
-        assert {"condition", "truth_mag", "is_synergy", "is_suppressor", "is_neomorphic", "is_redundancy", "is_epistasis"} <= set(result["truth_df"].columns)
+        assert {
+            "condition",
+            "truth_mag",
+            "is_synergy",
+            "is_suppressor",
+            "is_neomorphic",
+            "is_redundancy",
+            "is_epistasis",
+            "is_strong_interaction",
+            "is_balanced_synergy",
+            "is_dominant_epistasis",
+            "is_any_gi",
+        } <= set(result["truth_df"].columns)
         assert not result["summary_df"].empty
         assert (result["out_dir"] / "norman_gi_truth_labels.csv").exists()
         assert (result["out_dir"] / "run_meta.json").exists()

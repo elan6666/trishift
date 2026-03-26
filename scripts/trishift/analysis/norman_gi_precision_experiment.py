@@ -29,13 +29,25 @@ from scripts.trishift.analysis.norman_nonadd_experiment import (
     _compute_condition_gi,
 )
 
-GI_TYPE_ORDER = ["synergy", "suppressor", "neomorphic", "redundancy", "epistasis"]
+GI_TYPE_ORDER = [
+    "synergy",
+    "suppressor",
+    "neomorphic",
+    "redundancy",
+    "epistasis",
+    "strong_interaction",
+    "balanced_synergy",
+    "dominant_epistasis",
+]
 GI_TYPE_LABELS = {
     "synergy": "Synergy",
     "suppressor": "Suppression",
     "neomorphic": "Neomorphism",
     "redundancy": "Redundancy",
     "epistasis": "Epistasis",
+    "strong_interaction": "Strong Interaction",
+    "balanced_synergy": "Balanced Synergy",
+    "dominant_epistasis": "Dominant Epistasis",
 }
 GI_TYPE_SPECS = {
     "synergy": {"metric_name": "mag", "rank_direction": "max", "truth_label_col": "is_synergy"},
@@ -43,6 +55,9 @@ GI_TYPE_SPECS = {
     "neomorphic": {"metric_name": "corr_fit", "rank_direction": "min", "truth_label_col": "is_neomorphic"},
     "redundancy": {"metric_name": "dcor", "rank_direction": "max", "truth_label_col": "is_redundancy"},
     "epistasis": {"metric_name": "eq_contr", "rank_direction": "min", "truth_label_col": "is_epistasis"},
+    "strong_interaction": {"metric_name": "mag", "rank_direction": "max", "truth_label_col": "is_strong_interaction"},
+    "balanced_synergy": {"metric_name": "mag", "rank_direction": "max", "truth_label_col": "is_balanced_synergy"},
+    "dominant_epistasis": {"metric_name": "dominance", "rank_direction": "max", "truth_label_col": "is_dominant_epistasis"},
 }
 DEFAULT_TRUTH_LABELS_PATH = (REPO_ROOT / "artifacts" / "analysis" / "norman_gi_truth" / "norman_gi_truth_labels.csv").resolve()
 
@@ -196,7 +211,7 @@ def _build_coverage_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _render_precision_barplot(df: pd.DataFrame, out_path: Path, *, model_order: list[str], top_k: int) -> None:
-    fig, ax = plt.subplots(figsize=(12, 5.5), dpi=220)
+    fig, ax = plt.subplots(figsize=(15.5, 6.8), dpi=220)
     if df.empty:
         ax.text(0.5, 0.5, "No Precision@10 summary rows", ha="center", va="center")
         ax.axis("off")
@@ -204,6 +219,7 @@ def _render_precision_barplot(df: pd.DataFrame, out_path: Path, *, model_order: 
         x = np.arange(len(GI_TYPE_ORDER))
         width = 0.8 / max(1, len(model_order))
         cmap = plt.get_cmap("tab10")
+        ymax = 1.22
         for idx, model_name in enumerate(model_order):
             sub = df[df["model_name"].astype(str) == model_name].copy()
             sub["gi_type"] = pd.Categorical(sub["gi_type"], categories=GI_TYPE_ORDER, ordered=True)
@@ -211,30 +227,71 @@ def _render_precision_barplot(df: pd.DataFrame, out_path: Path, *, model_order: 
             y = pd.to_numeric(sub.get("precision_at_10_mean"), errors="coerce")
             yerr = pd.to_numeric(sub.get("precision_at_10_std"), errors="coerce")
             xpos = x + (idx - (len(model_order) - 1) / 2.0) * width
-            ax.bar(xpos, y, width=width, color=cmap(idx % 10), label=model_name, alpha=0.9)
+            ax.bar(
+                xpos,
+                y,
+                width=width,
+                color=cmap(idx % 10),
+                label=model_name,
+                alpha=0.9,
+                edgecolor="white",
+                linewidth=0.6,
+            )
             valid_mask = y.notna() & yerr.notna()
             if valid_mask.any():
                 ax.errorbar(xpos[valid_mask.to_numpy()], y[valid_mask].to_numpy(), yerr=yerr[valid_mask].to_numpy(), fmt="none", ecolor="black", elinewidth=1.4, capsize=3)
             cov = pd.to_numeric(sub.get("coverage_n_mean"), errors="coerce")
             for xi, yi, cov_i in zip(xpos, y.fillna(0.0), cov.fillna(np.nan)):
                 if np.isnan(cov_i):
-                    ax.text(float(xi), 0.03, "NA", ha="center", va="bottom", rotation=90, fontsize=8)
+                    ax.text(
+                        float(xi),
+                        0.04,
+                        "NA",
+                        ha="center",
+                        va="bottom",
+                        rotation=0,
+                        fontsize=7,
+                        bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 0.4},
+                    )
                 elif float(cov_i) < float(top_k):
-                    ax.text(float(xi), float(yi) + 0.03, f"n={int(round(float(cov_i)))}", ha="center", va="bottom", fontsize=8, rotation=90)
+                    label_y = min(float(yi) + 0.04, ymax - 0.08)
+                    ax.text(
+                        float(xi),
+                        label_y,
+                        f"n={int(round(float(cov_i)))}",
+                        ha="center",
+                        va="bottom",
+                        fontsize=7,
+                        rotation=0,
+                        bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none", "pad": 0.4},
+                    )
         ax.set_xticks(x)
-        ax.set_xticklabels([GI_TYPE_LABELS[k] for k in GI_TYPE_ORDER])
+        ax.set_xticklabels([GI_TYPE_LABELS[k] for k in GI_TYPE_ORDER], rotation=20, ha="right")
         ax.set_ylabel("Precision@10")
-        ax.set_title("Model precision in identifying genetic interactions")
-        ax.set_ylim(0, 1.15)
-        ax.grid(axis="y", alpha=0.2)
-        ax.legend(ncol=min(5, len(model_order)))
-    plt.tight_layout()
+        ax.set_title("Model precision in identifying genetic interactions", pad=16)
+        ax.set_ylim(0, ymax)
+        ax.set_axisbelow(True)
+        ax.grid(axis="y", alpha=0.22, linewidth=0.8)
+        ax.axhline(1.0, color="#666666", linewidth=0.9, linestyle="--", alpha=0.45)
+        ax.legend(
+            ncol=min(3, len(model_order)),
+            loc="upper right",
+            bbox_to_anchor=(0.995, 0.995),
+            frameon=True,
+            framealpha=0.92,
+            borderpad=0.35,
+            handlelength=1.4,
+            columnspacing=0.9,
+            fontsize=8,
+        )
+        ax.margins(x=0.02)
+    fig.subplots_adjust(left=0.07, right=0.99, bottom=0.22, top=0.88)
     plt.savefig(out_path)
     plt.close(fig)
 
 
 def _render_coverage_barplot(df: pd.DataFrame, out_path: Path, *, model_order: list[str]) -> None:
-    fig, ax = plt.subplots(figsize=(12, 5.5), dpi=220)
+    fig, ax = plt.subplots(figsize=(15.5, 6.8), dpi=220)
     if df.empty:
         ax.text(0.5, 0.5, "No coverage rows", ha="center", va="center")
         ax.axis("off")
@@ -242,20 +299,44 @@ def _render_coverage_barplot(df: pd.DataFrame, out_path: Path, *, model_order: l
         x = np.arange(len(GI_TYPE_ORDER))
         width = 0.8 / max(1, len(model_order))
         cmap = plt.get_cmap("tab10")
+        ymax = 0.0
         for idx, model_name in enumerate(model_order):
             sub = df[df["model_name"].astype(str) == model_name].copy()
             sub["gi_type"] = pd.Categorical(sub["gi_type"], categories=GI_TYPE_ORDER, ordered=True)
             sub = sub.sort_values("gi_type").set_index("gi_type").reindex(GI_TYPE_ORDER)
             y = pd.to_numeric(sub.get("coverage_n_mean"), errors="coerce")
             xpos = x + (idx - (len(model_order) - 1) / 2.0) * width
-            ax.bar(xpos, y, width=width, color=cmap(idx % 10), label=model_name, alpha=0.9)
+            ymax = max(ymax, float(np.nanmax(y.to_numpy(dtype=float))) if y.notna().any() else ymax)
+            ax.bar(
+                xpos,
+                y,
+                width=width,
+                color=cmap(idx % 10),
+                label=model_name,
+                alpha=0.9,
+                edgecolor="white",
+                linewidth=0.6,
+            )
         ax.set_xticks(x)
-        ax.set_xticklabels([GI_TYPE_LABELS[k] for k in GI_TYPE_ORDER])
+        ax.set_xticklabels([GI_TYPE_LABELS[k] for k in GI_TYPE_ORDER], rotation=20, ha="right")
         ax.set_ylabel("Known-GI coverage")
-        ax.set_title("Known GI combo coverage by model")
-        ax.grid(axis="y", alpha=0.2)
-        ax.legend(ncol=min(5, len(model_order)))
-    plt.tight_layout()
+        ax.set_title("Known GI combo coverage by model", pad=16)
+        ax.set_axisbelow(True)
+        ax.grid(axis="y", alpha=0.22, linewidth=0.8)
+        ax.set_ylim(0, max(1.0, ymax + 0.8))
+        ax.legend(
+            ncol=min(3, len(model_order)),
+            loc="upper right",
+            bbox_to_anchor=(0.995, 0.995),
+            frameon=True,
+            framealpha=0.92,
+            borderpad=0.35,
+            handlelength=1.4,
+            columnspacing=0.9,
+            fontsize=8,
+        )
+        ax.margins(x=0.02)
+    fig.subplots_adjust(left=0.07, right=0.99, bottom=0.22, top=0.88)
     plt.savefig(out_path)
     plt.close(fig)
 
