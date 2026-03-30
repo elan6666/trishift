@@ -76,11 +76,26 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5],
         test_ratio=0.2,
     ),
+    "dixit": ScgptDatasetConfig(
+        data_rel="data/dixit/perturb_processed.h5ad",
+        splits=[1, 2, 3, 4, 5],
+        test_ratio=0.2,
+    ),
     "norman": ScgptDatasetConfig(
         data_rel="data/norman/perturb_processed.h5ad",
         splits=[1, 2, 3, 4, 5],
         test_ratio=0.2,
         norman_split=True,
+    ),
+    "replogle_k562_essential": ScgptDatasetConfig(
+        data_rel="data/replogle_k562_essential/perturb_processed.h5ad",
+        splits=[1, 2, 3, 4, 5],
+        test_ratio=0.2,
+    ),
+    "replogle_rpe1_essential": ScgptDatasetConfig(
+        data_rel="data/replogle_rpe1_essential/perturb_processed.h5ad",
+        splits=[1, 2, 3, 4, 5],
+        test_ratio=0.2,
     ),
 }
 
