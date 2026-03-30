@@ -256,6 +256,17 @@ def _resolve_eval_data_path(name: str, cfg: ScgptDatasetConfig) -> Path:
 
 
 def _resolve_pretrained_root() -> Path:
+    required = ["args.json", "vocab.json", "best_model.pt"]
+
+    def _is_complete(root: Path) -> bool:
+        return all((root / name).exists() for name in required)
+
+    # Prefer the repo-local checkpoint directory so Linux servers do not inherit
+    # a Windows absolute path from configs/paths.yaml.
+    local_root = (ROOT / "artifacts" / "models" / "scGPT_human").resolve()
+    if _is_complete(local_root):
+        return local_root
+
     paths_cfg_path = ROOT / "configs" / "paths.yaml"
     if not paths_cfg_path.exists():
         raise FileNotFoundError(
@@ -269,7 +280,12 @@ def _resolve_pretrained_root() -> Path:
             "Set it to a directory containing args.json, vocab.json, and best_model.pt."
         )
     root = Path(raw).resolve()
-    required = ["args.json", "vocab.json", "best_model.pt"]
+
+    # If the configured path is a machine-specific absolute path that does not
+    # exist here, fall back to the repo-local checkpoint directory.
+    if not root.exists() and _is_complete(local_root):
+        return local_root
+
     missing = [name for name in required if not (root / name).exists()]
     if missing:
         raise FileNotFoundError(
