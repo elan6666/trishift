@@ -14,7 +14,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from scripts.common.split_utils import norman_subgroup
 from scripts.trishift.analysis._result_adapter import (
     DATASET_EMBEDDING_KEYS,
     condition_embedding,
@@ -129,11 +128,22 @@ def _build_metadata_from_payload(
     paths_path: str | Path,
 ) -> pd.DataFrame:
     subgroup_lookup: dict[str, str] = {}
-    conds = [normalize_condition(str(k)) for k in payload.keys()]
     if dataset == "norman":
-        plist = ["ctrl"] + conds if "ctrl" not in conds else conds
-        subgroup_df = norman_subgroup(plist, seed=int(split_id))
-        subgroup_lookup = {normalize_condition(str(idx)): str(row["subgroup"]) for idx, row in subgroup_df.iterrows()}
+        train_single_set = {
+            normalize_condition(cond)
+            for cond in train_conds
+            if "ctrl" in normalize_condition(cond).split("+")
+        }
+        for key in payload.keys():
+            cond_key = normalize_condition(str(key))
+            parts = cond_key.split("+")
+            if "ctrl" in parts:
+                subgroup_lookup[cond_key] = "single"
+                continue
+            seen_count = sum(
+                1 for part in parts if normalize_condition(f"{part}+ctrl") in train_single_set
+            )
+            subgroup_lookup[cond_key] = f"seen{seen_count}"
 
     train_embs = {
         normalize_condition(c): condition_embedding(dataset, c, paths_path=paths_path)
@@ -339,10 +349,11 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         plt.close(fig)
         return
 
-    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.6 * len(available_specs), 4.8), dpi=220)
+    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.8 * len(available_specs), 4.9), dpi=220)
     axes_arr = np.atleast_1d(axes).ravel()
     model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
     color_map = _model_color_map(model_names)
+    legend_handles: list[Any] = []
 
     for ax, (stratum_name, preferred_order) in zip(axes_arr, available_specs):
         sub = work[work["stratum_name"].astype(str) == stratum_name].copy()
@@ -355,7 +366,7 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         n_models = max(1, len(model_names))
         width = min(0.8 / n_models, 0.22)
         ymax = float(pd.to_numeric(sub[metric], errors="coerce").max()) if len(sub) else 0.0
-        offset_y = max(abs(ymax) * 0.03, 0.02)
+        ypad = max(abs(ymax) * 0.10, 0.06)
 
         any_bar = False
         for model_idx, model_name in enumerate(model_names):
@@ -374,16 +385,28 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
                 alpha=0.85,
                 label=model_name,
             )
+            if not legend_handles:
+                legend_handles = [
+                    plt.Line2D([0], [0], color=color_map[name], lw=6, alpha=0.85, label=name)
+                    for name in model_names
+                ]
             for bar, val in zip(bars, vals):
                 if np.isnan(val):
                     continue
+                label_y = float(val) - max(abs(float(val)) * 0.08, 0.035)
+                va = "top"
+                if label_y <= 0.03:
+                    label_y = float(val) + max(abs(float(val)) * 0.03, 0.02)
+                    va = "bottom"
                 ax.text(
                     bar.get_x() + bar.get_width() / 2.0,
-                    float(val) + offset_y,
+                    label_y,
                     f"{float(val):.2f}",
                     ha="center",
-                    va="bottom",
-                    fontsize=7,
+                    va=va,
+                    fontsize=6,
+                    bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.65, "pad": 0.2},
+                    clip_on=False,
                 )
         if not any_bar:
             ax.text(0.5, 0.5, f"No grouped rows for {stratum_name}", ha="center", va="center")
@@ -393,11 +416,19 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         ax.set_title(f"{metric} by {stratum_name}")
         ax.set_ylabel(metric)
         ax.set_xlabel(stratum_name)
+        ax.set_ylim(top=ymax + ypad)
         ax.grid(axis="y", alpha=0.2)
-        ax.legend(frameon=False, ncol=min(2, len(model_names)))
 
-    fig.suptitle(f"Stratified {metric} by model", y=0.99)
-    fig.tight_layout()
+    fig.suptitle(f"Stratified {metric} by model", y=0.98)
+    if legend_handles:
+        fig.legend(
+            handles=legend_handles,
+            loc="upper right",
+            bbox_to_anchor=(0.985, 0.965),
+            frameon=False,
+            ncol=min(3, len(model_names)),
+        )
+    fig.tight_layout(rect=[0.01, 0.01, 0.995, 0.90])
     fig.savefig(out_path)
     plt.close(fig)
 

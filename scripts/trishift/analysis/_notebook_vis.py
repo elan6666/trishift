@@ -50,7 +50,7 @@ def render_metric_barplot(
         for bar in container:
             height = float(bar.get_height())
             labels.append("" if pd.isna(height) else f"{height:.3f}")
-        ax.bar_label(container, labels=labels, fontsize=8, rotation=90, padding=2)
+        ax.bar_label(container, labels=labels, fontsize=8, rotation=0, padding=3)
     plt.tight_layout()
     plt.savefig(out)
     plt.close()

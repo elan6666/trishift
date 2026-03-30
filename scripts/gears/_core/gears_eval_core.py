@@ -50,6 +50,18 @@ class GearsDatasetConfig:
     test_batch_size: int = 32
     train_gene_set_size: float | None = None
     norman_split: bool = False
+    test_ratio: float = 0.2
+
+
+@dataclass(frozen=True)
+class GearsSplitMeta:
+    train_conds: list[str]
+    val_conds: list[str]
+    test_conds: list[str]
+    train_conds_raw: list[str]
+    val_conds_raw: list[str]
+    test_conds_raw: list[str]
+    subgroup_map: dict[str, str]
 
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "eval" / "configs"
@@ -69,6 +81,7 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         project_name="dixit",
         train_gene_set_size=0.9,
+        test_ratio=0.1,
     ),
     "norman": GearsDatasetConfig(
         gears_data_name="norman",
@@ -76,18 +89,21 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5],
         project_name="norman",
         norman_split=True,
+        test_ratio=0.2,
     ),
     "replogle_k562_essential": GearsDatasetConfig(
         gears_data_name="replogle_k562_essential",
         eval_data_rel="data/Data_GEARS/replogle_k562_essential/perturb_processed.h5ad",
         splits=[1, 2, 3, 4, 5],
         project_name="rep_k562",
+        test_ratio=0.2,
     ),
     "replogle_rpe1_essential": GearsDatasetConfig(
         gears_data_name="replogle_rpe1_essential",
         eval_data_rel="data/Data_GEARS/replogle_rpe1_essential/perturb_processed.h5ad",
         splits=[1, 2, 3, 4, 5],
         project_name="rpe1",
+        test_ratio=0.2,
     ),
 }
 
@@ -212,6 +228,129 @@ def subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
     return _shared_norman_subgroup(pert_list=pert_list, seed=seed)
 
 
+def _split_conditions_random(conditions: list[str], *, ratio: float, seed: int) -> tuple[list[str], list[str]]:
+    work = np.asarray(list(conditions), dtype=object)
+    if work.size == 0:
+        return [], []
+    rng = np.random.RandomState(int(seed))
+    rng.shuffle(work)
+    n_pick = int(round(float(ratio) * int(work.size)))
+    if float(ratio) > 0.0 and int(work.size) > 0 and n_pick == 0:
+        n_pick = 1
+    if n_pick >= int(work.size):
+        n_pick = max(1, int(work.size) - 1)
+    picked_arr, remain_arr = np.split(work, [n_pick])
+    return [str(x) for x in picked_arr.tolist()], [str(x) for x in remain_arr.tolist()]
+
+
+def _build_shared_split_meta(
+    eval_adata: ad.AnnData,
+    *,
+    dataset_name: str,
+    cfg: GearsDatasetConfig,
+    split_id: int,
+    available_raw_conditions: list[str] | None = None,
+) -> GearsSplitMeta:
+    eval_raw_conditions = [str(x) for x in eval_adata.obs["condition"].astype(str).unique().tolist()]
+    raw_condition_pool = [str(x) for x in (available_raw_conditions or eval_raw_conditions)]
+    raw_by_canonical: dict[str, list[str]] = {}
+    for cond in raw_condition_pool:
+        raw_by_canonical.setdefault(condition_sort(cond), []).append(str(cond))
+    canonical_conditions = sorted({condition_sort(cond) for cond in eval_raw_conditions})
+    non_ctrl = [cond for cond in canonical_conditions if cond != "ctrl"]
+
+    if cfg.norman_split:
+        split_df = subgroup(canonical_conditions, seed=int(split_id))
+        split_df.index = [condition_sort(str(x)) for x in split_df.index.tolist()]
+        train_conds = [str(x) for x in split_df[split_df["group"].astype(str) == "train"].index.astype(str).tolist() if str(x) != "ctrl"]
+        val_conds = [str(x) for x in split_df[split_df["group"].astype(str) == "val"].index.astype(str).tolist() if str(x) != "ctrl"]
+        test_conds = [str(x) for x in split_df[split_df["group"].astype(str) == "test"].index.astype(str).tolist() if str(x) != "ctrl"]
+        subgroup_map = {
+            condition_sort(str(idx)): str(row["subgroup"])
+            for idx, row in split_df.iterrows()
+            if condition_sort(str(idx)) != "ctrl"
+        }
+    else:
+        test_conds, remain_conds = _split_conditions_random(non_ctrl, ratio=float(cfg.test_ratio), seed=int(split_id))
+        val_conds, train_conds = _split_conditions_random(remain_conds, ratio=0.1, seed=int(split_id))
+        subgroup_map = {}
+
+    available_canonical = set(raw_by_canonical)
+    train_conds = [cond for cond in train_conds if cond in available_canonical]
+    val_conds = [cond for cond in val_conds if cond in available_canonical]
+    test_conds = [cond for cond in test_conds if cond in available_canonical]
+
+    def _flatten_raw(split_conds: list[str]) -> list[str]:
+        out: list[str] = []
+        for cond in split_conds:
+            out.extend(raw_by_canonical.get(cond, []))
+        return list(dict.fromkeys(out))
+
+    return GearsSplitMeta(
+        train_conds=train_conds,
+        val_conds=val_conds,
+        test_conds=test_conds,
+        train_conds_raw=_flatten_raw(train_conds),
+        val_conds_raw=_flatten_raw(val_conds),
+        test_conds_raw=_flatten_raw(test_conds),
+        subgroup_map={k: v for k, v in subgroup_map.items() if k in available_canonical},
+    )
+
+
+def _apply_shared_split_to_pert_data(
+    pert_data,
+    split_meta: GearsSplitMeta,
+    *,
+    split_id: int,
+    train_gene_set_size: float | None,
+) -> None:
+    pert_data.split = "custom"
+    pert_data.seed = int(split_id)
+    pert_data.train_gene_set_size = float(train_gene_set_size) if train_gene_set_size is not None else 0.75
+    pert_data.subgroup = None
+    pert_data.set2conditions = {
+        "train": list(split_meta.train_conds_raw) + ["ctrl"],
+        "val": list(split_meta.val_conds_raw),
+        "test": list(split_meta.test_conds_raw),
+    }
+
+
+def _upgrade_legacy_dataset_processed(pert_data, split_meta: GearsSplitMeta) -> None:
+    dataset_processed = getattr(pert_data, "dataset_processed", None)
+    if not isinstance(dataset_processed, dict):
+        return
+    gene_names_src = getattr(pert_data, "gene_names", None)
+    if gene_names_src is None or len(gene_names_src) == 0:
+        adata = getattr(pert_data, "adata", None)
+        if adata is not None:
+            if "gene_name" in adata.var.columns:
+                gene_names_src = adata.var["gene_name"].astype(str).tolist()
+            else:
+                gene_names_src = adata.var_names.astype(str).tolist()
+    gene_names = np.asarray(gene_names_src or [], dtype=str)
+    if gene_names.size == 0:
+        return
+    gene_to_idx = {str(g): int(i) for i, g in enumerate(gene_names.tolist())}
+    needed_raw = set(split_meta.train_conds_raw) | set(split_meta.val_conds_raw) | set(split_meta.test_conds_raw) | {"ctrl"}
+    for cond in needed_raw:
+        graphs = dataset_processed.get(cond)
+        if not graphs:
+            continue
+        sample_x = getattr(graphs[0], "x", None)
+        if sample_x is None or int(sample_x.ndim) != 2 or int(sample_x.shape[1]) != 1:
+            continue
+        pert_vec = torch.zeros((int(sample_x.shape[0]), 1), dtype=sample_x.dtype)
+        for gene in str(cond).split("+"):
+            gene = str(gene)
+            if gene == "ctrl":
+                continue
+            idx = gene_to_idx.get(gene)
+            if idx is not None and 0 <= idx < int(sample_x.shape[0]):
+                pert_vec[idx, 0] = 1
+        for graph in graphs:
+            graph.x = torch.cat([graph.x, pert_vec.to(graph.x.device)], dim=1)
+
+
 def _require_gears_classes():
     try:
         old_sys_path = list(sys.path)
@@ -226,9 +365,107 @@ def _require_gears_classes():
                 }
             ]
             gears_mod = importlib.import_module("gears")
+            gears_utils_mod = importlib.import_module("gears.utils")
+            gears_gears_mod = importlib.import_module("gears.gears")
         finally:
             sys.path = old_sys_path
+        def _safe_uncertainty_loss_fct(pred, logvar, y, perts, reg=0.1, ctrl=None, direction_lambda=1e-3, dict_filter=None):
+            gamma = 2
+            perts_arr = np.asarray(perts)
+            unique_perts = list(dict.fromkeys(perts_arr.tolist()))
+            losses = pred.new_tensor(0.0)
+            for pert in unique_perts:
+                idx = np.where(perts_arr == pert)[0]
+                if pert != "ctrl":
+                    retain_idx = dict_filter[pert]
+                    pred_p = pred[idx][:, retain_idx]
+                    y_p = y[idx][:, retain_idx]
+                    logvar_p = logvar[idx][:, retain_idx]
+                else:
+                    pred_p = pred[idx]
+                    y_p = y[idx]
+                    logvar_p = logvar[idx]
+                losses = losses + torch.sum(
+                    (pred_p - y_p) ** (2 + gamma)
+                    + reg * torch.exp(-logvar_p) * (pred_p - y_p) ** (2 + gamma)
+                ) / pred_p.shape[0] / pred_p.shape[1]
+                if pert != "ctrl":
+                    losses = losses + torch.sum(
+                        direction_lambda
+                        * (torch.sign(y_p - ctrl[retain_idx]) - torch.sign(pred_p - ctrl[retain_idx])) ** 2
+                    ) / pred_p.shape[0] / pred_p.shape[1]
+                else:
+                    losses = losses + torch.sum(
+                        direction_lambda * (torch.sign(y_p - ctrl) - torch.sign(pred_p - ctrl)) ** 2
+                    ) / pred_p.shape[0] / pred_p.shape[1]
+            return losses / max(1, len(unique_perts))
+
+        def _safe_loss_fct(pred, y, perts, ctrl=None, direction_lambda=1e-3, dict_filter=None):
+            gamma = 2
+            perts_arr = np.asarray(perts)
+            unique_perts = list(dict.fromkeys(perts_arr.tolist()))
+            losses = pred.new_tensor(0.0)
+            for pert in unique_perts:
+                idx = np.where(perts_arr == pert)[0]
+                if pert != "ctrl":
+                    retain_idx = dict_filter[pert]
+                    pred_p = pred[idx][:, retain_idx]
+                    y_p = y[idx][:, retain_idx]
+                else:
+                    pred_p = pred[idx]
+                    y_p = y[idx]
+                losses = losses + torch.sum((pred_p - y_p) ** (2 + gamma)) / pred_p.shape[0] / pred_p.shape[1]
+                if pert != "ctrl":
+                    losses = losses + torch.sum(
+                        direction_lambda
+                        * (torch.sign(y_p - ctrl[retain_idx]) - torch.sign(pred_p - ctrl[retain_idx])) ** 2
+                    ) / pred_p.shape[0] / pred_p.shape[1]
+                else:
+                    losses = losses + torch.sum(
+                        direction_lambda * (torch.sign(y_p - ctrl) - torch.sign(pred_p - ctrl)) ** 2
+                    ) / pred_p.shape[0] / pred_p.shape[1]
+            return losses / max(1, len(unique_perts))
+
+        def _safe_gears_init(self, pert_data, device="cuda", weight_bias_track=False, proj_name="GEARS", exp_name="GEARS"):
+            self.weight_bias_track = weight_bias_track
+            if self.weight_bias_track:
+                import wandb
+
+                wandb.init(project=proj_name, name=exp_name)
+                self.wandb = wandb
+            else:
+                self.wandb = None
+
+            self.device = device
+            self.config = None
+
+            self.dataloader = pert_data.dataloader
+            self.adata = pert_data.adata
+            self.node_map = pert_data.node_map
+            self.data_path = pert_data.data_path
+            self.dataset_name = pert_data.dataset_name
+            self.split = pert_data.split
+            self.seed = pert_data.seed
+            self.train_gene_set_size = pert_data.train_gene_set_size
+            self.set2conditions = pert_data.set2conditions
+            self.subgroup = pert_data.subgroup
+            self.gene_list = pert_data.gene_names.values.tolist()
+            self.num_genes = len(self.gene_list)
+
+            cond_series = self.adata.obs["condition"].astype(str)
+            ctrl_mask = (cond_series.to_numpy() == "ctrl")
+            self.ctrl_expression = torch.tensor(np.mean(self.adata.X[ctrl_mask], axis=0)).reshape(-1).to(self.device)
+            pert_full_id2pert = dict(self.adata.obs[["condition_name", "condition"]].values)
+            self.dict_filter = {pert_full_id2pert[i]: j for i, j in self.adata.uns["non_zeros_gene_idx"].items()}
+            self.ctrl_adata = self.adata[ctrl_mask]
+
+        gears_utils_mod.loss_fct = _safe_loss_fct
+        gears_utils_mod.uncertainty_loss_fct = _safe_uncertainty_loss_fct
+        gears_gears_mod.loss_fct = _safe_loss_fct
+        gears_gears_mod.uncertainty_loss_fct = _safe_uncertainty_loss_fct
         GEARS = getattr(gears_mod, "GEARS")
+        GEARS.__init__ = _safe_gears_init
+        gears_gears_mod.GEARS.__init__ = _safe_gears_init
         PertData = getattr(gears_mod, "PertData")
     except ImportError as exc:
         raise ImportError(
@@ -313,78 +550,37 @@ def _dataset_topgene_prefix(dataset_name: str) -> str:
     raise ValueError(f"Unsupported GEARS dataset for topgene prefix: {dataset_name}")
 
 
-def _build_adamson_prediction_bundle(gears_model) -> list[dict]:
-    raw_test_conds = getattr(gears_model, "set2conditions", {}).get("test", [])
+def _build_prediction_bundle(gears_model, dataset_name: str, split_meta: GearsSplitMeta) -> list[dict]:
     bundle = []
     seen: set[str] = set()
-    for raw_cond in raw_test_conds:
-        condition = condition_sort(str(raw_cond))
-        if condition in seen:
+    prefix = _dataset_topgene_prefix(dataset_name)
+    for condition in split_meta.test_conds:
+        cond_key = condition_sort(str(condition))
+        if cond_key in seen:
             continue
-        seen.add(condition)
-        genes = [token for token in condition.split("+") if token != "ctrl"]
+        seen.add(cond_key)
+        genes = [token for token in cond_key.split("+") if token != "ctrl"]
         if not genes:
             continue
         pred = _predict_single_condition(gears_model, genes)
         bundle.append(
             {
-                "condition": condition,
+                "condition": cond_key,
                 "genes": genes,
                 "pred": pred,
-                "source_group": "test",
-                "topgene_key": f"{_dataset_topgene_prefix('adamson')}{condition}_1+1",
+                "source_group": str(split_meta.subgroup_map.get(cond_key, "test")),
+                "topgene_key": f"{prefix}{cond_key}_1+1",
             }
         )
     return bundle
 
 
-def _build_subgroup_prediction_bundle(gears_model) -> list[dict]:
-    test_subgroup = getattr(gears_model, "subgroup", {}).get("test_subgroup", {})
-    bundle = []
-    seen: set[str] = set()
-    for subgroup_name, pertbs in test_subgroup.items():
-        for pertb in pertbs:
-            condition = condition_sort(str(pertb))
-            if condition in seen:
-                continue
-            seen.add(condition)
-            if subgroup_name == "unseen_single":
-                genes = [sorted(str(pertb).split("+"))[0]]
-            else:
-                genes = [str(x) for x in str(pertb).split("+")]
-            pred = _predict_single_condition(gears_model, genes)
-            bundle.append(
-                {
-                    "condition": condition,
-                    "genes": genes,
-                    "pred": pred,
-                    "source_group": str(subgroup_name),
-                }
-            )
-    return bundle
-
-
-def _build_prediction_bundle(gears_model, dataset_name: str) -> list[dict]:
-    if dataset_name == "adamson":
-        return _build_adamson_prediction_bundle(gears_model)
-    bundle = _build_subgroup_prediction_bundle(gears_model)
-    prefix = _dataset_topgene_prefix(dataset_name)
-    for item in bundle:
-        item["topgene_key"] = f"{prefix}{item['condition']}_1+1"
-    return bundle
-
-
-def _infer_reference_adata(eval_adata: ad.AnnData, gears_model) -> ad.AnnData:
-    train_conds_raw = getattr(gears_model, "set2conditions", {}).get("train", [])
-    train_conds = set()
-    for cond in train_conds_raw:
-        c = str(cond)
-        if c != "ctrl" and "+" not in c:
-            c = f"{c}+ctrl"
-        train_conds.add(condition_sort(c))
+def _infer_reference_adata(eval_adata: ad.AnnData, split_meta: GearsSplitMeta) -> ad.AnnData:
+    train_conds = set(condition_sort(x) for x in split_meta.train_conds)
     if not train_conds:
         return eval_adata
-    mask = eval_adata.obs["condition"].astype(str).isin(train_conds | {"ctrl"}).values
+    eval_conds = eval_adata.obs["condition"].astype(str).map(condition_sort)
+    mask = eval_conds.isin(train_conds | {"ctrl"}).values
     if not bool(mask.any()):
         return eval_adata
     return eval_adata[mask].copy()
@@ -395,14 +591,15 @@ def _compute_metrics_and_export_payload(
     eval_adata: ad.AnnData,
     dataset_name: str,
     split_id: int,
+    split_meta: GearsSplitMeta,
 ) -> tuple[pd.DataFrame, dict]:
     results = []
     export_payload = {}
-    eval_conds = eval_adata.obs["condition"].astype(str).values
-    ref_adata = _infer_reference_adata(eval_adata, gears_model)
+    eval_conds = eval_adata.obs["condition"].astype(str).map(condition_sort).values
+    ref_adata = _infer_reference_adata(eval_adata, split_meta)
     pert_reference = average_of_perturbation_centroids(
         X=_utils.densify_X(ref_adata.X),
-        conditions=ref_adata.obs["condition"].astype(str).values,
+        conditions=ref_adata.obs["condition"].astype(str).map(condition_sort).values,
         ctrl_label="ctrl",
     )
 
@@ -412,7 +609,7 @@ def _compute_metrics_and_export_payload(
         gene_names = eval_adata.var_names.astype(str).values
 
     ctrl = _utils.densify_X(eval_adata[eval_adata.obs["condition"] == "ctrl"].X)
-    prediction_bundle = _build_prediction_bundle(gears_model, dataset_name)
+    prediction_bundle = _build_prediction_bundle(gears_model, dataset_name, split_meta)
     model_adata = gears_model.adata
     topgene_dict = model_adata.uns.get("top_non_dropout_de_20", {})
     if not isinstance(topgene_dict, dict):
@@ -533,16 +730,26 @@ def run_gears_eval(
         print(f"[gears] dataset={name} split={split}")
         set_seeds(base_seed + int(split))
         eval_adata = _prepare_eval_adata(eval_data_path)
-        subgroup_df = None
-        if cfg.norman_split:
-            subgroup_df = subgroup(list(eval_adata.obs["condition"].astype(str).unique()), seed=int(split))
-
         pert_data = PertData(str(gears_data_root))
         pert_data.load(data_name=cfg.gears_data_name)
-        prepare_kwargs = {"split": "simulation", "seed": int(split)}
-        if cfg.train_gene_set_size is not None:
-            prepare_kwargs["train_gene_set_size"] = float(cfg.train_gene_set_size)
-        pert_data.prepare_split(**prepare_kwargs)
+        split_meta = _build_shared_split_meta(
+            eval_adata,
+            dataset_name=name,
+            cfg=cfg,
+            split_id=int(split),
+            available_raw_conditions=list(getattr(pert_data, "dataset_processed", {}).keys()),
+        )
+        subgroup_df = None
+        if split_meta.subgroup_map:
+            subgroup_df = pd.DataFrame({"subgroup": split_meta.subgroup_map})
+
+        _apply_shared_split_to_pert_data(
+            pert_data,
+            split_meta,
+            split_id=int(split),
+            train_gene_set_size=cfg.train_gene_set_size,
+        )
+        _upgrade_legacy_dataset_processed(pert_data, split_meta)
         pert_data.get_dataloader(batch_size=cfg.batch_size, test_batch_size=cfg.test_batch_size)
 
         gears_model = GEARS(
@@ -560,6 +767,7 @@ def run_gears_eval(
             eval_adata=eval_adata,
             dataset_name=name,
             split_id=int(split),
+            split_meta=split_meta,
         )
         metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
         metrics_all.append(metrics_df)

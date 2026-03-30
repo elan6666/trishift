@@ -1,0 +1,6 @@
+dataset: replogle_rpe1_essential
+task_args:
+  seed: 24
+  export_notebook_pkl: true
+  raw_result_root: ""
+

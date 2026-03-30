@@ -24,6 +24,7 @@ from trishift._utils import apply_alias_mapping, load_embedding_df, load_yaml, n
 DEFAULT_PAYLOAD_ROOTS = {
     "trishift": REPO_ROOT / "artifacts" / "results",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
+    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
@@ -40,7 +41,7 @@ DATASET_EMBEDDING_KEYS = {
 DEFAULT_MODEL_REQUESTS = [
     "trishift_nearest",
     "trishift_random",
-    "scouter",
+    "biolord",
     "gears",
     "genepert",
     "scgpt",
@@ -109,8 +110,14 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
         return ModelSpec(key, "payload", "trishift", "nearest", "TriShift nearest")
     if key == "trishift_random":
         return ModelSpec(key, "payload", "trishift", "random", "TriShift random")
-    if key in {"scouter", "gears", "genepert", "scgpt"}:
-        label_map = {"scouter": "Scouter", "gears": "GEARS", "genepert": "GenePert", "scgpt": "scGPT"}
+    if key in {"scouter", "biolord", "gears", "genepert", "scgpt"}:
+        label_map = {
+            "scouter": "Scouter",
+            "biolord": "biolord",
+            "gears": "GEARS",
+            "genepert": "GenePert",
+            "scgpt": "scGPT",
+        }
         return ModelSpec(key, "payload", key, None, label_map[key])
     if key == "systema_nonctl_mean":
         return ModelSpec(key, "systema", None, None, "Systema nonctl-mean")
