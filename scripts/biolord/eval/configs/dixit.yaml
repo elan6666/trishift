@@ -2,5 +2,8 @@ dataset: dixit
 task_args:
   seed: 24
   export_notebook_pkl: true
-  raw_result_root: ""
-
+  max_epochs: 75
+  batch_size: 32
+  n_latent: 32
+  attribute_width: 64
+  attribute_depth: 6

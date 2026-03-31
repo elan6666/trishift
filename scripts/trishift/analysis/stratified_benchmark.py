@@ -349,7 +349,7 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         plt.close(fig)
         return
 
-    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.8 * len(available_specs), 4.9), dpi=220)
+    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.6 * len(available_specs), 4.7), dpi=220)
     axes_arr = np.atleast_1d(axes).ravel()
     model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
     color_map = _model_color_map(model_names)
@@ -382,8 +382,10 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
                 vals,
                 width=width,
                 color=color_map[model_name],
-                alpha=0.85,
+                alpha=0.92,
                 label=model_name,
+                edgecolor="white",
+                linewidth=0.8,
             )
             if not legend_handles:
                 legend_handles = [
@@ -413,18 +415,21 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
             ax.axis("off")
             continue
         ax.set_xticks(x, order)
-        ax.set_title(f"{metric} by {stratum_name}")
-        ax.set_ylabel(metric)
-        ax.set_xlabel(stratum_name)
+        ax.set_title(stratum_name.replace("_", " "))
+        ax.set_ylabel(metric.replace("_", " "))
+        ax.set_xlabel("")
         ax.set_ylim(top=ymax + ypad)
-        ax.grid(axis="y", alpha=0.2)
+        ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.4)
+        ax.set_axisbelow(True)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
-    fig.suptitle(f"Stratified {metric} by model", y=0.98)
+    fig.suptitle(f"Stratified {metric.replace('_', ' ')}", y=0.98, fontsize=12, fontweight="semibold")
     if legend_handles:
         fig.legend(
             handles=legend_handles,
-            loc="upper right",
-            bbox_to_anchor=(0.985, 0.965),
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.99),
             frameon=False,
             ncol=min(3, len(model_names)),
         )
