@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from scripts.common.paper_plot_style import apply_gears_paper_style, style_axis
 
 try:
     import umap
@@ -406,9 +407,10 @@ def _plot_truth_pred(
     title: str,
     save_dpi: int,
 ) -> None:
+    apply_gears_paper_style(font_scale=1.0)
     conds = sorted(points_df["condition"].astype(str).unique().tolist())
     colors = _condition_colors(conds)
-    fig, ax = plt.subplots(figsize=(12, 9), dpi=180, facecolor="white")
+    fig, ax = plt.subplots(figsize=(12, 9), dpi=220, facecolor="white")
     kind_style = {
         "Truth": dict(marker="o", size=70, alpha=0.92),
         "Pred": dict(marker="x", size=95, alpha=0.95),
@@ -440,9 +442,9 @@ def _plot_truth_pred(
                 edgecolors="none" if kind == "Truth" else None,
             )
     ax.set_title(title)
-    ax.set_xlabel("UMAP-1")
-    ax.set_ylabel("UMAP-2")
-    ax.grid(alpha=0.18, linewidth=0.6)
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=int(save_dpi), bbox_inches="tight", facecolor="white")
@@ -456,9 +458,10 @@ def _plot_truth_pred_ctrl(
     title: str,
     save_dpi: int,
 ) -> None:
+    apply_gears_paper_style(font_scale=1.0)
     conds = sorted(points_df["condition"].astype(str).unique().tolist())
     colors = _condition_colors(conds)
-    fig, ax = plt.subplots(figsize=(12, 9), dpi=180, facecolor="white")
+    fig, ax = plt.subplots(figsize=(12, 9), dpi=220, facecolor="white")
     kind_style = {
         "Truth": dict(marker="o", size=70, alpha=0.88),
         "Pred": dict(marker="x", size=95, alpha=0.95),
@@ -479,9 +482,9 @@ def _plot_truth_pred_ctrl(
             edgecolors="none" if kind in {"Truth", "Ctrl"} else None,
         )
     ax.set_title(title)
-    ax.set_xlabel("UMAP-1")
-    ax.set_ylabel("UMAP-2")
-    ax.grid(alpha=0.18, linewidth=0.6)
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=int(save_dpi), bbox_inches="tight", facecolor="white")
@@ -495,9 +498,10 @@ def _plot_delta(
     title: str,
     save_dpi: int,
 ) -> None:
+    apply_gears_paper_style(font_scale=1.0)
     conds = sorted(delta_plot_df["condition"].astype(str).unique().tolist())
     colors = _condition_colors(conds)
-    fig, ax = plt.subplots(figsize=(12, 9), dpi=180, facecolor="white")
+    fig, ax = plt.subplots(figsize=(12, 9), dpi=220, facecolor="white")
     for cond in conds:
         sub = delta_plot_df[delta_plot_df["condition"].astype(str) == cond]
         t = sub[sub["kind"].astype(str) == "TruthDelta"]
@@ -515,9 +519,9 @@ def _plot_delta(
         if not p.empty:
             ax.scatter(p["umap1"], p["umap2"], s=95, alpha=0.95, marker="x", c=[colors[cond]], linewidths=1.0)
     ax.set_title(title)
-    ax.set_xlabel("UMAP-1")
-    ax.set_ylabel("UMAP-2")
-    ax.grid(alpha=0.18, linewidth=0.6)
+    ax.set_xlabel("UMAP 1")
+    ax.set_ylabel("UMAP 2")
+    style_axis(ax, grid_axis="both")
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=int(save_dpi), bbox_inches="tight", facecolor="white")

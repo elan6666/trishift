@@ -27,6 +27,7 @@ from scripts.trishift.analysis._result_adapter import (
     warn_skip,
     write_run_meta,
 )
+from scripts.common.paper_plot_style import apply_gears_paper_style, model_color_map, style_axis
 from trishift.TriShiftData import TriShiftData
 from trishift._utils import apply_alias_mapping, load_adata, load_embedding_df, load_yaml, normalize_condition
 
@@ -64,8 +65,7 @@ def _ordered_labels(values: list[str], preferred: list[str]) -> list[str]:
 
 
 def _model_color_map(model_names: list[str]) -> dict[str, Any]:
-    cmap = plt.get_cmap("tab10")
-    return {name: cmap(idx % 10) for idx, name in enumerate(model_names)}
+    return model_color_map(model_names)
 
 
 def _available_summary_metrics(df: pd.DataFrame) -> list[str]:
@@ -185,6 +185,7 @@ def _choose_reference_payload_model(dataset: str, models: list[str], split_id: i
 
 
 def _render_boxplot(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    apply_gears_paper_style()
     fig, ax = plt.subplots(figsize=(10, 5.5), dpi=220)
     required_cols = {"effect_strength_bin", "model_name", metric}
     if df.empty or not required_cols.issubset(df.columns):
@@ -263,8 +264,8 @@ def _render_boxplot(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -
     ax.set_xticks(centers, stratum_labels)
     ax.set_ylabel(metric)
     ax.set_xlabel("effect_strength_bin")
-    ax.set_title(f"Stratified performance by model ({metric})")
-    ax.grid(axis="y", alpha=0.2)
+    ax.set_title(f"Stratified performance ({metric})")
+    style_axis(ax, grid_axis="y")
     legend_handles = [
         plt.Line2D([0], [0], color=color_map[name], lw=6, alpha=0.6, label=name)
         for name in model_names
@@ -276,6 +277,7 @@ def _render_boxplot(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -
 
 
 def _render_scatter(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    apply_gears_paper_style()
     fig, ax = plt.subplots(figsize=(7.5, 5.5), dpi=220)
     required_cols = {"train_test_distance", "model_name", metric}
     if df.empty or not required_cols.issubset(df.columns):
@@ -313,7 +315,7 @@ def _render_scatter(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -
     ax.set_xlabel("train_test_distance")
     ax.set_ylabel(metric)
     ax.set_title(f"Difficulty vs performance ({metric})")
-    ax.grid(alpha=0.2)
+    style_axis(ax, grid_axis="both")
     ax.legend(frameon=False, ncol=min(2, len(model_names)))
     fig.tight_layout()
     fig.savefig(out_path)
@@ -321,6 +323,7 @@ def _render_scatter(df: pd.DataFrame, out_path: Path, metric: str = "pearson") -
 
 
 def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: str = "pearson") -> None:
+    apply_gears_paper_style()
     stratum_specs = [
         ("effect_strength_bin", ["weak", "medium", "strong"]),
         ("train_distance_bin", ["near", "medium", "far"]),
@@ -419,12 +422,10 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         ax.set_ylabel(metric.replace("_", " "))
         ax.set_xlabel("")
         ax.set_ylim(top=ymax + ypad)
-        ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.4)
         ax.set_axisbelow(True)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        style_axis(ax, grid_axis="y")
 
-    fig.suptitle(f"Stratified {metric.replace('_', ' ')}", y=0.98, fontsize=12, fontweight="semibold")
+    fig.suptitle(f"Stratified {metric.replace('_', ' ')}", y=0.98, fontsize=12, fontweight="regular")
     if legend_handles:
         fig.legend(
             handles=legend_handles,

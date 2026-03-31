@@ -19,6 +19,7 @@ import scanpy as sc
 from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
 
+from scripts.common.paper_plot_style import apply_gears_paper_style, style_axis
 from scripts.common.split_utils import norman_subgroup as _shared_norman_subgroup
 
 if TYPE_CHECKING:
@@ -848,6 +849,7 @@ def _save_umap(
     save_dpi: int,
     point_size: float | None,
 ) -> None:
+    apply_gears_paper_style(font_scale=1.0)
     plot_kwargs = dict(
         color=[color],
         title=[title],
@@ -862,9 +864,9 @@ def _save_umap(
     fig = sc.pl.umap(latent_adata, **plot_kwargs)
     fig.set_size_inches(float(figsize[0]), float(figsize[1]))
     for ax in fig.axes:
-        ax.title.set_fontsize(11)
-        ax.title.set_fontweight("semibold")
-        ax.tick_params(labelsize=8)
+        ax.title.set_fontsize(10.5)
+        ax.title.set_fontweight("regular")
+        style_axis(ax)
     fig.savefig(out_path, dpi=int(save_dpi), bbox_inches="tight")
     plt.close(fig)
 
@@ -876,6 +878,7 @@ def _save_confusion_heatmap(
     out_path: Path,
     title: str,
 ) -> None:
+    apply_gears_paper_style(font_scale=1.0)
     table = pd.crosstab(labels.astype(str), clusters.astype(str))
     fig_w = max(6.0, 0.5 * table.shape[1] + 2.0)
     fig_h = max(4.0, 0.4 * table.shape[0] + 2.0)
@@ -887,15 +890,13 @@ def _save_confusion_heatmap(
     ax.set_yticklabels(table.index.astype(str).tolist())
     ax.set_xlabel("Leiden cluster")
     ax.set_ylabel("Label")
-    ax.set_title(title, fontsize=11, fontweight="semibold")
-    ax.tick_params(labelsize=8)
+    ax.set_title(title, fontsize=10.5, fontweight="regular")
+    style_axis(ax)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     for i in range(table.shape[0]):
         for j in range(table.shape[1]):
             val = int(table.iloc[i, j])
             ax.text(j, i, str(val), ha="center", va="center", color="black", fontsize=8)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
     fig.tight_layout()
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)

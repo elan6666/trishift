@@ -17,9 +17,11 @@ from scripts.tests._helpers import temp_dir
 from scripts.trishift.analysis import _result_adapter as adapter
 from scripts.trishift.analysis import baseline_panel as baseline_panel_mod
 from scripts.trishift.analysis import pathway_recovery as pathway_recovery_mod
+from scripts.trishift.analysis import split_structure_recovery as structure_mod
 from scripts.trishift.analysis import stratified_benchmark as stratified_mod
 from scripts.trishift.analysis.baseline_panel import run_baseline_panel
 from scripts.trishift.analysis.pathway_recovery import run_pathway_recovery
+from scripts.trishift.analysis.split_structure_recovery import run_split_structure_recovery
 from scripts.trishift.analysis.stratified_benchmark import run_stratified_benchmark
 from scripts.trishift.analysis import deg20_experiment as deg20_mod
 
@@ -151,6 +153,17 @@ def _write_embedding_pickle(path: Path) -> None:
         "A": np.array([1.0, 0.0], dtype=np.float32),
         "B": np.array([0.0, 1.0], dtype=np.float32),
         "C": np.array([1.0, 1.0], dtype=np.float32),
+    }
+    _write_pickle(path, obj)
+
+
+def _write_dense_embedding_pickle(path: Path) -> None:
+    obj = {
+        "A": np.array([1.0, 0.0], dtype=np.float32),
+        "B": np.array([0.0, 1.0], dtype=np.float32),
+        "C": np.array([1.0, 1.0], dtype=np.float32),
+        "D": np.array([0.5, 1.5], dtype=np.float32),
+        "E": np.array([1.5, 0.5], dtype=np.float32),
     }
     _write_pickle(path, obj)
 
@@ -380,3 +393,57 @@ def test_run_stratified_benchmark_builds_metadata_and_summary(monkeypatch):
         assert not result["stratified_df"].empty
         assert (result["out_dir"] / "stratified_summary.csv").exists()
         assert (result["out_dir"] / "difficulty_scatter.png").exists()
+
+
+def test_run_split_structure_recovery_builds_panel(monkeypatch):
+    with temp_dir() as tmp:
+        root = Path(tmp)
+        tri_root = root / "tri"
+        gears_root = root / "gears"
+        notebook_cwd = root / "notebooks"
+        paths_yaml = root / "paths.yaml"
+        h5ad_path = root / "norman.h5ad"
+        emb_path = root / "emb.pkl"
+        notebook_cwd.mkdir()
+
+        _write_dense_norman_truth_h5ad(h5ad_path)
+        _write_dense_embedding_pickle(emb_path)
+        paths_yaml.write_text(
+            (
+                "datasets:\n"
+                f"  norman: \"{str(h5ad_path).replace('\\', '\\\\')}\"\n"
+                "embeddings:\n"
+                f"  emb_a: \"{str(emb_path).replace('\\', '\\\\')}\"\n"
+            ),
+            encoding="utf-8",
+        )
+
+        payload_tri = _dense_norman_payload()
+        payload_gears = _dense_norman_payload()
+        for item in payload_gears.values():
+            item["Pred_full"] = np.asarray(item["Pred_full"], dtype=np.float32) * 0.985
+
+        _write_pickle(tri_root / "norman" / "trishift_norman_1_nearest.pkl", payload_tri)
+        _write_pickle(gears_root / "norman" / "gears_norman_1.pkl", payload_gears)
+
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "trishift", tri_root)
+        monkeypatch.setitem(adapter.DEFAULT_PAYLOAD_ROOTS, "gears", gears_root)
+        old_cwd = Path.cwd()
+        monkeypatch.chdir(notebook_cwd)
+        result = run_split_structure_recovery(
+            dataset="norman",
+            models=["trishift_nearest", "gears"],
+            split_ids="1",
+            out_root=root / "out",
+            paths_path=paths_yaml,
+            max_cells_per_condition=2,
+            cluster_k=3,
+            seed=7,
+        )
+        monkeypatch.chdir(old_cwd)
+        assert not result.summary_df.empty
+        assert {"Experimental data", "TriShift nearest", "GEARS", "Mean perturbation"} <= set(
+            result.summary_df["row_name"].astype(str).tolist()
+        )
+        assert result.figure_path.exists()
+        assert (result.out_dir / "figs4e_structure_recovery_norman_metrics.csv").exists()
