@@ -1,6 +1,116 @@
-﻿dataset: replogle_rpe1_essential
+dataset: replogle_rpe1_essential
 base:
   defaults: configs/defaults.yaml
   paths: configs/paths.yaml
-defaults_overrides: {}
+defaults_overrides:
+  k_topk: 150
+  matching_mode: ot
+  train_mode: joint
+  n_eval_ensemble: 300
+  eval_ctrl_pool_mode: all
+  eval_genept_distance: l2
+  eval_genept_compare_mode: per_gene_nearest_cond
+  eval_genept_train_candidate_mode: norman_train_single_only
+  seed: 24
+  run:
+    multi_split: true
+    n_splits: 5
+  performance:
+    amp: false
+    num_workers: 0
+    pin_memory: true
+    grad_accum_steps: 1
+    chunk_size: 4096
+  train:
+    stage1:
+      epochs: 100
+      batch_size: 256
+      lr: 0.0005
+      beta: 1.0
+      deg_weight: 1
+      ecs:
+        enable: false
+        epochs: 10
+        lr: 0.0001
+        sched_gamma: 0.9
+        weight: 10.0
+        threshold: 0.8
+        patience: 5
+        min_delta: 0.001
+      sched_gamma: 1
+      patience: 5
+      min_delta: 0.001
+    stage23:
+      epochs: 40
+      batch_size: 256
+      lr: 0.001
+      sched_gamma: 0.9
+      patience: 10
+      min_delta: 0.001
+    stage2:
+      epochs: 40
+      lr: 0.001
+      sched_gamma: 0.9
+      patience: 5
+      min_delta: 0.001
+    stage3:
+      epochs: 40
+      lr: 0.001
+      sched_gamma: 0.9
+      patience: 5
+      min_delta: 0.001
+  loss:
+    gamma: 0
+    lambda_dir: 0.05
+    lambda_dir_expr: 0.05
+    lambda_dir_z: 0.05
+    lambda_z: 1
+    deg_weight: 1
+    lambda_expr_mse: 0
+    lambda_neg_expr: 0.05
+    neg_expr_penalty: mae
+  ablation:
+    stage1_use_train_split: true
+    topk_strategy: random
+    sample_soft_ctrl: false
+    per_condition_ot: true
+    reuse_ot_cache: true
+    reuse_z_mu_cache: false
+    latent_loss_type: gears
+  model:
+    stage1:
+      z_dim: 32
+      hidden_dim: 1024
+      noise_rate: 0.1
+      kl_weight: 0.0005
+    stage2:
+      shift_hidden:
+      - 512
+      - 2048
+      predict_shift: true
+      predict_delta: false
+      shift_repr_dim: 8
+      shift_input_source: latent_mu
+      cond_pool_mode: sum
+      cond_l2_norm: false
+      use_cross_attention: false
+      cross_attn_heads: 4
+      cross_attn_dropout: 0
+      use_transformer_block: true
+      transformer_readout: concat
+      transformer_layers: 1
+      transformer_ff_mult: 4
+      transformer_dropout: 0
+    stage3:
+      input_mode: full
+      encoder_hidden:
+      - 2048
+      - 512
+      state_dim: 64
+      decoder_hidden:
+      - 2048
+      use_batch_norm: true
+      use_layer_norm: false
+      dropout: 0.0
+      use_residual_head: true
 paths_overrides: {}

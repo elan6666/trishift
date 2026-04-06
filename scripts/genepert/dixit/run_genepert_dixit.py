@@ -26,6 +26,7 @@ def main() -> None:
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
         alpha_grid=task.get("alpha_grid"),
+        split_ids=[1, 2, 3, 4, 5],
     )
 
 

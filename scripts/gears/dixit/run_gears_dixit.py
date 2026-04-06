@@ -31,7 +31,12 @@ def main() -> None:
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
-    run_gears_eval("dixit", base_seed=seed, export_notebook_pkl=export_notebook_pkl)
+    run_gears_eval(
+        "dixit",
+        base_seed=seed,
+        export_notebook_pkl=export_notebook_pkl,
+        split_ids=[1, 2, 3, 4, 5],
+    )
 
 
 if __name__ == "__main__":

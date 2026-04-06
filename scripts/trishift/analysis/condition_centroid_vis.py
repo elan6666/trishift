@@ -26,6 +26,7 @@ except ImportError as exc:  # pragma: no cover - dependency check
 
 DEFAULT_RESULT_ROOTS = {
     "trishift": REPO_ROOT / "artifacts" / "results",
+    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
@@ -511,13 +512,29 @@ def _plot_delta(
                 [float(t["umap1"].iloc[0]), float(p["umap1"].iloc[0])],
                 [float(t["umap2"].iloc[0]), float(p["umap2"].iloc[0])],
                 color=colors[cond],
-                alpha=0.45,
-                linewidth=1.1,
+                alpha=0.55,
+                linewidth=1.7,
             )
         if not t.empty:
-            ax.scatter(t["umap1"], t["umap2"], s=70, alpha=0.9, marker="o", c=[colors[cond]], edgecolors="none")
+            ax.scatter(
+                t["umap1"],
+                t["umap2"],
+                s=95,
+                alpha=0.95,
+                marker="o",
+                c=[colors[cond]],
+                edgecolors="none",
+            )
         if not p.empty:
-            ax.scatter(p["umap1"], p["umap2"], s=95, alpha=0.95, marker="x", c=[colors[cond]], linewidths=1.0)
+            ax.scatter(
+                p["umap1"],
+                p["umap2"],
+                s=125,
+                alpha=0.98,
+                marker="x",
+                c=[colors[cond]],
+                linewidths=1.5,
+            )
     ax.set_title(title)
     ax.set_xlabel("UMAP 1")
     ax.set_ylabel("UMAP 2")

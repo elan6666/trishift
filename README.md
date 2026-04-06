@@ -1,10 +1,14 @@
-# TriShift
+# TriShift: Tripartite Reference-Conditioned Shift Model
 
-TriShift is a single-cell perturbation response prediction project with:
+TriShift, short for `Tripartite Reference-Conditioned Shift Model`, is a single-cell perturbation response prediction project built around the `Tripartite Reference-Conditioned Shift Model` (`TriShift`, 中文全名：`三元参考条件化状态转移模型`) and its benchmark stack:
 
-- the native `trishift` model
+- the native `trishift` model (`Tripartite Reference-Conditioned Shift Model`, `TriShift`)
 - evaluation wrappers for `scouter`
 - evaluation wrappers for `GEARS`
+- evaluation wrappers for `biolord`
+- evaluation wrappers for `genepert`
+- evaluation wrappers for `scgpt`
+- Systema-style reference and metric baselines
 - a shared metric stack used across models
 
 The repository uses a `src/` layout and is installable as a Python package.
@@ -135,55 +139,94 @@ If needed, you can still override paths through:
 
 ## Main Entrypoints
 
+Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
+
 TriShift:
 
-- `scripts/run_adamson.py`
-- `scripts/run_dixit.py`
-- `scripts/run_norman.py`
-- `scripts/run_k562.py`
-- `scripts/run_rpe1.py`
+- `scripts/trishift/adamson/run_adamson.py`
+- `scripts/trishift/dixit/run_dixit.py`
+- `scripts/trishift/norman/run_norman.py`
+- `scripts/trishift/replogle_k562_essential/run_replogle_k562_essential.py`
+- `scripts/trishift/replogle_rpe1_essential/run_replogle_rpe1_essential.py`
 
-Scouter evaluation:
+Scouter:
 
-- `scripts/run_scouter_eval_adamson.py`
-- `scripts/run_scouter_eval_dixit.py`
-- `scripts/run_scouter_eval_norman.py`
-- `scripts/run_scouter_eval_k562.py`
-- `scripts/run_scouter_eval_rpe1.py`
+- `scripts/scouter/adamson/run_scouter_adamson.py`
+- `scripts/scouter/dixit/run_scouter_dixit.py`
+- `scripts/scouter/norman/run_scouter_norman.py`
+- `scripts/scouter/replogle_k562_essential/run_scouter_k562.py`
+- `scripts/scouter/replogle_rpe1_essential/run_scouter_rpe1.py`
 
-GEARS evaluation:
+GEARS:
 
-- `scripts/run_gears_eval_adamson.py`
-- `scripts/run_gears_eval_dixit.py`
-- `scripts/run_gears_eval_norman.py`
-- `scripts/run_gears_eval_k562.py`
-- `scripts/run_gears_eval_rpe1.py`
+- `scripts/gears/adamson/run_gears_adamson.py`
+- `scripts/gears/dixit/run_gears_dixit.py`
+- `scripts/gears/norman/run_gears_norman.py`
+- `scripts/gears/replogle_k562_essential/run_gears_k562.py`
+- `scripts/gears/replogle_rpe1_essential/run_gears_rpe1.py`
+
+Additional baselines:
+
+- `scripts/biolord/<dataset>/run_biolord_*.py`
+- `scripts/genepert/<dataset>/run_genepert_*.py`
+- `scripts/scgpt/<dataset>/run_scgpt_*.py`
+- `scripts/systema/<dataset>/run_systema_*.py`
+
+Shared training core:
+
+- `scripts/trishift/_core/run_dataset_core.py`
+- `scripts/trishift/train/run_dataset.py`
 
 ## Example Commands
 
 TriShift:
 
 ```bash
-python scripts/run_adamson.py
-python scripts/run_norman.py
+python scripts/trishift/adamson/run_adamson.py
+python scripts/trishift/norman/run_norman.py
 ```
 
-Scouter evaluation:
+Scouter:
 
 ```bash
-python scripts/run_scouter_eval_adamson.py
-python scripts/run_scouter_eval_norman.py
+python scripts/scouter/adamson/run_scouter_adamson.py
+python scripts/scouter/norman/run_scouter_norman.py
 ```
 
-GEARS evaluation:
+GEARS:
 
 ```bash
-python scripts/run_gears_eval_adamson.py
-python scripts/run_gears_eval_norman.py
+python scripts/gears/adamson/run_gears_adamson.py
+python scripts/gears/norman/run_gears_norman.py
+```
+
+BioLord:
+
+```bash
+python scripts/biolord/adamson/run_biolord_adamson.py
+python scripts/biolord/norman/run_biolord_norman.py
+```
+
+Train through the shared dataset runner:
+
+```bash
+python scripts/trishift/train/run_dataset.py --dataset adamson
+python scripts/trishift/train/run_dataset.py --dataset norman
 ```
 
 ## Notes
 
-- `scripts/run_*` files are compatibility entrypoints.
-- model-specific implementations live under `scripts/trishift`, `scripts/scouter`, `scripts/gears`, and `scripts/systema`.
+- legacy top-level `scripts/run_*` files, if present, should be treated as compatibility entrypoints rather than the primary maintained interface.
+- model-specific implementations live under `scripts/trishift`, `scripts/scouter`, `scripts/gears`, `scripts/biolord`, `scripts/genepert`, `scripts/scgpt`, and `scripts/systema`.
 - the project is already packaged through `pyproject.toml`; editable install is the expected workflow during development.
+- experimental analysis and paper figures live under `notebooks`, including:
+  - `notebooks/Fig1_MethodOverview.ipynb`
+  - `notebooks/Fig2_MultiDatasetBenchmark.ipynb`
+  - `notebooks/Fig3_ReferenceConditioning.ipynb`
+  - `notebooks/Fig4_NormanGeneralization.ipynb`
+  - `notebooks/Fig5_BiologyAndAblation.ipynb`
+- paper drafts and supporting documentation live under `docs`, including:
+  - `docs/trishift_paper_draft_cn.md`
+  - `docs/eval_metrics_guide_cn.md`
+  - `docs/bioinformatics_paper_outline_cn.md`
+- run outputs are written under `artifacts`, with cached intermediates under `artifacts/cache` and evaluation results under `artifacts/results`.

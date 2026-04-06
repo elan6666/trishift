@@ -58,6 +58,26 @@ METADATA_COLUMNS = [
 ]
 
 
+def _resolve_paths_yaml(paths_path: str | Path) -> Path:
+    p = Path(paths_path)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend(
+            [
+                Path.cwd() / p,
+                REPO_ROOT / p,
+                REPO_ROOT / "configs" / p.name,
+            ]
+        )
+    for cand in candidates:
+        cand = cand.resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(f"Could not resolve paths yaml: {paths_path}")
+
+
 def _ordered_labels(values: list[str], preferred: list[str]) -> list[str]:
     present = [label for label in preferred if label in values]
     remaining = sorted([label for label in values if label not in preferred])
@@ -111,7 +131,7 @@ def _qcut_labels(series: pd.Series, labels: list[str]) -> tuple[pd.Series, list[
 
 
 def _load_dataset_split(data_name: str, split_id: int, paths_path: str | Path) -> dict[str, Any]:
-    cfg = load_yaml(str(Path(paths_path).resolve()))
+    cfg = load_yaml(str(_resolve_paths_yaml(paths_path)))
     adata = load_adata(cfg["datasets"][data_name])
     emb_key = DATASET_EMBEDDING_KEYS[data_name]
     embd_df = load_embedding_df(cfg["embeddings"][emb_key])

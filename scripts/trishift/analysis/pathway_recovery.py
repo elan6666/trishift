@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -34,6 +35,17 @@ def _try_import_gseapy():
     return gp
 
 
+@lru_cache(maxsize=8)
+def _load_gene_set_library(enrichment_library: str):
+    gp = _try_import_gseapy()
+    if gp is None:
+        return None
+    try:
+        return gp.get_library(name=str(enrichment_library), organism="Human")
+    except Exception:
+        return None
+
+
 def _run_enrichment_for_gene_lists(
     *,
     gene_lists_df: pd.DataFrame,
@@ -46,6 +58,9 @@ def _run_enrichment_for_gene_lists(
     gp = _try_import_gseapy()
     if gp is None:
         return pd.DataFrame()
+    gene_set_library = _load_gene_set_library(str(enrichment_library))
+    if not gene_set_library:
+        return pd.DataFrame()
 
     work_df = gene_lists_df[gene_lists_df["list_type"].isin(["truth_deg20", "pred_deg20"])].copy()
     rows: list[dict[str, Any]] = []
@@ -57,10 +72,9 @@ def _run_enrichment_for_gene_lists(
         if not genes:
             continue
         try:
-            enr = gp.enrichr(
+            enr = gp.enrich(
                 gene_list=genes,
-                gene_sets=[str(enrichment_library)],
-                organism="human",
+                gene_sets=gene_set_library,
                 outdir=None,
                 no_plot=True,
             )

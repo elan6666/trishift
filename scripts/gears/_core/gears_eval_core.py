@@ -713,10 +713,14 @@ def run_gears_eval(
     name: str,
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
+    split_ids: list[int] | tuple[int, ...] | None = None,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     cfg = DATASET_CONFIG[name]
+    splits_eff = [int(x) for x in (split_ids if split_ids is not None else cfg.splits)]
+    if not splits_eff:
+        raise ValueError("split_ids must not be empty")
     PertData, GEARS = _require_gears_classes()
 
     gears_data_root = _resolve_gears_data_root(cfg.gears_data_name)
@@ -726,7 +730,7 @@ def run_gears_eval(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_all = []
-    for split in cfg.splits:
+    for split in splits_eff:
         print(f"[gears] dataset={name} split={split}")
         set_seeds(base_seed + int(split))
         eval_adata = _prepare_eval_adata(eval_data_path)

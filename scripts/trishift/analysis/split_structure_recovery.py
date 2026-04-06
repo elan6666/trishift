@@ -39,8 +39,28 @@ class SplitStructureRecoveryResult:
     figure_path: Path
 
 
+def _resolve_paths_yaml(paths_path: str | Path) -> Path:
+    p = Path(paths_path)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend(
+            [
+                Path.cwd() / p,
+                REPO_ROOT / p,
+                REPO_ROOT / "configs" / p.name,
+            ]
+        )
+    for cand in candidates:
+        cand = cand.resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(f"Could not resolve paths yaml: {paths_path}")
+
+
 def _load_split_dataset(dataset: str, split_id: int, paths_path: str | Path) -> tuple[TriShiftData, dict[str, Any]]:
-    cfg = load_yaml(str(Path(paths_path).resolve()))
+    cfg = load_yaml(str(_resolve_paths_yaml(paths_path)))
     emb_key_map = {
         "adamson": "emb_b",
         "dixit": "emb_c",

@@ -225,8 +225,9 @@ def _require_genepert_class():
         mod = importlib.import_module("GenePertExperiment")
     except ImportError as exc:
         raise ImportError(
-            "GenePert is not importable. Install the GenePert package/module into the current "
-            "Python environment so `import GenePertExperiment` works."
+            "GenePert is not importable from the current Python environment. "
+            "Install the GenePert package/module so `import GenePertExperiment` works from "
+            "site-packages without relying on the repository's external/ directory."
         ) from exc
     return getattr(mod, "GenePertExperiment")
 
@@ -524,12 +525,16 @@ def run_genepert_eval(
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
     alpha_grid: list[float] | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     cfg = DATASET_CONFIG[name]
     alpha_grid_eff = _coerce_alpha_grid(alpha_grid)
     GenePertExperiment = _require_genepert_class()
+    splits_eff = [int(x) for x in (split_ids if split_ids is not None else cfg.splits)]
+    if not splits_eff:
+        raise ValueError("split_ids must not be empty")
 
     data_path = _resolve_eval_data_path(name, cfg)
     emb_path = _resolve_embedding_path()
@@ -548,7 +553,7 @@ def run_genepert_eval(
     filtered_embeddings, _ = _resolve_gene_embeddings_for_adata(filtered_adata, embeddings_raw)
 
     metrics_all = []
-    for split in cfg.splits:
+    for split in splits_eff:
         print(f"[genepert] dataset={name} split={split}")
         set_seeds(base_seed + int(split))
 

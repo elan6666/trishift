@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +74,7 @@ class BiolordDatasetConfig:
     decoder_lr: float = 1e-3
     decoder_wd: float = 1e-2
     unknown_attribute_noise_param: float = 0.0
+    export_control_pool_size: int = 300
 
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "eval" / "configs"
@@ -558,12 +559,29 @@ def _compute_metrics_and_export_payload(
                 "n_ensemble": int(pred_expr.shape[0]),
             }
         )
+        export_sample_size = max(1, int(cfg.export_control_pool_size))
+        sample_n = min(int(pred_expr.shape[0]), int(ctrl_full.shape[0]), export_sample_size)
+        if sample_n < min(int(pred_expr.shape[0]), int(ctrl_full.shape[0])):
+            seed_base = (int(split_id) * 1000003) + sum(ord(ch) for ch in str(cond_norm))
+            rng = np.random.default_rng(seed_base)
+            sample_idx = np.sort(
+                rng.choice(
+                    min(int(pred_expr.shape[0]), int(ctrl_full.shape[0])),
+                    size=sample_n,
+                    replace=False,
+                )
+            )
+            pred_export = np.asarray(pred_expr[sample_idx], dtype=np.float32)
+            ctrl_export = np.asarray(ctrl_full[sample_idx], dtype=np.float32)
+        else:
+            pred_export = np.asarray(pred_expr, dtype=np.float32)
+            ctrl_export = np.asarray(ctrl_full, dtype=np.float32)
         export_payload[cond_norm] = {
-            "Pred": pred_expr[:, degs],
-            "Ctrl": ctrl_full[:, degs],
+            "Pred": pred_export[:, degs],
+            "Ctrl": ctrl_export[:, degs],
             "Truth": true_expr[:, degs],
-            "Pred_full": pred_expr,
-            "Ctrl_full": ctrl_full,
+            "Pred_full": pred_export,
+            "Ctrl_full": ctrl_export,
             "Truth_full": true_expr,
             "DE_idx": degs,
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
@@ -625,6 +643,7 @@ def run_biolord_eval(
         decoder_lr=float(base_cfg.decoder_lr),
         decoder_wd=float(base_cfg.decoder_wd),
         unknown_attribute_noise_param=float(base_cfg.unknown_attribute_noise_param),
+        export_control_pool_size=int(base_cfg.export_control_pool_size),
     )
 
     data_path = _resolve_eval_data_path(name, cfg)
