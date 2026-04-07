@@ -8,11 +8,11 @@ import scanpy as sc
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.tests._helpers import make_tiny_pbmc_adata, make_tiny_scvi_pbmc_adata, temp_dir
+from tests._helpers import make_tiny_pbmc_adata, make_tiny_scvi_pbmc_adata, temp_dir
 from scripts.trishift.analysis.stage1_latent_clustering import (
     _can_reuse_stage1_cache,
     _label_metrics,

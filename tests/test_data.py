@@ -6,14 +6,14 @@ import numpy as np
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from trishift.TriShiftData import TriShiftData
 from trishift import _utils
 
-from scripts.tests._helpers import make_tiny_adata, make_embeddings_df
+from tests._helpers import make_tiny_adata, make_embeddings_df
 
 
 def test_setup_embedding_index_filters_missing():

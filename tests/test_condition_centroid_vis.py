@@ -5,11 +5,11 @@ import numpy as np
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.tests._helpers import temp_dir
+from tests._helpers import temp_dir
 from scripts.trishift.analysis.condition_centroid_vis import (
     _feature_arrays,
     run_condition_centroid_visualization,

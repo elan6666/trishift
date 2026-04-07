@@ -10,14 +10,14 @@ import torch
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from trishift import _utils
 from trishift.TriShift import _negative_penalty, _stage1_ecs_loss, _weighted_stage1_recon_loss
 
-from scripts.tests._helpers import make_data_and_model, make_tiny_pbmc_adata, train_stage1_and_cache
+from tests._helpers import make_data_and_model, make_tiny_pbmc_adata, train_stage1_and_cache
 
 
 def test_stage1_and_cache():

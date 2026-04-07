@@ -1,0 +1,32 @@
+name: trishift-baselines
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - anndata
+  - scanpy
+  - pyyaml
+  - tqdm
+  - ipykernel
+  - jupyterlab
+  - pip:
+      - scouter-learn
+      - cell-gears
+      - POT
+
+# Notes:
+# 1. This file isolates the common baseline stack from the lighter TriShift core
+#    dependencies defined in pyproject.toml.
+# 2. Install torch and the PyG packages separately so they match your local CUDA
+#    runtime before running GEARS:
+#      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#      pip install pyg-lib torch-geometric torch-scatter torch-sparse \
+#        -f https://data.pyg.org/whl/torch-2.5.1+cu121.html
+# 3. If you only want to run TriShift, prefer `pip install -e .` and skip this
+#    environment entirely.

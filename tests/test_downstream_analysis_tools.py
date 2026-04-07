@@ -9,11 +9,11 @@ import pandas as pd
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.tests._helpers import temp_dir
+from tests._helpers import temp_dir
 from scripts.trishift.analysis import _result_adapter as adapter
 from scripts.trishift.analysis import baseline_panel as baseline_panel_mod
 from scripts.trishift.analysis import pathway_recovery as pathway_recovery_mod

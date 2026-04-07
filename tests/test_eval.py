@@ -7,11 +7,11 @@ import torch
 
 import sys
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from scripts.tests._helpers import make_data_and_model, train_stage1_and_cache, temp_dir
+from tests._helpers import make_data_and_model, train_stage1_and_cache, temp_dir
 
 
 def test_evaluate_and_export():
@@ -31,10 +31,10 @@ def test_evaluate_and_export():
     assert "nmse" in df.columns
     assert "pearson" in df.columns
     assert "deg_mean_r2" in df.columns
-    assert "systema_corr_all_r2" in df.columns
+    assert "systema_corr_20de_allpert" in df.columns
     assert "systema_corr_deg_r2" in df.columns
-    assert "r2_degs_var_mean" in df.columns
-    assert "r2_all_var_mean" in df.columns
+    assert "scpram_r2_degs_mean_mean" in df.columns
+    assert "scpram_r2_degs_var_mean" in df.columns
 
     with temp_dir() as td:
         out_path = Path(td) / "preds.pkl"

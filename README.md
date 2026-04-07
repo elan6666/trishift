@@ -1,21 +1,12 @@
 # TriShift: Tripartite Reference-Conditioned Shift Model
 
-TriShift, short for `Tripartite Reference-Conditioned Shift Model`, is a single-cell perturbation response prediction project built around the `Tripartite Reference-Conditioned Shift Model` (`TriShift`, 中文全名：`三元参考条件化状态转移模型`) and its benchmark stack:
+TriShift is a single-cell perturbation response prediction toolkit built around the `Tripartite Reference-Conditioned Shift Model` (`TriShift`). The repository contains the native TriShift implementation, shared evaluation code, benchmark wrappers for major baselines, and the notebooks used to generate the paper figures.
 
-- the native `trishift` model (`Tripartite Reference-Conditioned Shift Model`, `TriShift`)
-- evaluation wrappers for `scouter`
-- evaluation wrappers for `GEARS`
-- evaluation wrappers for `biolord`
-- evaluation wrappers for `genepert`
-- evaluation wrappers for `scgpt`
-- Systema-style reference and metric baselines
-- a shared metric stack used across models
+The project uses a `src/` layout and is installable as a Python package.
 
-The repository uses a `src/` layout and is installable as a Python package.
+## For Users
 
-## Package Install
-
-Editable install:
+### Install the core package
 
 ```bash
 pip install -e .
@@ -24,10 +15,10 @@ pip install -e .
 After installation:
 
 ```bash
-python -c "import trishift; print(trishift.__version__)"
+python -c "from trishift import TriShift, TriShiftData; import trishift; print(trishift.__version__)"
 ```
 
-The package source lives in:
+The core package source lives in:
 
 - `src/trishift`
 
@@ -36,72 +27,21 @@ Key runtime config files:
 - `configs/defaults.yaml`
 - `configs/paths.yaml`
 
-## Recommended Environment
+### Minimal custom-dataset tutorial
 
-The current validated local environment is the `scouter` environment.
+If you want to try TriShift on your own `AnnData`, start with:
 
-- Python: `3.10.19`
-- PyTorch: `2.5.1`
-- CUDA runtime: `12.1`
-- NumPy: `2.0.1`
-- Pandas: `2.3.3`
-- SciPy: `1.15.3`
-- Scanpy: `1.11.5`
-- AnnData: `0.11.4`
-- scikit-learn: `1.7.2`
-- `scouter-learn`: `0.1.10`
-- `cell-gears`: `0.1.2`
-- `POT`: `0.9.6.post1`
+- `notebooks/tutorial_custom_dataset.ipynb`
 
-### Minimal Setup Flow
+The tutorial shows a minimal workflow:
 
-Create a clean environment first:
+1. build a small `AnnData` with a `condition` column,
+2. prepare a matching gene embedding table,
+3. initialize `TriShiftData` and `TriShift`,
+4. run a minimal train/evaluate loop,
+5. export prediction payloads for downstream analysis.
 
-```bash
-conda create -n trishift python=3.10
-conda activate trishift
-```
-
-Install PyTorch first, matching your CUDA setup. The validated environment uses CUDA 12.1:
-
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
-
-Install the package:
-
-```bash
-pip install -e .
-```
-
-Install evaluation backends as needed:
-
-```bash
-pip install scouter-learn cell-gears POT
-```
-
-For GEARS, you also need the PyG stack that matches your Torch/CUDA version:
-
-- `pyg-lib`
-- `torch-geometric`
-- `torch-scatter`
-- `torch-sparse`
-
-Install those using the wheel index recommended by PyG for your exact Torch build.
-
-## Data Download And Preparation
-
-### 1. Download Gene Embeddings
-
-Gene embedding download links are documented in:
-
-- `src/data/Data_GeneEmbd/README.md`
-
-Download the required files there and place them under:
-
-- `src/data/Data_GeneEmbd`
-
-### 2. Download and Prepare Benchmark Data
+### Public benchmark data
 
 Prepare the public benchmark datasets with:
 
@@ -109,7 +49,7 @@ Prepare the public benchmark datasets with:
 python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
 ```
 
-This TriShift entrypoint delegates raw dataset download to `GEARS/PertData`, prepares the standard simulation splits, and then synchronizes the processed `perturb_processed.h5ad` files to the paths expected by TriShift and the baseline wrappers.
+This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, and synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers.
 
 The legacy command is still supported for backward compatibility:
 
@@ -117,35 +57,66 @@ The legacy command is still supported for backward compatibility:
 python src/data/Data_GEARS/generating_data.py
 ```
 
-The preparation script does two things:
-
-1. builds the GEARS-native dataset folders under:
-   - `src/data/Data_GEARS/adamson`
-   - `src/data/Data_GEARS/dixit`
-   - `src/data/Data_GEARS/norman`
-   - `src/data/Data_GEARS/replogle_k562_essential`
-   - `src/data/Data_GEARS/replogle_rpe1_essential`
-2. copies each generated `perturb_processed.h5ad` into the standard outer data directories:
-   - `src/data/adamson/perturb_processed.h5ad`
-   - `src/data/dixit/perturb_processed.h5ad`
-   - `src/data/norman/perturb_processed.h5ad`
-   - `src/data/replogle_k562_essential/perturb_processed.h5ad`
-   - `src/data/replogle_rpe1_essential/perturb_processed.h5ad`
-
-This means:
-
-- GEARS can read from `src/data/Data_GEARS`
-- TriShift / Scouter / Systema can read from `src/data/<dataset>`
-
-### 3. Path Resolution
-
-By default, the repository now expects local data under `src/data`.
-
-If needed, you can still override paths through:
+By default, the repository expects local data under `src/data`. You can still override locations through:
 
 - `configs/paths.yaml`
 
-## Main Entrypoints
+## For Reproducibility
+
+### Recommended environments
+
+The lightest workflow is the core TriShift package:
+
+```bash
+pip install -e .
+```
+
+The benchmark stack mixes several external baselines with conflicting dependencies. To keep the main package usable, the repository separates:
+
+- **Core TriShift dependencies** in `pyproject.toml`
+- **Baseline-oriented environment setup** in `environment_baselines.yml`
+
+Create the baseline environment with:
+
+```bash
+conda env create -f environment_baselines.yml
+conda activate trishift-baselines
+```
+
+`environment_baselines.yml` covers the common stack used by `scouter`, `GEARS`, and shared evaluation tools. `GEARS` still requires a Torch/PyG installation matched to your local CUDA runtime; follow the comments in that file for the final install step.
+
+### Data download and preprocessing
+
+Gene embedding download links are documented in:
+
+- `src/data/Data_GeneEmbd/README.md`
+
+Download the required embedding files there and place them under:
+
+- `src/data/Data_GeneEmbd`
+
+The benchmark preparation script builds the GEARS-native dataset folders under:
+
+- `src/data/Data_GEARS/adamson`
+- `src/data/Data_GEARS/dixit`
+- `src/data/Data_GEARS/norman`
+- `src/data/Data_GEARS/replogle_k562_essential`
+- `src/data/Data_GEARS/replogle_rpe1_essential`
+
+It also copies each generated `perturb_processed.h5ad` into the standard outer data directories:
+
+- `src/data/adamson/perturb_processed.h5ad`
+- `src/data/dixit/perturb_processed.h5ad`
+- `src/data/norman/perturb_processed.h5ad`
+- `src/data/replogle_k562_essential/perturb_processed.h5ad`
+- `src/data/replogle_rpe1_essential/perturb_processed.h5ad`
+
+This keeps the repository consistent across:
+
+- GEARS, which reads from `src/data/Data_GEARS`
+- TriShift, Scouter, and Systema-style evaluation, which read from `src/data/<dataset>`
+
+### Training and evaluation entrypoints
 
 Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
 
@@ -185,56 +156,44 @@ Shared training core:
 - `scripts/trishift/_core/run_dataset_core.py`
 - `scripts/trishift/train/run_dataset.py`
 
-## Example Commands
+### Figure generation
 
-TriShift:
+The paper figures are generated from the notebooks under `notebooks/`:
 
-```bash
-python scripts/trishift/adamson/run_adamson.py
-python scripts/trishift/norman/run_norman.py
-```
+- `Fig1_MethodOverview.ipynb` -> Fig. 1
+- `Fig2_MultiDatasetBenchmark.ipynb` -> Fig. 2
+- `Fig3_ReferenceConditioning.ipynb` -> Fig. 3
+- `Fig4_NormanGeneralization.ipynb` -> Fig. 4
+- `Fig5_BiologyAndAblation.ipynb` -> Fig. 5
+- `FigS3_CentroidAnalysis.ipynb` -> Fig. S3
+- `FigS4_Robustness.ipynb` -> Fig. S4
+- `FigS7_Stage1LatentClustering.ipynb` -> Fig. S7
 
-Scouter:
+Primary outputs are written under:
 
-```bash
-python scripts/scouter/adamson/run_scouter_adamson.py
-python scripts/scouter/norman/run_scouter_norman.py
-```
+- `artifacts/results`
+- `artifacts/paper_figures`
 
-GEARS:
+### Tests
 
-```bash
-python scripts/gears/adamson/run_gears_adamson.py
-python scripts/gears/norman/run_gears_norman.py
-```
+Tests now live in the repository root:
 
-BioLord:
+- `tests/`
 
-```bash
-python scripts/biolord/adamson/run_biolord_adamson.py
-python scripts/biolord/norman/run_biolord_norman.py
-```
-
-Train through the shared dataset runner:
+Run the full test suite with:
 
 ```bash
-python scripts/trishift/train/run_dataset.py --dataset adamson
-python scripts/trishift/train/run_dataset.py --dataset norman
+pytest -q
 ```
 
-## Notes
+Run a smaller smoke subset with:
 
-- legacy top-level `scripts/run_*` files, if present, should be treated as compatibility entrypoints rather than the primary maintained interface.
-- model-specific implementations live under `scripts/trishift`, `scripts/scouter`, `scripts/gears`, `scripts/biolord`, `scripts/genepert`, `scripts/scgpt`, and `scripts/systema`.
-- the project is already packaged through `pyproject.toml`; editable install is the expected workflow during development.
-- experimental analysis and paper figures live under `notebooks`, including:
-  - `notebooks/Fig1_MethodOverview.ipynb`
-  - `notebooks/Fig2_MultiDatasetBenchmark.ipynb`
-  - `notebooks/Fig3_ReferenceConditioning.ipynb`
-  - `notebooks/Fig4_NormanGeneralization.ipynb`
-  - `notebooks/Fig5_BiologyAndAblation.ipynb`
-- paper drafts and supporting documentation live under `docs`, including:
-  - `docs/trishift_paper_draft_cn.md`
-  - `docs/eval_metrics_guide_cn.md`
-  - `docs/bioinformatics_paper_outline_cn.md`
-- run outputs are written under `artifacts`, with cached intermediates under `artifacts/cache` and evaluation results under `artifacts/results`.
+```bash
+pytest tests/test_data.py tests/test_eval.py -q
+```
+
+### Notes
+
+- Legacy top-level `scripts/run_*` files, if present, should be treated as compatibility entrypoints rather than the primary maintained interface.
+- Paper drafts and supporting documentation live under `docs`.
+- Large local outputs, datasets, and external baseline clones are intentionally ignored by git.
