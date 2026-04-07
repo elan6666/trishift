@@ -101,15 +101,23 @@ Download the required files there and place them under:
 
 - `src/data/Data_GeneEmbd`
 
-### 2. Generate GEARS Data
+### 2. Download and Prepare Benchmark Data
 
-Generate the GEARS datasets with:
+Prepare the public benchmark datasets with:
+
+```bash
+python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
+```
+
+This TriShift entrypoint delegates raw dataset download to `GEARS/PertData`, prepares the standard simulation splits, and then synchronizes the processed `perturb_processed.h5ad` files to the paths expected by TriShift and the baseline wrappers.
+
+The legacy command is still supported for backward compatibility:
 
 ```bash
 python src/data/Data_GEARS/generating_data.py
 ```
 
-This script now does two things:
+The preparation script does two things:
 
 1. builds the GEARS-native dataset folders under:
    - `src/data/Data_GEARS/adamson`
