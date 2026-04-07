@@ -58,3 +58,8 @@ src/data/**/*.pickle
 # Local odd files
 nul
 NIHMS1045467-supplement-Table_S9.xlsx
+
+# Local paper-bundle helpers / skill drafts
+scripts/build_trishift_paper_bundle.py
+scripts/image/build_trishift_paper_bundle/
+skills/
