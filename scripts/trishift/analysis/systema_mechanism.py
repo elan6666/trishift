@@ -242,12 +242,22 @@ def run_systema_mechanism_analysis(
     dataset: str,
     models: str | list[str] | tuple[str, ...],
     split_ids: int | str | list[int] | tuple[int, ...] = "1",
+    subgroup_filter: str | list[str] | tuple[str, ...] | None = None,
     out_root: str | Path | None = None,
     paths_path: str | Path = "configs/paths.yaml",
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models)
     split_list = parse_split_ids(split_ids)
+    subgroup_values = (
+        []
+        if subgroup_filter is None
+        else [
+            str(x).strip()
+            for x in ([subgroup_filter] if isinstance(subgroup_filter, str) else subgroup_filter)
+            if str(x).strip()
+        ]
+    )
     out_dir = Path(out_root).resolve() if out_root else (Path("artifacts/analysis") / f"{ts_local()}_systema_mechanism_{dataset_key}").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -278,6 +288,7 @@ def run_systema_mechanism_analysis(
         payload_for_metadata_model = None
         payload_for_metadata = None
         active_test_conds = list(split_test_conds)
+        metadata_df_for_split = pd.DataFrame()
 
         for model_name in model_requests:
             spec = resolve_model_spec(model_name)
@@ -287,6 +298,18 @@ def run_systema_mechanism_analysis(
                 _, payload_for_metadata = load_payload_item(dataset=dataset_key, model_name=model_name, split_id=int(split_id), condition=None)
                 payload_for_metadata_model = model_name
                 active_test_conds = sorted({normalize_condition(str(c)) for c in payload_for_metadata.keys()})
+                metadata_df_for_split = _build_metadata_from_payload(
+                    dataset_key,
+                    payload_for_metadata,
+                    int(split_id),
+                    [normalize_condition(c) for c in split_dict.get("train_conds", [])],
+                    paths_path,
+                )
+                if subgroup_values and not metadata_df_for_split.empty and "subgroup" in metadata_df_for_split.columns:
+                    metadata_df_for_split = metadata_df_for_split[
+                        metadata_df_for_split["subgroup"].astype(str).isin(subgroup_values)
+                    ].copy()
+                    active_test_conds = sorted(metadata_df_for_split["condition"].astype(str).map(normalize_condition).unique().tolist())
                 break
             except Exception:
                 continue
@@ -347,16 +370,8 @@ def run_systema_mechanism_analysis(
                     }
                 )
 
-        if payload_for_metadata is not None:
-            metadata_frames.append(
-                _build_metadata_from_payload(
-                    dataset_key,
-                    payload_for_metadata,
-                    int(split_id),
-                    [normalize_condition(c) for c in split_dict.get("train_conds", [])],
-                    paths_path,
-                )
-            )
+        if payload_for_metadata is not None and not metadata_df_for_split.empty:
+            metadata_frames.append(metadata_df_for_split.copy())
 
         centroid_rows.extend(
             _centroid_accuracy_rows(
@@ -415,6 +430,7 @@ def run_systema_mechanism_analysis(
             "models": model_requests,
             "used_models": used_models,
             "split_ids": split_list,
+            "subgroup_filter": subgroup_values,
             "paths_path": str(_resolve_paths_yaml(paths_path)),
             "out_dir": str(out_dir),
             "skipped_models": skipped_models,
@@ -437,6 +453,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--models", default="trishift_nearest,trishift_random,systema_nonctl_mean,systema_matching_mean")
     ap.add_argument("--split_ids", default="1")
+    ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--paths_path", default="configs/paths.yaml")
     args = ap.parse_args(argv)
@@ -444,6 +461,7 @@ def main(argv: list[str] | None = None) -> int:
         dataset=str(args.dataset).strip(),
         models=str(args.models).strip(),
         split_ids=str(args.split_ids).strip(),
+        subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         paths_path=str(args.paths_path).strip(),
     )

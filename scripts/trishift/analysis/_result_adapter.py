@@ -174,6 +174,42 @@ def _discover_available_payload_splits(root: Path, base_model: str, dataset: str
     return sorted(set(out))
 
 
+def _discover_metric_splits(path: Path) -> list[int]:
+    if not path.exists():
+        return []
+    try:
+        df = pd.read_csv(path, usecols=["split_id"])
+    except Exception:
+        return []
+    split_series = pd.to_numeric(df.get("split_id"), errors="coerce").dropna().astype(int)
+    return sorted(set(split_series.tolist()))
+
+
+def _select_metrics_root(
+    root: Path,
+    metrics_name: str,
+    payload_split_ids: list[int],
+) -> Path:
+    expected = set(int(x) for x in payload_split_ids)
+    candidates = [root]
+    candidates.extend(sorted([p for p in root.iterdir() if p.is_dir()]))
+
+    best_root = root
+    best_score = (-1, -1, -1.0)
+    for candidate in candidates:
+        metrics_path = candidate / metrics_name
+        metric_splits = _discover_metric_splits(metrics_path)
+        metric_set = set(metric_splits)
+        overlap = len(metric_set & expected) if expected else len(metric_set)
+        complete = int(bool(expected) and expected.issubset(metric_set))
+        mtime = metrics_path.stat().st_mtime if metrics_path.exists() else -1.0
+        score = (complete, overlap, mtime)
+        if score > best_score:
+            best_score = score
+            best_root = candidate
+    return best_root
+
+
 def resolve_result(
     *,
     dataset: str,
@@ -184,17 +220,22 @@ def resolve_result(
     spec = resolve_model_spec(model_name)
     dataset_key = str(dataset).strip()
     if spec.kind == "payload":
-        root = Path(result_dir).resolve() if result_dir else default_payload_root(spec.base_model or "", dataset_key)
-        metrics_path = root / metrics_filename_for_spec(spec)
-        mean_path = root / mean_filename_for_spec(spec)
-        split_ids = _discover_available_payload_splits(root, spec.base_model or "", dataset_key, spec.variant_tag)
+        payload_root = Path(result_dir).resolve() if result_dir else default_payload_root(spec.base_model or "", dataset_key)
+        split_ids = _discover_available_payload_splits(payload_root, spec.base_model or "", dataset_key, spec.variant_tag)
+        metrics_root = _select_metrics_root(
+            payload_root,
+            metrics_filename_for_spec(spec),
+            split_ids,
+        )
+        metrics_path = metrics_root / metrics_filename_for_spec(spec)
+        mean_path = metrics_root / mean_filename_for_spec(spec)
         return ResolvedResult(
             spec=spec,
             dataset=dataset_key,
-            result_root=root,
+            result_root=metrics_root,
             metrics_path=metrics_path,
             mean_path=mean_path,
-            payload_dir=root,
+            payload_dir=payload_root,
             available_split_ids=split_ids,
         )
 

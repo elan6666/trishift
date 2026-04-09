@@ -93,12 +93,18 @@ def run_baseline_panel(
     dataset: str,
     models: str | list[str] | tuple[str, ...] | None = None,
     split_ids: int | str | list[int] | tuple[int, ...] | None = None,
+    subgroup_filter: str | list[str] | tuple[str, ...] | None = None,
     out_root: str | Path | None = None,
     systema_root: str | Path | None = None,
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models)
     split_list = parse_split_ids(split_ids or "1")
+    subgroup_values = (
+        []
+        if subgroup_filter is None
+        else [str(x).strip() for x in ([subgroup_filter] if isinstance(subgroup_filter, str) else subgroup_filter) if str(x).strip()]
+    )
     out_dir = Path(out_root).resolve() if out_root else (Path("artifacts/analysis") / f"{ts_local()}_baseline_panel_{dataset_key}").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -120,6 +126,12 @@ def run_baseline_panel(
             split_filtered = metrics_df[metrics_df["split_id"].isin(split_list)].copy()
         else:
             split_filtered = metrics_df.copy()
+        if subgroup_values:
+            if "subgroup" not in split_filtered.columns:
+                warn_skip(f"[baseline_panel] skip model={model_name}: subgroup filter requested but subgroup column missing")
+                skipped_models.append({"model_name": str(model_name), "reason": "subgroup column missing"})
+                continue
+            split_filtered = split_filtered[split_filtered["subgroup"].astype(str).isin(subgroup_values)].copy()
         if split_filtered.empty:
             warn_skip(f"[baseline_panel] skip model={model_name}: no rows after split filter {split_list}")
             skipped_models.append({"model_name": str(model_name), "reason": "no rows after split filter"})
@@ -178,6 +190,7 @@ def run_baseline_panel(
             "dataset": dataset_key,
             "models": model_requests,
             "split_ids": split_list,
+            "subgroup_filter": subgroup_values,
             "systema_root": ("" if systema_root is None else str(systema_root)),
             "default_models": DEFAULT_MODEL_REQUESTS,
             "skipped_models": skipped_models,
@@ -199,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dataset", required=True)
     ap.add_argument("--models", default=",".join(DEFAULT_MODEL_REQUESTS))
     ap.add_argument("--split_ids", default="1")
+    ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--systema_root", default="")
     args = ap.parse_args(argv)
@@ -207,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         dataset=str(args.dataset).strip(),
         models=str(args.models).strip(),
         split_ids=str(args.split_ids).strip(),
+        subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         systema_root=str(args.systema_root).strip() or None,
     )
