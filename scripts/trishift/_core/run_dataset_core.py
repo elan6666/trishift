@@ -69,6 +69,28 @@ DATASET_CONFIG = {
     },
 }
 
+
+def _resolve_repo_path(path_value: str | Path) -> str:
+    """Resolve repository-relative config paths while preserving absolute paths."""
+    path = Path(str(path_value))
+    if path.is_absolute():
+        return str(path)
+    return str((REPO_ROOT / path).resolve())
+
+
+def _degs_cache_name(name: str, h5ad_path: str | Path, adata) -> str:
+    """Return a cache name tied to the concrete h5ad source and shape."""
+    payload = {
+        "dataset": str(name),
+        "h5ad_path": str(Path(h5ad_path).resolve()),
+        "n_obs": int(adata.n_obs),
+        "n_vars": int(adata.n_vars),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+    return f"{name}_{digest}_degs.pkl"
+
+
 DEGS_CACHE_KEYS = ("top20_degs_non_dropout", "top20_degs_non_zero", "top20_degs", "degs_meta")
 DEGS_CONDITION_KEYS = ("top20_degs_non_dropout", "top20_degs_non_zero", "top20_degs")
 DEGS_EXPECTED_METHOD = "t-test"
@@ -578,9 +600,9 @@ def run_dataset_with_paths(
     base_seed = int(defaults.get("seed", 24))
     set_seeds(base_seed)
 
-    h5ad_path = cfg["datasets"][name]
+    h5ad_path = _resolve_repo_path(cfg["datasets"][name])
     emb_key = dataset_cfg["emb_key"]
-    emb_path = cfg["embeddings"][emb_key]
+    emb_path = _resolve_repo_path(cfg["embeddings"][emb_key])
 
     print("[run] load data")
     adata = load_adata(h5ad_path)
@@ -590,7 +612,7 @@ def run_dataset_with_paths(
 
     degs_cache_dir = Path("artifacts") / "cache" / "degs"
     degs_cache_dir.mkdir(parents=True, exist_ok=True)
-    degs_cache_path = degs_cache_dir / f"{name}_degs.pkl"
+    degs_cache_path = degs_cache_dir / _degs_cache_name(name, h5ad_path, adata)
     degs_cache = _load_degs_cache(degs_cache_path)
     if degs_cache:
         adata.uns.update(degs_cache)

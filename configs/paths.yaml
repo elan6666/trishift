@@ -1,12 +1,12 @@
-﻿datasets:
-  adamson: "E:\\CODE\\trishift\\src\\data\\adamson\\perturb_processed.h5ad"
-  dixit: "E:\\CODE\\trishift\\src\\data\\dixit\\perturb_processed.h5ad"
-  norman: "E:\\CODE\\trishift\\src\\data\\norman\\perturb_processed.h5ad"
-  replogle_k562_essential: "E:\\CODE\\trishift\\src\\data\\replogle_k562_essential\\perturb_processed.h5ad"
-  replogle_rpe1_essential: "E:\\CODE\\trishift\\src\\data\\replogle_rpe1_essential\\perturb_processed.h5ad"
+datasets:
+  adamson: "src/data/adamson/perturb_processed.h5ad"
+  dixit: "src/data/dixit/perturb_processed.h5ad"
+  norman: "src/data/norman/perturb_processed.h5ad"
+  replogle_k562_essential: "src/data/replogle_k562_essential/perturb_processed.h5ad"
+  replogle_rpe1_essential: "src/data/replogle_rpe1_essential/perturb_processed.h5ad"
 embeddings:
-  emb_a: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\ensem_emb_gpt3.5all_new.pickle"
-  emb_b: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GenePT_gene_embedding_ada_text.pickle"
-  emb_c: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GPT_3_5_gene_embeddings.pickle"
-  emb_d: "E:\\CODE\\trishift\\src\\data\\Data_GeneEmbd\\GenePT_gene_protein_embedding_model_3_text.pickle"
-scgpt_pretrained_root: "E:\\CODE\\trishift\\artifacts\\models\\scGPT_human"
+  emb_a: "src/data/Data_GeneEmbd/ensem_emb_gpt3.5all_new.pickle"
+  emb_b: "src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle"
+  emb_c: "src/data/Data_GeneEmbd/GPT_3_5_gene_embeddings.pickle"
+  emb_d: "src/data/Data_GeneEmbd/GenePT_gene_protein_embedding_model_3_text.pickle"
+scgpt_pretrained_root: "artifacts/models/scGPT_human"

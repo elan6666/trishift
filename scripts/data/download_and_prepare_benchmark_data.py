@@ -65,12 +65,19 @@ def _load_paths_yaml(paths_yaml: Path) -> dict:
     return cfg
 
 
+def _resolve_repo_path(path_value: str | Path) -> Path:
+    path = Path(str(path_value))
+    if path.is_absolute():
+        return path
+    return (REPO_ROOT / path).resolve()
+
+
 def _expected_outer_h5ad(dataset_name: str, paths_yaml: Path) -> Path:
     cfg = _load_paths_yaml(paths_yaml)
     datasets_cfg = cfg.get("datasets", {})
     configured = datasets_cfg.get(dataset_name)
     if configured:
-        return Path(str(configured)).resolve()
+        return _resolve_repo_path(configured)
     return (SRC_DATA_ROOT / dataset_name / "perturb_processed.h5ad").resolve()
 
 

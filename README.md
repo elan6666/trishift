@@ -27,6 +27,20 @@ Key runtime config files:
 - `configs/defaults.yaml`
 - `configs/paths.yaml`
 
+### Built-in Adamson mini demo
+
+The repository includes a tiny Adamson-derived smoke-test dataset that is small enough to ship with GitHub:
+
+- `examples/adamson_mini`
+
+Run it after installing the package:
+
+```bash
+python examples/adamson_mini/run_demo.py
+```
+
+This demo trains and evaluates a tiny TriShift model end to end and writes outputs to `artifacts/demo/adamson_mini`. It is meant to validate the code path, not to reproduce paper metrics.
+
 ### Minimal custom-dataset tutorial
 
 If you want to try TriShift on your own `AnnData`, start with:
@@ -50,18 +64,19 @@ python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson di
 ```
 
 This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, and synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers.
-
-The legacy command is still supported for backward compatibility:
-
-```bash
-python src/data/Data_GEARS/generating_data.py
-```
+Run this command in an environment that has `GEARS/PertData` installed. The core `pip install -e .` environment is enough for TriShift package imports, but the public benchmark downloader needs the baseline-oriented environment described below.
 
 By default, the repository expects local data under `src/data`. You can still override locations through:
 
 - `configs/paths.yaml`
 
+`src/data` is intentionally ignored by git. It is a local cache for downloaded datasets, processed `.h5ad` files, and embedding files; do not rely on files under `src/data` as repository entrypoints. Use the maintained script above for reproducible data preparation.
+
 ## For Reproducibility
+
+For the complete paper workflow, including the order of TriShift, baseline, Systema, and notebook runs, see:
+
+- `REPRODUCIBILITY.md`
 
 ### Recommended environments
 
@@ -87,29 +102,32 @@ conda activate trishift-baselines
 
 ### Data download and preprocessing
 
-Gene embedding download links are documented in:
-
-- `src/data/Data_GeneEmbd/README.md`
-
-Download the required embedding files there and place them under:
+Gene embeddings are external local artifacts and are not shipped with this repository. Download the required embedding files and place them under:
 
 - `src/data/Data_GeneEmbd`
+
+The default `configs/paths.yaml` expects the following files:
+
+| Config key | Expected local file | Source |
+| --- | --- | --- |
+| `emb_a` | `src/data/Data_GeneEmbd/ensem_emb_gpt3.5all_new.pickle` | scELMo library, file `Gene-GPT 3.5`: <https://sites.google.com/yale.edu/scelmolib> |
+| `emb_b` | `src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle` | GenePT Zenodo record: <https://zenodo.org/records/10833191> |
+| `emb_c` | `src/data/Data_GeneEmbd/GPT_3_5_gene_embeddings.pickle` | GenePT Zenodo record: <https://zenodo.org/records/10030426> |
+| `emb_d` | `src/data/Data_GeneEmbd/GenePT_gene_protein_embedding_model_3_text.pickle` | Optional GenePT protein/text embedding used only if selected in custom configs |
+
+If your embedding files live elsewhere, update `configs/paths.yaml` or the dataset-specific config before training.
 
 The benchmark preparation script builds the GEARS-native dataset folders under:
 
 - `src/data/Data_GEARS/adamson`
 - `src/data/Data_GEARS/dixit`
 - `src/data/Data_GEARS/norman`
-- `src/data/Data_GEARS/replogle_k562_essential`
-- `src/data/Data_GEARS/replogle_rpe1_essential`
 
 It also copies each generated `perturb_processed.h5ad` into the standard outer data directories:
 
 - `src/data/adamson/perturb_processed.h5ad`
 - `src/data/dixit/perturb_processed.h5ad`
 - `src/data/norman/perturb_processed.h5ad`
-- `src/data/replogle_k562_essential/perturb_processed.h5ad`
-- `src/data/replogle_rpe1_essential/perturb_processed.h5ad`
 
 This keeps the repository consistent across:
 
@@ -125,24 +143,18 @@ TriShift:
 - `scripts/trishift/adamson/run_adamson.py`
 - `scripts/trishift/dixit/run_dixit.py`
 - `scripts/trishift/norman/run_norman.py`
-- `scripts/trishift/replogle_k562_essential/run_replogle_k562_essential.py`
-- `scripts/trishift/replogle_rpe1_essential/run_replogle_rpe1_essential.py`
 
 Scouter:
 
 - `scripts/scouter/adamson/run_scouter_adamson.py`
 - `scripts/scouter/dixit/run_scouter_dixit.py`
 - `scripts/scouter/norman/run_scouter_norman.py`
-- `scripts/scouter/replogle_k562_essential/run_scouter_k562.py`
-- `scripts/scouter/replogle_rpe1_essential/run_scouter_rpe1.py`
 
 GEARS:
 
 - `scripts/gears/adamson/run_gears_adamson.py`
 - `scripts/gears/dixit/run_gears_dixit.py`
 - `scripts/gears/norman/run_gears_norman.py`
-- `scripts/gears/replogle_k562_essential/run_gears_k562.py`
-- `scripts/gears/replogle_rpe1_essential/run_gears_rpe1.py`
 
 Additional baselines:
 
@@ -164,36 +176,21 @@ The paper figures are generated from the notebooks under `notebooks/`:
 - `Fig2_MultiDatasetBenchmark.ipynb` -> Fig. 2
 - `Fig3_ReferenceConditioning.ipynb` -> Fig. 3
 - `Fig4_NormanGeneralization.ipynb` -> Fig. 4
-- `Fig5_BiologyAndAblation.ipynb` -> Fig. 5
-- `FigS3_CentroidAnalysis.ipynb` -> Fig. S3
-- `FigS4_Robustness.ipynb` -> Fig. S4
-- `FigS7_Stage1LatentClustering.ipynb` -> Fig. S7
+- `Fig5_DistributionRecovery.ipynb` -> Fig. 5
+- `FigS1_BenchmarkExtension.ipynb` -> Fig. S1
+- `FigS2_AdditionalCases.ipynb` -> Fig. S2
+- `FigS3_BiologyAndAblation.ipynb` -> Fig. S3
+- `FigS4_CentroidAnalysis.ipynb` -> Fig. S4
+- `FigS5_Robustness.ipynb` -> Fig. S5
+- `FigS6_Stage1LatentClustering.ipynb` -> Fig. S6
 
 Primary outputs are written under:
 
 - `artifacts/results`
 - `artifacts/paper_figures`
 
-### Tests
-
-Tests now live in the repository root:
-
-- `tests/`
-
-Run the full test suite with:
-
-```bash
-pytest -q
-```
-
-Run a smaller smoke subset with:
-
-```bash
-pytest tests/test_data.py tests/test_eval.py -q
-```
-
 ### Notes
 
 - Legacy top-level `scripts/run_*` files, if present, should be treated as compatibility entrypoints rather than the primary maintained interface.
-- Paper drafts and supporting documentation live under `docs`.
+- Local paper drafts and supporting notes may live under `docs/`; this directory is intentionally ignored by git and is not part of the reproducible repository interface.
 - Large local outputs, datasets, and external baseline clones are intentionally ignored by git.
