@@ -90,7 +90,7 @@ DATASET_CONFIG = {
     "dixit": BiolordDatasetConfig(
         data_rel="data/dixit/perturb_processed.h5ad",
         splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
+        test_ratio=0.1,
     ),
     "norman": BiolordDatasetConfig(
         data_rel="data/norman/perturb_processed.h5ad",

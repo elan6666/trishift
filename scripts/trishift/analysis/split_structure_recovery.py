@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from scripts.common.paper_plot_style import CLUSTER_COLORS, apply_gears_paper_style, style_axis
+from scripts.common.split_utils import split_by_dataset_policy
 from scripts.trishift.analysis._result_adapter import (
     load_payload_item,
     parse_models,
@@ -72,7 +73,7 @@ def _load_split_dataset(dataset: str, split_id: int, paths_path: str | Path) -> 
     embd_df = load_embedding_df(cfg["embeddings"][emb_key_map[dataset]])
     embd_df = apply_alias_mapping(embd_df, dataset)
     data = TriShiftData(adata, embd_df)
-    split_dict = data.split_by_condition(seed=int(split_id))
+    split_dict = split_by_dataset_policy(data, dataset, seed=int(split_id))
     return data, split_dict
 
 

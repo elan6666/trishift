@@ -269,7 +269,10 @@ def _load_embedding_dict(emb_path: Path) -> dict[str, np.ndarray]:
 
 
 def _prepare_eval_adata(data_path: Path) -> ad.AnnData:
-    return _utils.load_adata(str(data_path))
+    adata = _utils.load_adata(str(data_path))
+    data = TriShiftData(adata, pd.DataFrame(index=["ctrl"]))
+    data.build_or_load_degs()
+    return data.adata_all
 
 
 def _condition_tokens_no_ctrl(condition: str) -> list[str]:
@@ -414,9 +417,13 @@ def _compute_metrics_and_export_payload(
         gene_names = eval_adata.var["gene_name"].astype(str).values
     else:
         gene_names = eval_adata.var_names.astype(str).values
-    raw_to_gene_name = dict(zip(eval_adata.var.index.astype(str).values, gene_names))
-    gene_name_to_idx = {str(g): i for i, g in enumerate(gene_names)}
-    topgene_dict = _topgene_dict_or_raise(eval_adata)
+    top20_degs_final = eval_adata.uns.get("top20_degs_final", {})
+    if not isinstance(top20_degs_final, dict):
+        raise TypeError("Expected eval_adata.uns['top20_degs_final'] to be a mapping")
+    top20_degs_by_canonical = {
+        condition_sort(str(cond)): np.asarray(degs, dtype=int).reshape(-1)
+        for cond, degs in top20_degs_final.items()
+    }
     per_gene = (result or {}).get("per_gene") or {}
     clean_to_raw_test = {}
     for cond in sorted(set(eval_conds.tolist())):
@@ -440,29 +447,9 @@ def _compute_metrics_and_export_payload(
             print(f"[genepert] skip condition missing in eval adata: {raw_cond}")
             continue
         true = _utils.densify_X(eval_adata[cond_mask].X)
-        topgene_key = f"{_dataset_topgene_prefix(dataset_name)}{raw_cond}_1+1"
-        if topgene_key not in topgene_dict:
-            print(f"[genepert] skip condition without top_non_dropout_de_20 entry: {raw_cond}")
-            continue
-        deg_gene_names = []
-        for raw_gene in topgene_dict[topgene_key]:
-            mapped_name = raw_to_gene_name.get(str(raw_gene))
-            if mapped_name is None:
-                continue
-            deg_gene_names.append(str(mapped_name))
-        degs = np.asarray(
-            [gene_name_to_idx[g] for g in deg_gene_names if g in gene_name_to_idx],
-            dtype=int,
-        ).reshape(-1)
+        degs = top20_degs_by_canonical.get(condition_sort(raw_cond), np.array([], dtype=int))
         if degs.size == 0:
-            print(f"[genepert] skip condition without DEGs: {raw_cond}")
-            continue
-        pert_genes = np.where(
-            np.isin(gene_names, np.asarray(_condition_tokens_no_ctrl(raw_cond), dtype=str))
-        )[0]
-        degs = np.setdiff1d(degs, pert_genes)
-        if degs.size == 0:
-            print(f"[genepert] skip condition after removing perturbed genes from DEGs: {raw_cond}")
+            print(f"[genepert] skip condition without top20_degs_final entry: {raw_cond}")
             continue
 
         pred = np.repeat(pred_mean, true.shape[0], axis=0)

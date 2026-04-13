@@ -28,6 +28,7 @@ from scripts.trishift.analysis._result_adapter import (
     write_run_meta,
 )
 from scripts.common.paper_plot_style import apply_gears_paper_style, model_color_map, style_axis
+from scripts.common.split_utils import split_by_dataset_policy
 from trishift.TriShiftData import TriShiftData
 from trishift._utils import apply_alias_mapping, load_adata, load_embedding_df, load_yaml, normalize_condition
 
@@ -137,7 +138,7 @@ def _load_dataset_split(data_name: str, split_id: int, paths_path: str | Path) -
     embd_df = load_embedding_df(cfg["embeddings"][emb_key])
     embd_df = apply_alias_mapping(embd_df, data_name)
     data = TriShiftData(adata, embd_df)
-    return data.split_by_condition(seed=int(split_id))
+    return split_by_dataset_policy(data, data_name, seed=int(split_id))
 
 
 def _build_metadata_from_payload(

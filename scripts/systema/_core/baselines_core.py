@@ -22,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from scripts.common.git_utils import safe_git_commit as _common_safe_git_commit
+from scripts.common.split_utils import split_by_dataset_policy
 from scripts.common.time_utils import ts_shanghai as _common_ts_shanghai
 from scripts.common.yaml_utils import dump_yaml as _common_dump_yaml, load_yaml_file as _common_load_yaml_file
 
@@ -248,14 +249,33 @@ def _align_spec_from_metrics_csv(metrics_csv: Path) -> AlignSpec:
     )
 
 
+def _align_spec_missing_splits(align: AlignSpec, splits: list[int]) -> list[int]:
+    return [int(s) for s in splits if not align.split_to_conditions.get(int(s))]
+
+
+def _try_align_spec_from_metrics_csv(metrics_csv: Path, splits: list[int]) -> AlignSpec | None:
+    if not metrics_csv.exists():
+        return None
+    align = _align_spec_from_metrics_csv(metrics_csv.resolve())
+    missing = _align_spec_missing_splits(align, splits)
+    if missing:
+        print(
+            "[systema_baselines] skip incomplete align metrics: "
+            f"{metrics_csv.resolve()} missing_splits={missing}"
+        )
+        return None
+    return align
+
+
 def _build_align_spec_from_splits(
     data: TriShiftData,
+    dataset: str,
     splits: list[int],
     columns: list[str] | None = None,
 ) -> AlignSpec:
     split_to_conditions: dict[int, list[str]] = {}
     for split_id in splits:
-        split_dict = data.split_by_condition(seed=int(split_id))
+        split_dict = split_by_dataset_policy(data, dataset, seed=int(split_id))
         split_to_conditions[int(split_id)] = [str(c) for c in split_dict.get("test_conds", [])]
     return AlignSpec(
         run_dir=Path("."),
@@ -459,6 +479,7 @@ def _run_one_method(
     method: str,
     out_dir: Path,
     data: TriShiftData,
+    dataset: str,
     align: AlignSpec,
     splits: list[int],
     n_ensemble: int,
@@ -491,7 +512,7 @@ def _run_one_method(
 
     rows: list[dict] = []
     for split_id in splits:
-        split_dict = data.split_by_condition(seed=int(split_id))
+        split_dict = split_by_dataset_policy(data, dataset, seed=int(split_id))
         train_adata = split_dict.get("train")
         if train_adata is None:
             raise ValueError("split_by_condition returned missing train split")
@@ -640,10 +661,21 @@ def main(argv: list[str] | None = None) -> None:
             raise FileNotFoundError(f"--align_to_run not found: {align_run_dir}")
         align = _load_align_spec(align_run_dir)
     else:
-        # Preferred default: align to artifacts/results/<dataset>/metrics.csv if present.
-        default_align_csv = (Path(args.out_root) / dataset / "metrics.csv").resolve()
-        if default_align_csv.exists():
-            align = _align_spec_from_metrics_csv(default_align_csv)
+        # Preferred default: align to a complete existing run if present.
+        # Some working metrics.csv files intentionally contain only a subset of
+        # splits; those should not silently drive a 1..5 baseline run.
+        default_root = Path(args.out_root) / dataset
+        candidate_align_csvs = [
+            default_root / "metrics.csv",
+            default_root / "best" / "metrics.csv",
+        ]
+        for candidate in candidate_align_csvs:
+            align = _try_align_spec_from_metrics_csv(candidate, splits)
+            if align is not None:
+                break
+
+        if align is not None:
+            pass
         elif args.sweep_root.strip():
             sweep_root = Path(args.sweep_root).resolve()
             if not sweep_root.exists():
@@ -655,7 +687,14 @@ def main(argv: list[str] | None = None) -> None:
                 "[systema_baselines] no align metrics found; "
                 "falling back to split_by_condition test_conds order"
             )
-            align = _build_align_spec_from_splits(data=data, splits=splits)
+            align = _build_align_spec_from_splits(data=data, dataset=dataset, splits=splits)
+
+    missing_align_splits = _align_spec_missing_splits(align, splits)
+    if missing_align_splits:
+        raise ValueError(
+            "align spec missing requested split conditions: "
+            f"missing_splits={missing_align_splits} align_source={align.run_dir}"
+        )
 
     out_root = (Path(args.out_root) / dataset).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
@@ -672,6 +711,7 @@ def main(argv: list[str] | None = None) -> None:
         method="nonctl-mean",
         out_dir=out0,
         data=data,
+        dataset=dataset,
         align=align,
         splits=splits,
         n_ensemble=int(args.n_ensemble),
@@ -682,6 +722,7 @@ def main(argv: list[str] | None = None) -> None:
         method="matching-mean",
         out_dir=out1,
         data=data,
+        dataset=dataset,
         align=align,
         splits=splits,
         n_ensemble=int(args.n_ensemble),

@@ -78,3 +78,26 @@ def norman_subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
             subgroup_list.append("unknown")
 
     return pd.DataFrame({"group": group, "subgroup": subgroup_list}, index=uniq_perts)
+
+
+def split_by_dataset_policy(data, dataset_name: str, seed: int, test_ratio: float | None = None):
+    """Rebuild dataset splits with the same policy used by the main runners."""
+    name = str(dataset_name).strip().lower()
+    if name == "norman":
+        label_key = getattr(data, "label_key", "condition")
+        adata_all = getattr(data, "adata_all")
+        subgroup_df = norman_subgroup(
+            list(adata_all.obs[label_key].astype(str).unique()),
+            seed=int(seed),
+        )
+        test_conds = list(subgroup_df[subgroup_df.group == "test"].index)
+        val_conds = list(subgroup_df[subgroup_df.group == "val"].index)
+        return data.split_by_condition(
+            seed=int(seed),
+            test_conds=test_conds,
+            val_conds=val_conds,
+        )
+
+    if test_ratio is None:
+        return data.split_by_condition(seed=int(seed))
+    return data.split_by_condition(seed=int(seed), test_ratio=float(test_ratio))

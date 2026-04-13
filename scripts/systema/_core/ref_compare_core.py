@@ -31,6 +31,7 @@ from trishift._utils import (  # noqa: E402
     load_yaml,
 )
 from trishift.TriShiftData import TriShiftData  # noqa: E402
+from scripts.common.split_utils import split_by_dataset_policy  # noqa: E402
 from scripts.common.yaml_utils import load_yaml_file as _load_profile_yaml  # noqa: E402
 
 
@@ -444,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     # Build references per split + optional UMAP (once per split).
     split_refs: dict[int, tuple[np.ndarray, np.ndarray, list[str]]] = {}
     for split_id in splits:
-        split_dict = data.split_by_condition(seed=int(split_id))
+        split_dict = split_by_dataset_policy(data, dataset, seed=int(split_id))
         train_conds = [str(c) for c in split_dict["train_conds"]]
         test_conds = [str(c) for c in split_dict["test_conds"]]
 

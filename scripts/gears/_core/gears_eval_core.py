@@ -31,6 +31,7 @@ from trishift._external_metrics import (
     pearson_delta_reference_metrics,
     regression_r2_safe,
 )
+from trishift.TriShiftData import TriShiftData
 from scripts.common.split_utils import (
     condition_sort as _shared_condition_sort,
     norman_subgroup as _shared_norman_subgroup,
@@ -518,7 +519,10 @@ def _resolve_gears_data_root(name: str) -> Path:
 
 
 def _prepare_eval_adata(data_path: Path) -> ad.AnnData:
-    return _utils.load_adata(str(data_path))
+    adata = _utils.load_adata(str(data_path))
+    data = TriShiftData(adata, pd.DataFrame(index=["ctrl"]))
+    data.build_or_load_degs()
+    return data.adata_all
 
 
 def _coerce_prediction_matrix(pred) -> np.ndarray:
@@ -610,48 +614,30 @@ def _compute_metrics_and_export_payload(
 
     ctrl = _utils.densify_X(eval_adata[eval_adata.obs["condition"] == "ctrl"].X)
     prediction_bundle = _build_prediction_bundle(gears_model, dataset_name, split_meta)
-    model_adata = gears_model.adata
-    topgene_dict = model_adata.uns.get("top_non_dropout_de_20", {})
-    if not isinstance(topgene_dict, dict):
-        raise TypeError("Expected gears_model.adata.uns['top_non_dropout_de_20'] to be a mapping")
     node_map = getattr(gears_model, "node_map", {})
     if not isinstance(node_map, dict):
         raise TypeError("Expected gears_model.node_map to be a mapping")
-    model_gene_raw2id = dict(zip(model_adata.var.index.values, model_adata.var.gene_name.values))
-    eval_gene_name_to_idx = {str(g): i for i, g in enumerate(gene_names)}
+    top20_degs_final = eval_adata.uns.get("top20_degs_final", {})
+    if not isinstance(top20_degs_final, dict):
+        raise TypeError("Expected eval_adata.uns['top20_degs_final'] to be a mapping")
+    top20_degs_by_canonical = {
+        condition_sort(str(cond)): np.asarray(degs, dtype=int).reshape(-1)
+        for cond, degs in top20_degs_final.items()
+    }
 
     for item in prediction_bundle:
         cond = str(item["condition"])
         genes = [str(g) for g in item["genes"]]
         if cond == "ctrl":
             continue
-        topgene_key = str(item["topgene_key"])
-        if topgene_key not in topgene_dict:
-            print(f"[gears] skip condition without top_non_dropout_de_20 entry: {cond}")
-            continue
         cond_mask = eval_conds == cond
         if not bool(cond_mask.any()):
             print(f"[gears] skip condition missing in eval adata: {cond}")
             continue
         true = _utils.densify_X(eval_adata[cond_mask].X)
-        deg_gene_names = []
-        for raw_gene in topgene_dict[topgene_key]:
-            mapped_name = model_gene_raw2id.get(raw_gene)
-            if mapped_name is None:
-                continue
-            deg_gene_names.append(str(mapped_name))
-        degs = np.asarray(
-            [eval_gene_name_to_idx[g] for g in deg_gene_names if g in eval_gene_name_to_idx],
-            dtype=int,
-        ).reshape(-1)
+        degs = np.asarray(top20_degs_by_canonical.get(cond, []), dtype=int).reshape(-1)
         if degs.size == 0:
-            print(f"[gears] skip condition without DEGs: {cond}")
-            continue
-
-        pert_genes = np.where(np.isin(gene_names, np.asarray(genes, dtype=str)))[0]
-        degs = np.setdiff1d(degs, pert_genes)
-        if degs.size == 0:
-            print(f"[gears] skip condition after removing perturbed genes from DEGs: {cond}")
+            print(f"[gears] skip condition without top20_degs_final entry: {cond}")
             continue
 
         pred = _coerce_prediction_matrix(item["pred"])
