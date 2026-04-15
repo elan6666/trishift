@@ -3,6 +3,31 @@
 This guide describes the intended order for reproducing the repository outputs.
 Large datasets, embeddings, trained models, paper figures, and local draft files are intentionally not tracked by git.
 
+## Reproduction targets
+
+The repository is organized around three increasingly heavy reproduction targets.
+
+1. Package validation
+
+- install the package with `pip install -e .`
+- run `python examples/adamson_mini/run_demo.py`
+- confirm that the core training and evaluation path writes outputs under `artifacts/demo/adamson_mini`
+
+2. Maintained public benchmark reproduction
+
+- prepare `adamson`, `dixit`, and `norman`
+- run the TriShift entrypoints under `scripts/trishift/<dataset>`
+- run the retained baseline wrappers listed in Section 6 as needed
+- inspect condition-level summaries under `artifacts/results`
+
+3. Manuscript figure regeneration
+
+- finish the upstream result folders required by each notebook
+- execute the notebooks listed in Section 8
+- confirm that figure outputs appear under `artifacts/paper_figures/main` and `artifacts/paper_figures/supp`
+
+The maintained public benchmark scope is limited to `adamson`, `dixit`, and `norman`. Legacy scripts or untracked local folders should not be treated as the public interface of the repository.
+
 ## 1. Clone and install
 
 ```bash
@@ -76,12 +101,6 @@ This step aligns the local BioLORD inputs with the external preprocessing logic 
 
 For `dixit`, the repository follows the Adamson-style single-perturbation BioLORD path because the external BioLORD reproducibility repository does not provide an official Dixit notebook.
 
-The preprocessing script reads the GEARS split files under:
-
-```text
-src/data/Data_GEARS/<dataset>/splits/*.pkl
-```
-
 and writes:
 
 ```text
@@ -89,6 +108,8 @@ src/data/<dataset>/<dataset>_biolord.h5ad
 src/data/<dataset>/<dataset>_single_biolord.h5ad
 src/data/<dataset>/<dataset>_biolord_prep_summary.json
 ```
+
+The generated `split1..5` and `subgroup1..5` columns are aligned to the current TriShift split policy used by the shared benchmark wrappers, so BioLORD now follows the same maintained split definition as the main TriShift runs.
 
 Default ordered attribute keys are:
 
@@ -222,6 +243,11 @@ Figure outputs are written under:
 ```text
 artifacts/paper_figures
 ```
+
+For the manuscript bundle, the tracked notebook-to-output mapping is also summarized in:
+
+- `output/doc/trishift_supplementary_data_cn.md`
+- `output/doc/trishift_supplementary_data_cn.docx`
 
 ## 9. Expected local-only directories
 

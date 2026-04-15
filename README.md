@@ -104,6 +104,39 @@ For the complete paper workflow, including the order of TriShift, baseline, Syst
 
 - `REPRODUCIBILITY.md`
 
+### Quick reproduction paths
+
+Use one of the following three scopes depending on what you need to verify.
+
+1. Package smoke test
+
+```bash
+pip install -e .
+python examples/adamson_mini/run_demo.py
+```
+
+This validates the core `TriShiftData -> TriShift train/evaluate -> saved outputs` path without requiring the public benchmark stack.
+
+2. Public benchmark reproduction
+
+```bash
+python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
+python scripts/trishift/adamson/run_adamson.py
+python scripts/trishift/dixit/run_dixit.py
+python scripts/trishift/norman/run_norman.py
+```
+
+This reproduces the maintained TriShift benchmark scope in this repository and writes model outputs under `artifacts/results/trishift`.
+
+3. Paper-figure regeneration
+
+After the required baseline and Systema result folders exist, execute the figure notebooks listed in `REPRODUCIBILITY.md`. Primary figure artifacts are written under:
+
+- `artifacts/paper_figures/main`
+- `artifacts/paper_figures/supp`
+
+The supplementary command map in `output/doc/trishift_supplementary_data_cn.md` also lists the tracked notebook-to-output mapping used by the paper bundle.
+
 ### Recommended environments
 
 The lightest workflow is the core TriShift package:
@@ -164,6 +197,14 @@ This keeps the repository consistent across:
 
 Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
 Only `adamson`, `dixit`, and `norman` are maintained public benchmark targets.
+
+The maintained public interfaces for manuscript reproduction are:
+
+- benchmark data preparation under `scripts/data`
+- model entrypoints under `scripts/<model>/<dataset>`
+- shared evaluation cores under `scripts/*/_core`
+- figure notebooks under `notebooks`
+- reproducibility instructions in `README.md` and `REPRODUCIBILITY.md`
 
 TriShift:
 

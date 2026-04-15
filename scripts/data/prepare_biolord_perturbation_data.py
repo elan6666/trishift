@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,8 +11,13 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from scripts.common.split_utils import norman_subgroup, split_by_dataset_policy
+from trishift.TriShiftData import TriShiftData
+
 SRC_DATA_ROOT = REPO_ROOT / "src" / "data"
 GEARS_DATA_ROOT = SRC_DATA_ROOT / "Data_GEARS"
 ESSENTIAL_GENES_PATH = GEARS_DATA_ROOT / "essential_all_data_pert_genes.pkl"
@@ -21,30 +27,29 @@ ESSENTIAL_GENES_PATH = GEARS_DATA_ROOT / "essential_all_data_pert_genes.pkl"
 class BiolordPrepConfig:
     dataset_name: str
     split_ids: tuple[int, ...]
-    split_suffix: str
     ordered_attribute_key: str
     norman_style: bool = False
+    test_ratio: float | None = None
 
 
 DEFAULT_CONFIGS: dict[str, BiolordPrepConfig] = {
     "adamson": BiolordPrepConfig(
         dataset_name="adamson",
         split_ids=(1, 2, 3, 4, 5),
-        split_suffix="0.75",
         ordered_attribute_key="perturbation_neighbors",
+        test_ratio=0.2,
     ),
     "norman": BiolordPrepConfig(
         dataset_name="norman",
         split_ids=(1, 2, 3, 4, 5),
-        split_suffix="0.75",
         ordered_attribute_key="perturbation_neighbors1",
         norman_style=True,
     ),
     "dixit": BiolordPrepConfig(
         dataset_name="dixit",
         split_ids=(1, 2, 3, 4, 5),
-        split_suffix="0.9",
         ordered_attribute_key="perturbation_neighbors",
+        test_ratio=0.1,
     ),
 }
 
@@ -58,7 +63,6 @@ def _dataset_paths(dataset_name: str) -> dict[str, Path]:
     return {
         "full_input": SRC_DATA_ROOT / dataset_name / "perturb_processed.h5ad",
         "go_csv": GEARS_DATA_ROOT / dataset_name / "go.csv",
-        "split_dir": GEARS_DATA_ROOT / dataset_name / "splits",
         "full_output": SRC_DATA_ROOT / dataset_name / f"{dataset_name}_biolord.h5ad",
         "single_output": SRC_DATA_ROOT / dataset_name / f"{dataset_name}_single_biolord.h5ad",
         "summary_output": SRC_DATA_ROOT / dataset_name / f"{dataset_name}_biolord_prep_summary.json",
@@ -66,7 +70,7 @@ def _dataset_paths(dataset_name: str) -> dict[str, Path]:
 
 
 def _require_files(paths: dict[str, Path]) -> None:
-    required = ["full_input", "go_csv", "split_dir"]
+    required = ["full_input", "go_csv"]
     for key in required:
         if not paths[key].exists():
             raise FileNotFoundError(f"Missing required input for BioLORD preprocessing: {paths[key]}")
@@ -74,20 +78,8 @@ def _require_files(paths: dict[str, Path]) -> None:
         raise FileNotFoundError(f"Missing essential gene whitelist: {ESSENTIAL_GENES_PATH}")
 
 
-def _read_split_files(split_dir: Path, dataset_name: str, split_id: int, split_suffix: str) -> tuple[dict, dict]:
-    split_path = split_dir / f"{dataset_name}_simulation_{int(split_id)}_{split_suffix}.pkl"
-    subgroup_path = split_dir / f"{dataset_name}_simulation_{int(split_id)}_{split_suffix}_subgroup.pkl"
-    if not split_path.exists():
-        raise FileNotFoundError(f"Missing split file: {split_path}")
-    if not subgroup_path.exists():
-        raise FileNotFoundError(f"Missing split subgroup file: {subgroup_path}")
-    split_obj = _load_pickle(split_path)
-    subgroup_obj = _load_pickle(subgroup_path)
-    if not isinstance(split_obj, dict):
-        raise TypeError(f"Expected split file to be a dict: {split_path}")
-    if not isinstance(subgroup_obj, dict):
-        raise TypeError(f"Expected subgroup file to be a dict: {subgroup_path}")
-    return split_obj, subgroup_obj
+def _dummy_embedding_df() -> pd.DataFrame:
+    return pd.DataFrame([[0.0]], index=["ctrl"], columns=["dummy"])
 
 
 def _add_split_columns(
@@ -95,30 +87,41 @@ def _add_split_columns(
     *,
     dataset_name: str,
     split_ids: tuple[int, ...],
-    split_suffix: str,
-    split_dir: Path,
     norman_style: bool,
+    test_ratio: float | None,
 ) -> ad.AnnData:
     out = adata.copy()
     cond_series = out.obs["condition"].astype(str)
+    data = TriShiftData(out, _dummy_embedding_df(), label_key="condition")
     for split_id in split_ids:
-        split_obj, subgroup_obj = _read_split_files(split_dir, dataset_name, int(split_id), split_suffix)
+        split_dict = split_by_dataset_policy(data, dataset_name, seed=int(split_id), test_ratio=test_ratio)
         cond_to_split: dict[str, str] = {}
-        for src_label, dst_label in {"train": "train", "val": "test", "test": "ood"}.items():
-            for cond in split_obj.get(src_label, []):
-                cond_to_split[str(cond)] = dst_label
+        for cond in split_dict.get("train_conds", []):
+            cond_to_split[str(cond)] = "train"
+        for cond in split_dict.get("val_conds", []):
+            cond_to_split[str(cond)] = "test"
+        for cond in split_dict.get("test_conds", []):
+            cond_to_split[str(cond)] = "ood"
+
         split_vals = [cond_to_split.get(str(cond), "ignore") for cond in cond_series]
         out.obs[f"split{int(split_id)}"] = pd.Categorical(split_vals, categories=["train", "test", "ood", "ignore"])
 
         subgroup_vals = np.full(out.n_obs, "Train/Val", dtype=object)
-        subgroup_dict = subgroup_obj.get("test_subgroup", {}) or {}
-        subgroup_lookup: dict[str, str] = {}
-        for subgroup_name, conds in subgroup_dict.items():
-            for cond in conds:
-                subgroup_lookup[str(cond)] = str(subgroup_name)
-        for idx, cond in enumerate(cond_series):
-            subgroup_vals[idx] = subgroup_lookup.get(str(cond), "Train/Val")
-        if not norman_style:
+        if norman_style:
+            subgroup_lookup: dict[str, str] = {}
+            norman_df = norman_subgroup(list(out.obs["condition"].astype(str).unique()), seed=int(split_id))
+            subgroup_name_map = {
+                "single": "unseen_single",
+                "seen0": "combo_seen0",
+                "seen1": "combo_seen1",
+                "seen2": "combo_seen2",
+            }
+            for cond, row in norman_df.iterrows():
+                if str(row["group"]) == "test":
+                    subgroup_lookup[str(cond)] = subgroup_name_map.get(str(row["subgroup"]), "Train/Val")
+            for idx, cond in enumerate(cond_series):
+                subgroup_vals[idx] = subgroup_lookup.get(str(cond), "Train/Val")
+        else:
             subgroup_vals = np.where(np.asarray(split_vals) == "ood", "unseen_single", subgroup_vals)
         out.obs[f"subgroup{int(split_id)}"] = pd.Categorical(
             subgroup_vals,
@@ -338,9 +341,8 @@ def prepare_dataset(
         full_adata,
         dataset_name=dataset_name,
         split_ids=split_ids,
-        split_suffix=cfg.split_suffix,
-        split_dir=paths["split_dir"],
         norman_style=cfg.norman_style,
+        test_ratio=cfg.test_ratio,
     )
     full_adata = _prepare_perturbation_columns(full_adata, cfg.norman_style)
     pert2neighbor, basis, missing = _build_go_neighbors(
@@ -363,6 +365,7 @@ def prepare_dataset(
         "dataset": dataset_name,
         "split_ids": [int(x) for x in split_ids],
         "ordered_attribute_key": cfg.ordered_attribute_key,
+        "split_policy": "trishift",
         "full_output": str(paths["full_output"]),
         "single_output": str(paths["single_output"]),
         "n_full_obs": int(full_adata.n_obs),

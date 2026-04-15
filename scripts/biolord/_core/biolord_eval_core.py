@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import argparse
+import inspect
 import pickle
 import random
 import sys
@@ -397,7 +398,68 @@ def _require_biolord_stack():
                 if isinstance(use_gpu, str) and use_gpu.lower() == "auto":
                     use_gpu = None
                 trainer_kwargs.pop("checkpointing_monitor", None)
-                super().__init__(*args, use_gpu=use_gpu, **trainer_kwargs)
+                base_params = inspect.signature(ScviTrainRunner.__init__).parameters
+                if "use_gpu" in base_params:
+                    super().__init__(*args, use_gpu=use_gpu, **trainer_kwargs)
+                    return
+
+                accelerator = trainer_kwargs.pop("accelerator", None)
+                devices = trainer_kwargs.pop("devices", None)
+                if accelerator is None and devices is None:
+                    if use_gpu is False:
+                        accelerator = "cpu"
+                        devices = "auto"
+                    elif use_gpu is None or use_gpu is True:
+                        accelerator = "auto"
+                        devices = "auto"
+                    elif isinstance(use_gpu, int):
+                        accelerator = "gpu"
+                        devices = [int(use_gpu)]
+                    elif isinstance(use_gpu, str):
+                        lowered = use_gpu.lower()
+                        if lowered.startswith("cuda"):
+                            accelerator = "gpu"
+                            try:
+                                devices = [int(lowered.split(":")[1])]
+                            except Exception:
+                                devices = 1
+                        else:
+                            accelerator = "auto"
+                            devices = "auto"
+                    else:
+                        accelerator = "auto"
+                        devices = "auto"
+
+                super().__init__(
+                    *args,
+                    accelerator=accelerator,
+                    devices=devices,
+                    **trainer_kwargs,
+                )
+
+            def __call__(self):
+                if hasattr(self.data_splitter, "n_train"):
+                    self.training_plan.n_obs_training = self.data_splitter.n_train
+                if hasattr(self.data_splitter, "n_val"):
+                    self.training_plan.n_obs_validation = self.data_splitter.n_val
+
+                train_dl = self.data_splitter.train_dataloader()
+                val_dl = self.data_splitter.val_dataloader()
+                self.trainer.fit(
+                    self.training_plan,
+                    train_dataloaders=train_dl,
+                    val_dataloaders=val_dl,
+                )
+                self._update_history()
+
+                self.model.train_indices = getattr(self.data_splitter, "train_idx", None)
+                self.model.test_indices = getattr(self.data_splitter, "test_idx", None)
+                self.model.validation_indices = getattr(self.data_splitter, "val_idx", None)
+
+                self.model.module.eval()
+                self.model.is_trained_ = True
+                self.model.to_device(self.device)
+                self.model.trainer = self.trainer
 
         biolord._data.AnnDataSplitter = CompatAnnDataSplitter
         biolord._model.AnnDataSplitter = CompatAnnDataSplitter
