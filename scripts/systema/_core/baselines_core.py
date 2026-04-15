@@ -45,8 +45,6 @@ DATASET_CONFIG = {
     "adamson": {"emb_key": "emb_b"},
     "dixit": {"emb_key": "emb_c"},
     "norman": {"emb_key": "emb_a"},
-    "replogle_k562_essential": {"emb_key": "emb_c"},
-    "replogle_rpe1_essential": {"emb_key": "emb_b"},
 }
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "baselines" / "configs"
@@ -285,6 +283,23 @@ def _build_align_spec_from_splits(
     )
 
 
+def _inherit_align_metadata(
+    row: dict[str, object],
+    align_row_values: dict[str, object] | None,
+) -> None:
+    if not align_row_values:
+        return
+    for key, val in align_row_values.items():
+        if key not in row:
+            continue
+        # Only preserve identifier / metadata fields from the align template.
+        # Numeric metric columns must be recomputed by the current baseline run
+        # or left as NaN.
+        if isinstance(val, (int, float, np.integer, np.floating, bool)):
+            continue
+        row[key] = val
+
+
 def _infer_dataset_from_run(run_dir: Path) -> str | None:
     meta = run_dir / "run_meta.json"
     if meta.exists():
@@ -420,10 +435,7 @@ def _compute_row(
     align_row_values: dict[str, object] | None = None,
 ) -> dict:
     row: dict[str, object] = {c: np.nan for c in out_columns}
-    if align_row_values:
-        for key, val in align_row_values.items():
-            if key in row:
-                row[key] = val
+    _inherit_align_metadata(row, align_row_values)
     row["condition"] = cond
     row["split_id"] = int(split_id)
     row["n_ensemble"] = int(n_ensemble)
@@ -661,22 +673,7 @@ def main(argv: list[str] | None = None) -> None:
             raise FileNotFoundError(f"--align_to_run not found: {align_run_dir}")
         align = _load_align_spec(align_run_dir)
     else:
-        # Preferred default: align to a complete existing run if present.
-        # Some working metrics.csv files intentionally contain only a subset of
-        # splits; those should not silently drive a 1..5 baseline run.
-        default_root = Path(args.out_root) / dataset
-        candidate_align_csvs = [
-            default_root / "metrics.csv",
-            default_root / "best" / "metrics.csv",
-        ]
-        for candidate in candidate_align_csvs:
-            align = _try_align_spec_from_metrics_csv(candidate, splits)
-            if align is not None:
-                break
-
-        if align is not None:
-            pass
-        elif args.sweep_root.strip():
+        if args.sweep_root.strip():
             sweep_root = Path(args.sweep_root).resolve()
             if not sweep_root.exists():
                 raise FileNotFoundError(f"--sweep_root not found: {sweep_root}")
@@ -684,8 +681,8 @@ def main(argv: list[str] | None = None) -> None:
             align = _load_align_spec(align_run_dir)
         else:
             print(
-                "[systema_baselines] no align metrics found; "
-                "falling back to split_by_condition test_conds order"
+                "[systema_baselines] using current split_by_condition test_conds order "
+                "(no implicit align to existing metrics.csv)"
             )
             align = _build_align_spec_from_splits(data=data, dataset=dataset, splits=splits)
 

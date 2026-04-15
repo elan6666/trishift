@@ -1,6 +1,0 @@
-﻿dataset: replogle_rpe1_essential
-base:
-  defaults: configs/defaults.yaml
-  paths: configs/paths.yaml
-defaults_overrides: {}
-paths_overrides: {}

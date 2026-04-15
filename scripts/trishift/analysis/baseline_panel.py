@@ -16,13 +16,19 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from scripts.trishift.analysis._result_adapter import (
     DEFAULT_MODEL_REQUESTS,
+    load_payload_item,
     load_metrics_df,
     parse_models,
     parse_split_ids,
+    resolve_model_spec,
     resolve_result,
     ts_local,
     warn_skip,
     write_run_meta,
+)
+from scripts.trishift.analysis.stratified_benchmark import (
+    _build_metadata_from_payload,
+    _load_dataset_split,
 )
 
 
@@ -88,6 +94,53 @@ def _render_heatmap(table: pd.DataFrame, out_path: Path) -> None:
     plt.close()
 
 
+def _infer_subgroup_metadata(
+    *,
+    dataset: str,
+    split_ids: list[int],
+    model_requests: list[str],
+) -> pd.DataFrame:
+    ref_models = [
+        str(model_name)
+        for model_name in model_requests
+        if resolve_model_spec(model_name).kind == "payload"
+    ]
+    if not ref_models:
+        return pd.DataFrame(columns=["split_id", "condition", "subgroup"])
+
+    rows: list[pd.DataFrame] = []
+    for split_id in split_ids:
+        split_dict = None
+        for model_name in ref_models:
+            try:
+                if split_dict is None:
+                    split_dict = _load_dataset_split(dataset, int(split_id), "configs/paths.yaml")
+                _, payload = load_payload_item(
+                    dataset=dataset,
+                    model_name=model_name,
+                    split_id=int(split_id),
+                    condition=None,
+                )
+                metadata_df = _build_metadata_from_payload(
+                    dataset,
+                    payload,
+                    int(split_id),
+                    [str(c) for c in split_dict.get("train_conds", [])],
+                    "configs/paths.yaml",
+                )
+                if metadata_df.empty or "subgroup" not in metadata_df.columns:
+                    continue
+                rows.append(metadata_df[["split_id", "condition", "subgroup"]].copy())
+                break
+            except Exception:
+                continue
+    if not rows:
+        return pd.DataFrame(columns=["split_id", "condition", "subgroup"])
+    out = pd.concat(rows, ignore_index=True).drop_duplicates(["split_id", "condition"])
+    out["condition"] = out["condition"].astype(str)
+    return out
+
+
 def run_baseline_panel(
     *,
     dataset: str,
@@ -104,6 +157,11 @@ def run_baseline_panel(
         []
         if subgroup_filter is None
         else [str(x).strip() for x in ([subgroup_filter] if isinstance(subgroup_filter, str) else subgroup_filter) if str(x).strip()]
+    )
+    subgroup_metadata = _infer_subgroup_metadata(
+        dataset=dataset_key,
+        split_ids=split_list,
+        model_requests=model_requests,
     )
     out_dir = Path(out_root).resolve() if out_root else (Path("artifacts/analysis") / f"{ts_local()}_baseline_panel_{dataset_key}").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -126,11 +184,23 @@ def run_baseline_panel(
             split_filtered = metrics_df[metrics_df["split_id"].isin(split_list)].copy()
         else:
             split_filtered = metrics_df.copy()
+        if (
+            "subgroup" not in split_filtered.columns
+            and not subgroup_metadata.empty
+            and {"split_id", "condition"}.issubset(split_filtered.columns)
+        ):
+            split_filtered["condition"] = split_filtered["condition"].astype(str)
+            split_filtered = split_filtered.merge(
+                subgroup_metadata,
+                on=["split_id", "condition"],
+                how="left",
+            )
         if subgroup_values:
             if "subgroup" not in split_filtered.columns:
-                warn_skip(f"[baseline_panel] skip model={model_name}: subgroup filter requested but subgroup column missing")
-                skipped_models.append({"model_name": str(model_name), "reason": "subgroup column missing"})
-                continue
+                if "subgroup" not in split_filtered.columns:
+                    warn_skip(f"[baseline_panel] skip model={model_name}: subgroup filter requested but subgroup column missing")
+                    skipped_models.append({"model_name": str(model_name), "reason": "subgroup column missing"})
+                    continue
             split_filtered = split_filtered[split_filtered["subgroup"].astype(str).isin(subgroup_values)].copy()
         if split_filtered.empty:
             warn_skip(f"[baseline_panel] skip model={model_name}: no rows after split filter {split_list}")

@@ -55,18 +55,6 @@ DATASET_CONFIG = {
         "multi_split_default": 5,
         "test_ratio": 0.2,
     },
-    "replogle_k562_essential": {
-        "emb_key": "emb_c",
-        "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
-        "multi_split_default": 5,
-        "test_ratio": 0.2,
-    },
-    "replogle_rpe1_essential": {
-        "emb_key": "emb_b",
-        "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
-        "multi_split_default": 5,
-        "test_ratio": 0.2,
-    },
 }
 
 

@@ -26,8 +26,6 @@ declare -a TASKS=(
   "adamson|scripts/biolord/adamson/run_biolord_adamson.py"
   "norman|scripts/biolord/norman/run_biolord_norman.py"
   "dixit|scripts/biolord/dixit/run_biolord_dixit.py"
-  "replogle_k562_essential|scripts/biolord/replogle_k562_essential/run_biolord_k562.py"
-  "replogle_rpe1_essential|scripts/biolord/replogle_rpe1_essential/run_biolord_rpe1.py"
 )
 
 echo "[biolord-queue] repo_root=${REPO_ROOT}"

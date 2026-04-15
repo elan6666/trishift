@@ -79,6 +79,20 @@ def _resolve_paths_yaml(paths_path: str | Path) -> Path:
     raise FileNotFoundError(f"Could not resolve paths yaml: {paths_path}")
 
 
+def _resolve_repo_relative(path_like: str | Path) -> Path:
+    p = Path(path_like)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend([Path.cwd() / p, REPO_ROOT / p])
+    for cand in candidates:
+        cand = cand.resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(f"Could not resolve repo-relative path: {path_like}")
+
+
 def _ordered_labels(values: list[str], preferred: list[str]) -> list[str]:
     present = [label for label in preferred if label in values]
     remaining = sorted([label for label in values if label not in preferred])
@@ -133,9 +147,9 @@ def _qcut_labels(series: pd.Series, labels: list[str]) -> tuple[pd.Series, list[
 
 def _load_dataset_split(data_name: str, split_id: int, paths_path: str | Path) -> dict[str, Any]:
     cfg = load_yaml(str(_resolve_paths_yaml(paths_path)))
-    adata = load_adata(cfg["datasets"][data_name])
+    adata = load_adata(str(_resolve_repo_relative(cfg["datasets"][data_name])))
     emb_key = DATASET_EMBEDDING_KEYS[data_name]
-    embd_df = load_embedding_df(cfg["embeddings"][emb_key])
+    embd_df = load_embedding_df(str(_resolve_repo_relative(cfg["embeddings"][emb_key])))
     embd_df = apply_alias_mapping(embd_df, data_name)
     data = TriShiftData(adata, embd_df)
     return split_by_dataset_policy(data, data_name, seed=int(split_id))
@@ -373,7 +387,7 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         plt.close(fig)
         return
 
-    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.6 * len(available_specs), 4.7), dpi=220)
+    fig, axes = plt.subplots(1, len(available_specs), figsize=(6.6 * len(available_specs), 5.2), dpi=220)
     axes_arr = np.atleast_1d(axes).ravel()
     model_names = sorted(work["model_name"].astype(str).dropna().unique().tolist())
     color_map = _model_color_map(model_names)
@@ -446,16 +460,25 @@ def _render_summary_barplot(summary_df: pd.DataFrame, out_path: Path, metric: st
         ax.set_axisbelow(True)
         style_axis(ax, grid_axis="y")
 
-    fig.suptitle(f"Stratified {metric.replace('_', ' ')}", y=0.98, fontsize=12, fontweight="regular")
+    fig.suptitle(
+        f"Stratified {metric.replace('_', ' ')}",
+        y=0.94,
+        fontsize=12,
+        fontweight="regular",
+    )
     if legend_handles:
         fig.legend(
             handles=legend_handles,
             loc="upper center",
-            bbox_to_anchor=(0.5, 0.99),
+            bbox_to_anchor=(0.5, 1.01),
             frameon=False,
-            ncol=min(3, len(model_names)),
+            ncol=min(5, len(model_names)),
+            fontsize=9,
+            columnspacing=1.1,
+            handlelength=1.2,
+            handletextpad=0.4,
         )
-    fig.tight_layout(rect=[0.01, 0.01, 0.995, 0.90])
+    fig.tight_layout(rect=[0.01, 0.01, 0.995, 0.84])
     fig.savefig(out_path)
     plt.close(fig)
 

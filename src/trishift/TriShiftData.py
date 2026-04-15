@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import numpy as np
 import pandas as pd
-import torch
 import anndata as ad
-import scanpy as sc
 
 from trishift import _utils
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional for analysis-only environments
+    torch = None
 
 
 class TriShiftData:
@@ -139,6 +142,8 @@ class TriShiftData:
         """
         uns = self.adata_all.uns
         if prefer_key not in uns and "top20_degs" not in uns:
+            import scanpy as sc
+
             print("[degs] computing with scanpy")
             deg_method = "t-test"
             var_names_backup = None
@@ -403,6 +408,11 @@ class TriShiftData:
 
         Supports knn, ot (Sinkhorn), knn_ot, soft_ot, and scpram_ot (EMD) modes.
         """
+        if torch is None:
+            raise ImportError(
+                "build_or_load_topk_map requires torch. "
+                "Install the training environment to compute top-k maps."
+            )
         if mode not in {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}:
             raise ValueError("mode must be one of: knn, ot, knn_ot, soft_ot, scpram_ot")
         # Reuse KNN cache by default; OT-family cache reuse is opt-in.

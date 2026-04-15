@@ -3,10 +3,14 @@ import pickle
 
 import numpy as np
 import pandas as pd
-import torch
 import yaml
 import anndata as ad
 import scipy.sparse as sp
+
+try:
+    import torch
+except ImportError:  # pragma: no cover - optional for analysis-only environments
+    torch = None
 
 
 def load_yaml(path: str) -> dict:
@@ -20,9 +24,10 @@ def set_seeds(seed: int):
     """Set seeds for random, numpy, and torch (including CUDA if available)."""
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
 
 def normalize_condition(cond: str) -> str:

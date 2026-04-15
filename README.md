@@ -4,6 +4,16 @@ TriShift is a single-cell perturbation response prediction toolkit built around 
 
 The project uses a `src/` layout and is installable as a Python package.
 
+## Method overview
+
+Overall framework:
+
+![TriShift overview](output/paper_bundle_cn/fig1a_readme.png)
+
+Detailed pipeline:
+
+![TriShift pipeline](output/paper_bundle_cn/fig1b_readme.png)
+
 ## For Users
 
 ### Install the core package
@@ -65,6 +75,22 @@ python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson di
 
 This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, and synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers.
 Run this command in an environment that has `GEARS/PertData` installed. The core `pip install -e .` environment is enough for TriShift package imports, but the public benchmark downloader needs the baseline-oriented environment described below.
+The maintained public benchmark scope in this repository is now limited to `adamson`, `dixit`, and `norman`.
+
+If you want to run the BioLORD baseline, add the BioLORD-specific preprocessing step after the benchmark download:
+
+```bash
+python scripts/data/prepare_biolord_perturbation_data.py --datasets adamson norman dixit --split-ids 1 2 3 4 5
+```
+
+This step aligns the repository with the external `biolord_reproducibility` perturbation notebooks by building GO graph neighbor embeddings and split-aware BioLORD inputs. It writes:
+
+- `src/data/<dataset>/perturb_processed.h5ad`
+- `src/data/<dataset>/<dataset>_biolord.h5ad`
+- `src/data/<dataset>/<dataset>_single_biolord.h5ad`
+- `src/data/<dataset>/<dataset>_biolord_prep_summary.json`
+
+TriShift now uses GO graph neighbor embeddings for BioLORD (`perturbation_neighbors*`) rather than the older condition-token multihot placeholder path.
 
 By default, the repository expects local data under `src/data`. You can still override locations through:
 
@@ -137,6 +163,7 @@ This keeps the repository consistent across:
 ### Training and evaluation entrypoints
 
 Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
+Only `adamson`, `dixit`, and `norman` are maintained public benchmark targets.
 
 TriShift:
 
@@ -158,10 +185,19 @@ GEARS:
 
 Additional baselines:
 
+- `scripts/data/prepare_biolord_perturbation_data.py`
 - `scripts/biolord/<dataset>/run_biolord_*.py`
 - `scripts/genepert/<dataset>/run_genepert_*.py`
 - `scripts/scgpt/<dataset>/run_scgpt_*.py`
 - `scripts/systema/<dataset>/run_systema_*.py`
+
+For BioLORD specifically, the supported public datasets are currently:
+
+- `adamson` with `ordered_attribute_key=perturbation_neighbors`
+- `dixit` with `ordered_attribute_key=perturbation_neighbors`
+- `norman` with `ordered_attribute_key=perturbation_neighbors1`
+
+`dixit` follows the Adamson-style single-perturbation BioLORD path because the external BioLORD reproducibility repository does not provide an official Dixit preprocessing notebook.
 
 Shared training core:
 

@@ -40,8 +40,6 @@ DATASET_CONFIG = {
     "adamson": {"emb_key": "emb_b"},
     "dixit": {"emb_key": "emb_c"},
     "norman": {"emb_key": "emb_a"},
-    "replogle_k562_essential": {"emb_key": "emb_c"},
-    "replogle_rpe1_essential": {"emb_key": "emb_b"},
 }
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "ref_compare" / "configs"
 PROFILE_ALLOWED_KEYS = {"dataset", "task_args"}

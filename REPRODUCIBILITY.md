@@ -59,6 +59,42 @@ src/data/<dataset>/perturb_processed.h5ad
 ```
 
 `src/data/` is ignored by git.
+The maintained benchmark scope in this repository is limited to `adamson`, `dixit`, and `norman`.
+
+## 3.1 Prepare BioLORD GO-neighbor inputs
+
+The BioLORD baseline now consumes dedicated GO graph preprocessing outputs instead of on-the-fly condition multihot attributes. After the benchmark h5ad files are available, run:
+
+```bash
+python scripts/data/prepare_biolord_perturbation_data.py --datasets adamson norman dixit --split-ids 1 2 3 4 5
+```
+
+This step aligns the local BioLORD inputs with the external preprocessing logic from:
+
+- `external/biolord/biolord_reproducibility-main/biolord_reproducibility-main/notebooks/perturbations/adamson/1_perturbations_adamson_preprocessing.ipynb`
+- `external/biolord/biolord_reproducibility-main/biolord_reproducibility-main/notebooks/perturbations/norman/1_perturbations_norman_preprocessing.ipynb`
+
+For `dixit`, the repository follows the Adamson-style single-perturbation BioLORD path because the external BioLORD reproducibility repository does not provide an official Dixit notebook.
+
+The preprocessing script reads the GEARS split files under:
+
+```text
+src/data/Data_GEARS/<dataset>/splits/*.pkl
+```
+
+and writes:
+
+```text
+src/data/<dataset>/<dataset>_biolord.h5ad
+src/data/<dataset>/<dataset>_single_biolord.h5ad
+src/data/<dataset>/<dataset>_biolord_prep_summary.json
+```
+
+Default ordered attribute keys are:
+
+- `adamson`: `perturbation_neighbors`
+- `dixit`: `perturbation_neighbors`
+- `norman`: `perturbation_neighbors1`
 
 ## 4. Prepare gene embeddings
 
@@ -125,6 +161,8 @@ python scripts/biolord/adamson/run_biolord_adamson.py
 python scripts/biolord/dixit/run_biolord_dixit.py
 python scripts/biolord/norman/run_biolord_norman.py
 ```
+
+Run the BioLORD preprocessing step in Section 3.1 before launching these entrypoints.
 
 GenePert:
 

@@ -27,7 +27,6 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
-    compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
     regression_r2_safe,
 )
@@ -90,20 +89,6 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5],
         project_name="norman",
         norman_split=True,
-        test_ratio=0.2,
-    ),
-    "replogle_k562_essential": GearsDatasetConfig(
-        gears_data_name="replogle_k562_essential",
-        eval_data_rel="data/Data_GEARS/replogle_k562_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        project_name="rep_k562",
-        test_ratio=0.2,
-    ),
-    "replogle_rpe1_essential": GearsDatasetConfig(
-        gears_data_name="replogle_rpe1_essential",
-        eval_data_rel="data/Data_GEARS/replogle_rpe1_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        project_name="rpe1",
         test_ratio=0.2,
     ),
 }
@@ -525,6 +510,14 @@ def _prepare_eval_adata(data_path: Path) -> ad.AnnData:
     return data.adata_all
 
 
+def _nan_scpram_metrics() -> dict[str, float]:
+    return {
+        "scpram_r2_degs_mean_mean": np.nan,
+        "scpram_r2_degs_var_mean": np.nan,
+        "scpram_wasserstein_degs_sum": np.nan,
+    }
+
+
 def _coerce_prediction_matrix(pred) -> np.ndarray:
     arr = np.asarray(pred, dtype=np.float32)
     if arr.ndim == 1:
@@ -547,10 +540,8 @@ def _dataset_topgene_prefix(dataset_name: str) -> str:
         return "K562(?)_"
     if dataset_name == "norman":
         return "A549_"
-    if dataset_name in {"dixit", "replogle_k562_essential"}:
+    if dataset_name == "dixit":
         return "K562_"
-    if dataset_name == "replogle_rpe1_essential":
-        return "rpe1_"
     raise ValueError(f"Unsupported GEARS dataset for topgene prefix: {dataset_name}")
 
 
@@ -656,14 +647,7 @@ def _compute_metrics_and_export_payload(
             reference=pert_reference,
             top20_de_idxs=degs,
         )
-        scpram_metrics = compute_scpram_metrics_from_arrays(
-            X_true=true,
-            X_pred=pred,
-            deg_idx=degs,
-            n_degs=100,
-            sample_ratio=0.8,
-            times=100,
-        )
+        scpram_metrics = _nan_scpram_metrics()
         results.append(
             {
                 "condition": cond,

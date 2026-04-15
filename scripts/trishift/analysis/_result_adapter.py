@@ -50,6 +50,20 @@ DEFAULT_MODEL_REQUESTS = [
 ]
 
 
+def _resolve_existing_path(path_like: str | Path) -> Path:
+    p = Path(path_like)
+    candidates: list[Path] = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend([Path.cwd() / p, REPO_ROOT / p])
+    for cand in candidates:
+        cand = cand.resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(f"Could not resolve path: {path_like}")
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     request_id: str
@@ -327,9 +341,9 @@ def condition_tokens(condition: str) -> list[str]:
 @lru_cache(maxsize=16)
 def _cached_embedding_table(dataset: str, paths_path: str) -> pd.DataFrame:
     dataset_key = str(dataset).strip()
-    cfg = load_yaml(str(Path(paths_path).resolve()))
+    cfg = load_yaml(str(_resolve_existing_path(paths_path)))
     emb_key = DATASET_EMBEDDING_KEYS[dataset_key]
-    emb_path = Path(cfg["embeddings"][emb_key])
+    emb_path = _resolve_existing_path(cfg["embeddings"][emb_key])
     embd_df = load_embedding_df(str(emb_path))
     embd_df = apply_alias_mapping(embd_df, dataset_key)
     return embd_df
@@ -337,7 +351,7 @@ def _cached_embedding_table(dataset: str, paths_path: str) -> pd.DataFrame:
 
 def condition_embedding(dataset: str, condition: str, paths_path: str | Path = "configs/paths.yaml") -> np.ndarray:
     dataset_key = str(dataset).strip()
-    embd_df = _cached_embedding_table(dataset_key, str(Path(paths_path).resolve()))
+    embd_df = _cached_embedding_table(dataset_key, str(_resolve_existing_path(paths_path)))
     tokens = condition_tokens(condition)
     if not tokens:
         return np.zeros(int(embd_df.shape[1]), dtype=np.float32)

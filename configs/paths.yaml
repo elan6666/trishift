@@ -2,8 +2,6 @@ datasets:
   adamson: "src/data/adamson/perturb_processed.h5ad"
   dixit: "src/data/dixit/perturb_processed.h5ad"
   norman: "src/data/norman/perturb_processed.h5ad"
-  replogle_k562_essential: "src/data/replogle_k562_essential/perturb_processed.h5ad"
-  replogle_rpe1_essential: "src/data/replogle_rpe1_essential/perturb_processed.h5ad"
 embeddings:
   emb_a: "src/data/Data_GeneEmbd/ensem_emb_gpt3.5all_new.pickle"
   emb_b: "src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle"

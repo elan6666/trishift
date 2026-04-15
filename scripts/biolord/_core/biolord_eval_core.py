@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 import argparse
-import copy
 import pickle
 import random
 import sys
@@ -13,6 +12,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import torch
+import scipy.linalg
 from scipy.stats import pearsonr
 from sklearn.metrics import mean_squared_error as mse
 
@@ -26,24 +26,18 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
-    compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
     regression_r2_safe,
 )
 from trishift.TriShiftData import TriShiftData
-from scripts.common.split_utils import (
-    condition_sort as _shared_condition_sort,
-    norman_subgroup as _shared_norman_subgroup,
-)
 from scripts.common.yaml_utils import load_yaml_file
 
 
 @dataclass(frozen=True)
 class BiolordDatasetConfig:
-    data_rel: str
+    full_data_rel: str
+    single_data_rel: str
     splits: list[int]
-    test_ratio: float
-    norman_split: bool = False
     ordered_attribute_key: str = "perturbation_neighbors"
     n_latent: int = 32
     batch_size: int = 32
@@ -83,20 +77,20 @@ PROFILE_ALLOWED_KEYS = {"dataset", "task_args"}
 
 DATASET_CONFIG = {
     "adamson": BiolordDatasetConfig(
-        data_rel="data/adamson/perturb_processed.h5ad",
+        full_data_rel="data/adamson/adamson_biolord.h5ad",
+        single_data_rel="data/adamson/adamson_single_biolord.h5ad",
         splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
     ),
     "dixit": BiolordDatasetConfig(
-        data_rel="data/dixit/perturb_processed.h5ad",
+        full_data_rel="data/dixit/dixit_biolord.h5ad",
+        single_data_rel="data/dixit/dixit_single_biolord.h5ad",
         splits=[1, 2, 3, 4, 5],
-        test_ratio=0.1,
     ),
     "norman": BiolordDatasetConfig(
-        data_rel="data/norman/perturb_processed.h5ad",
+        full_data_rel="data/norman/norman_biolord.h5ad",
+        single_data_rel="data/norman/norman_single_biolord.h5ad",
         splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
-        norman_split=True,
+        ordered_attribute_key="perturbation_neighbors1",
         max_epochs=75,
         early_stopping_patience=200,
         attribute_nn_depth=2,
@@ -111,16 +105,6 @@ DATASET_CONFIG = {
         latent_wd=1e-5,
         decoder_lr=1e-2,
         unknown_attribute_noise_param=0.2,
-    ),
-    "replogle_k562_essential": BiolordDatasetConfig(
-        data_rel="data/replogle_k562_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
-    ),
-    "replogle_rpe1_essential": BiolordDatasetConfig(
-        data_rel="data/replogle_rpe1_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
     ),
 }
 
@@ -222,20 +206,12 @@ def set_seeds(seed: int = 24) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def condition_sort(x: str) -> str:
-    return _shared_condition_sort(x)
-
-
-def subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
-    return _shared_norman_subgroup(pert_list=pert_list, seed=seed)
-
-
 def _dummy_embedding_df() -> pd.DataFrame:
     return pd.DataFrame([[0.0]], index=["ctrl"], columns=["dummy"])
 
 
-def _resolve_eval_data_path(name: str, cfg: BiolordDatasetConfig) -> Path:
-    primary = (LOCAL_DATA_ROOT / Path(cfg.data_rel).relative_to("data")).resolve()
+def _resolve_dataset_path(name: str, data_rel: str) -> Path:
+    primary = (LOCAL_DATA_ROOT / Path(data_rel).relative_to("data")).resolve()
     if primary.exists():
         return primary
     paths_cfg_path = ROOT / "configs" / "paths.yaml"
@@ -247,15 +223,30 @@ def _resolve_eval_data_path(name: str, cfg: BiolordDatasetConfig) -> Path:
             if alt.exists():
                 return alt
     raise FileNotFoundError(
-        f"Missing evaluation h5ad for biolord dataset={name}. Tried {primary}"
+        f"Missing BioLORD input for dataset={name}. Tried {primary}"
     )
 
 
-def _prepare_eval_adata(data_path: Path) -> tuple[ad.AnnData, TriShiftData]:
+def _resolve_eval_data_paths(name: str, cfg: BiolordDatasetConfig) -> tuple[Path, Path]:
+    full_path = _resolve_dataset_path(name, cfg.full_data_rel)
+    single_path = _resolve_dataset_path(name, cfg.single_data_rel)
+    return full_path, single_path
+
+
+def _prepare_full_eval_adata(data_path: Path) -> tuple[ad.AnnData, TriShiftData]:
     adata = _utils.load_adata(str(data_path))
     data = TriShiftData(adata, _dummy_embedding_df())
     data.build_or_load_degs()
     return data.adata_all, data
+
+
+def _prepare_single_train_adata(data_path: Path, ordered_attribute_key: str) -> ad.AnnData:
+    adata = _utils.load_adata(str(data_path))
+    if ordered_attribute_key not in adata.obsm:
+        raise KeyError(
+            f"Missing ordered attribute key '{ordered_attribute_key}' in BioLORD single adata: {data_path}"
+        )
+    return adata
 
 
 def _gene_names_from_adata(adata: ad.AnnData) -> np.ndarray:
@@ -269,10 +260,6 @@ def _condition_tokens_no_ctrl(condition: str) -> list[str]:
     return [tok for tok in str(condition).split("+") if tok and tok != "ctrl"]
 
 
-def _normalize_pert_symbol(token: str) -> str:
-    return str(token).strip()
-
-
 def _build_name_map(adata: ad.AnnData) -> dict[str, str]:
     out: dict[str, str] = {}
     if "condition_name" in adata.obs.columns:
@@ -284,82 +271,138 @@ def _build_name_map(adata: ad.AnnData) -> dict[str, str]:
     return out
 
 
-def _build_split_dict(
-    name: str,
-    data: TriShiftData,
-    split_id: int,
-    test_ratio: float,
-) -> tuple[dict, pd.DataFrame | None]:
-    subgroup_df = None
-    if name == "norman":
-        subgroup_df = subgroup(list(data.adata_all.obs["condition"].astype(str).unique()), seed=int(split_id))
-        test_conds = list(subgroup_df[subgroup_df.group == "test"].index)
-        val_conds = list(subgroup_df[subgroup_df.group == "val"].index)
-        split_dict = data.split_by_condition(
-            seed=int(split_id),
-            test_conds=test_conds,
-            val_conds=val_conds,
-        )
-        return split_dict, subgroup_df
-    return data.split_by_condition(seed=int(split_id), test_ratio=float(test_ratio)), None
-
-
-def _assign_split_labels(adata: ad.AnnData, split_dict: dict, split_key: str) -> ad.AnnData:
-    out = adata.copy()
-    cond_series = out.obs["condition"].astype(str)
-    split_vals = np.full(out.n_obs, "ignore", dtype=object)
-    split_vals[cond_series.eq("ctrl").values] = "train"
-    split_vals[cond_series.isin(list(map(str, split_dict.get("train_conds", [])))).values] = "train"
-    split_vals[cond_series.isin(list(map(str, split_dict.get("val_conds", [])))).values] = "val"
-    split_vals[cond_series.isin(list(map(str, split_dict.get("test_conds", [])))).values] = "test"
-    out.obs[split_key] = pd.Categorical(split_vals, categories=["train", "val", "test", "ignore"])
-    keep_mask = out.obs[split_key].astype(str).isin(["train", "val", "test"]).values
-    return out[keep_mask].copy()
-
-
-def _build_multihot_attributes(adata: ad.AnnData, key: str) -> ad.AnnData:
-    out = adata.copy()
-    conds = out.obs["condition"].astype(str).tolist()
-    pert_basis = sorted(
-        {
-            _normalize_pert_symbol(tok)
-            for cond in conds
-            for tok in _condition_tokens_no_ctrl(_utils.normalize_condition(cond))
-        }
-    )
-    if not pert_basis:
-        raise ValueError("No perturbation tokens found for biolord attribute construction")
-    token_to_idx = {tok: i for i, tok in enumerate(pert_basis)}
-    emb = np.zeros((out.n_obs, len(pert_basis)), dtype=np.float32)
-    for row_idx, cond in enumerate(conds):
-        for tok in _condition_tokens_no_ctrl(_utils.normalize_condition(cond)):
-            tok_norm = _normalize_pert_symbol(tok)
-            if tok_norm in token_to_idx:
-                emb[row_idx, token_to_idx[tok_norm]] = 1.0
-    out.obsm[key] = emb
-    return out
-
-
-def _prepare_biolord_adata(
-    *,
-    eval_adata: ad.AnnData,
-    split_dict: dict,
-    split_id: int,
-    cfg: BiolordDatasetConfig,
-) -> tuple[ad.AnnData, str]:
+def _require_split_columns(adata: ad.AnnData, split_id: int) -> tuple[str, str]:
     split_key = f"split{int(split_id)}"
-    split_adata = _assign_split_labels(eval_adata, split_dict, split_key)
-    split_adata = _build_multihot_attributes(split_adata, cfg.ordered_attribute_key)
-    return split_adata, split_key
+    subgroup_key = f"subgroup{int(split_id)}"
+    missing = [key for key in [split_key, subgroup_key] if key not in adata.obs.columns]
+    if missing:
+        raise KeyError(
+            f"BioLORD preprocessed adata is missing split metadata columns: {missing}. "
+            "Run scripts/data/prepare_biolord_perturbation_data.py first."
+        )
+    return split_key, subgroup_key
+
+
+def _unique_conditions_for_split(adata: ad.AnnData, split_key: str, split_value: str) -> list[str]:
+    mask = adata.obs[split_key].astype(str).eq(split_value).values
+    conds = adata.obs.loc[mask, "condition"].astype(str).tolist()
+    return sorted({_utils.normalize_condition(cond) for cond in conds if str(cond) != "ctrl"})
+
+
+def _map_subgroup_label(raw: str) -> str:
+    mapping = {
+        "unseen_single": "single",
+        "combo_seen0": "seen0",
+        "combo_seen1": "seen1",
+        "combo_seen2": "seen2",
+    }
+    return mapping.get(str(raw), "unknown")
+
+
+def _subgroup_frame_from_full_adata(adata: ad.AnnData, split_id: int) -> pd.DataFrame:
+    split_key, subgroup_key = _require_split_columns(adata, split_id)
+    obs = adata.obs[["condition", split_key, subgroup_key]].copy()
+    obs["condition"] = obs["condition"].astype(str).map(_utils.normalize_condition)
+    obs = obs[obs[split_key].astype(str) == "ood"]
+    if obs.empty:
+        return pd.DataFrame(columns=["subgroup"])
+    subgroup_map = (
+        obs[["condition", subgroup_key]]
+        .drop_duplicates()
+        .assign(subgroup=lambda df: df[subgroup_key].astype(str).map(_map_subgroup_label))
+        .drop(columns=[subgroup_key])
+        .set_index("condition")
+    )
+    return subgroup_map
 
 
 def _require_biolord_stack():
+    # scvi-tools 0.20 / jax expects scipy.linalg.tril|triu, which are missing in
+    # newer SciPy builds available on Python 3.12 wheels.
+    if not hasattr(scipy.linalg, "tril"):
+        scipy.linalg.tril = np.tril  # type: ignore[attr-defined]
+    if not hasattr(scipy.linalg, "triu"):
+        scipy.linalg.triu = np.triu  # type: ignore[attr-defined]
     try:
         import biolord  # type: ignore
     except Exception as exc:  # pragma: no cover - environment-dependent
         raise RuntimeError(
             "biolord is not installed in the current environment. Run this pipeline in the BioLORD environment."
         ) from exc
+
+    if not getattr(biolord, "_trishift_runtime_patched", False):
+        import pytorch_lightning as pl
+        from scvi.dataloaders import AnnDataLoader
+        from scvi.train import TrainRunner as ScviTrainRunner
+
+        class CompatAnnDataSplitter(pl.LightningDataModule):
+            def __init__(
+                self,
+                adata_manager,
+                train_indices,
+                valid_indices,
+                test_indices,
+                pin_memory: bool = False,
+                **kwargs,
+            ):
+                super().__init__()
+                self.adata_manager = adata_manager
+                self.train_idx = train_indices
+                self.val_idx = valid_indices
+                self.test_idx = test_indices
+                self.pin_memory = pin_memory
+                self.data_loader_kwargs = kwargs
+                self.n_train = len(train_indices) if train_indices is not None else 0
+                self.n_val = len(valid_indices) if valid_indices is not None else 0
+
+            def setup(self, stage=None):
+                return
+
+            def train_dataloader(self):
+                return AnnDataLoader(
+                    self.adata_manager,
+                    indices=self.train_idx,
+                    shuffle=True,
+                    drop_last=False,
+                    pin_memory=self.pin_memory,
+                    **self.data_loader_kwargs,
+                )
+
+            def val_dataloader(self):
+                if self.val_idx is None or len(self.val_idx) == 0:
+                    return None
+                return AnnDataLoader(
+                    self.adata_manager,
+                    indices=self.val_idx,
+                    shuffle=False,
+                    drop_last=False,
+                    pin_memory=self.pin_memory,
+                    **self.data_loader_kwargs,
+                )
+
+            def test_dataloader(self):
+                if self.test_idx is None or len(self.test_idx) == 0:
+                    return None
+                return AnnDataLoader(
+                    self.adata_manager,
+                    indices=self.test_idx,
+                    shuffle=False,
+                    drop_last=False,
+                    pin_memory=self.pin_memory,
+                    **self.data_loader_kwargs,
+                )
+
+        class CompatTrainRunner(ScviTrainRunner):
+            def __init__(self, *args, use_gpu=None, **trainer_kwargs):
+                if isinstance(use_gpu, str) and use_gpu.lower() == "auto":
+                    use_gpu = None
+                trainer_kwargs.pop("checkpointing_monitor", None)
+                super().__init__(*args, use_gpu=use_gpu, **trainer_kwargs)
+
+        biolord._data.AnnDataSplitter = CompatAnnDataSplitter
+        biolord._model.AnnDataSplitter = CompatAnnDataSplitter
+        biolord._model.TrainRunner = CompatTrainRunner
+        biolord._trishift_runtime_patched = True
     return biolord
 
 
@@ -421,8 +464,8 @@ def _build_model_and_train(
         train_classifiers=False,
         split_key=split_key,
         train_split="train",
-        valid_split="val",
-        test_split="test",
+        valid_split="test",
+        test_split="ood",
     )
     model.train(
         max_epochs=int(cfg.max_epochs),
@@ -438,7 +481,9 @@ def _build_model_and_train(
 
 
 def _get_condition_attribute_tensor(model, adata: ad.AnnData, condition: str, ordered_attribute_key: str) -> torch.Tensor:
-    cond_mask = adata.obs["condition"].astype(str).eq(condition).values
+    cond_mask = (
+        adata.obs["condition"].astype(str).map(_utils.normalize_condition).eq(_utils.normalize_condition(condition)).values
+    )
     if not np.any(cond_mask):
         raise KeyError(f"Condition missing in biolord adata: {condition}")
     cond_adata = adata[cond_mask][:1].copy()
@@ -450,67 +495,166 @@ def _repeat_n(x: torch.Tensor, n: int) -> torch.Tensor:
     return x.to(x.device).view(1, -1).repeat(int(n), 1)
 
 
-def _safe_scpram_metrics(X_true: np.ndarray, X_pred: np.ndarray, deg_idx: np.ndarray) -> dict[str, float]:
-    try:
-        return compute_scpram_metrics_from_arrays(
-            X_true=X_true,
-            X_pred=X_pred,
-            deg_idx=deg_idx,
-            n_degs=100,
-            sample_ratio=0.8,
-            times=100,
+def _nan_scpram_metrics() -> dict[str, float]:
+    # BioLORD's current adapter produces control-conditioned samples whose
+    # variance structure can collapse, so distribution-level scPRAM metrics are
+    # not comparable to models with explicit cell-level stochastic predictions.
+    return {
+        "scpram_r2_degs_mean_mean": np.nan,
+        "scpram_r2_degs_var_mean": np.nan,
+        "scpram_wasserstein_degs_sum": np.nan,
+    }
+
+
+def _condition_mean_lookup(adata: ad.AnnData) -> dict[str, np.ndarray]:
+    dense_x = np.asarray(_utils.densify_X(adata.X), dtype=np.float32)
+    conds = adata.obs["condition"].astype(str).map(_utils.normalize_condition).values
+    df = pd.DataFrame(dense_x, columns=adata.var_names)
+    df["condition"] = conds
+    grouped = df.groupby("condition", observed=False).mean()
+    return {str(idx): grouped.loc[idx].to_numpy(dtype=np.float32).reshape(1, -1) for idx in grouped.index}
+
+
+def _single_lookup_by_gene(single_adata: ad.AnnData) -> dict[str, np.ndarray]:
+    dense_x = np.asarray(_utils.densify_X(single_adata.X), dtype=np.float32)
+    perts = single_adata.obs["perts_name"].astype(str).map(_utils.normalize_condition).values
+    return {str(pert): dense_x[idx : idx + 1] for idx, pert in enumerate(perts)}
+
+
+def _single_lookup_by_condition(single_adata: ad.AnnData) -> dict[str, np.ndarray]:
+    dense_x = np.asarray(_utils.densify_X(single_adata.X), dtype=np.float32)
+    conds = single_adata.obs["condition"].astype(str).map(_utils.normalize_condition).values
+    return {str(cond): dense_x[idx : idx + 1] for idx, cond in enumerate(conds)}
+
+
+def _predict_single_gene_expression(
+    *,
+    model,
+    single_adata: ad.AnnData,
+    dataset_control: dict,
+    gene_symbol: str,
+    ordered_attribute_key: str,
+) -> np.ndarray:
+    gene_norm = _utils.normalize_condition(gene_symbol)
+    idx_mask = single_adata.obs["perts_name"].astype(str).map(_utils.normalize_condition).eq(gene_norm).values
+    if not np.any(idx_mask):
+        raise KeyError(f"Single perturbation gene missing in BioLORD single adata: {gene_symbol}")
+    dataset_ref = model.get_dataset(single_adata[idx_mask][:1].copy())
+    attr_tensor = dataset_ref[ordered_attribute_key][0, :]
+    dataset_pred = {
+        key: (value.clone() if torch.is_tensor(value) else value)
+        for key, value in dataset_control.items()
+    }
+    dataset_pred[ordered_attribute_key] = _repeat_n(attr_tensor, 1)
+    pred_expr, _ = model.module.get_expression(dataset_pred)
+    return np.asarray(pred_expr.detach().cpu().numpy(), dtype=np.float32)
+
+
+def _predict_condition_expression(
+    *,
+    model,
+    condition: str,
+    cfg: BiolordDatasetConfig,
+    single_adata: ad.AnnData,
+    dataset_control: dict,
+    train_single_conditions: set[str],
+    train_double_conditions: set[str],
+    train_single_genes: set[str],
+    single_condition_lookup: dict[str, np.ndarray],
+    single_gene_lookup: dict[str, np.ndarray],
+    full_condition_lookup: dict[str, np.ndarray],
+    ctrl_mean: np.ndarray,
+) -> np.ndarray:
+    cond_norm = _utils.normalize_condition(condition)
+    if cond_norm in train_single_conditions:
+        return np.asarray(single_condition_lookup[cond_norm], dtype=np.float32)
+    if cond_norm in train_double_conditions:
+        return np.asarray(full_condition_lookup[cond_norm], dtype=np.float32)
+
+    parts = _condition_tokens_no_ctrl(cond_norm)
+    if len(parts) <= 1:
+        gene = parts[0] if parts else "ctrl"
+        return _predict_single_gene_expression(
+            model=model,
+            single_adata=single_adata,
+            dataset_control=dataset_control,
+            gene_symbol=gene,
+            ordered_attribute_key=cfg.ordered_attribute_key,
         )
-    except Exception as exc:
-        warnings.warn(f"[biolord] scpram metric fallback to NaN: {exc}", RuntimeWarning, stacklevel=2)
-        return {
-            "scpram_r2_degs_mean_mean": np.nan,
-            "scpram_r2_degs_var_mean": np.nan,
-            "scpram_wasserstein_degs_sum": np.nan,
-        }
+
+    component_preds: list[np.ndarray] = []
+    for gene in parts:
+        gene_norm = _utils.normalize_condition(gene)
+        if gene_norm in train_single_genes:
+            component_preds.append(np.asarray(single_gene_lookup[gene_norm], dtype=np.float32))
+        else:
+            component_preds.append(
+                _predict_single_gene_expression(
+                    model=model,
+                    single_adata=single_adata,
+                    dataset_control=dataset_control,
+                    gene_symbol=gene_norm,
+                    ordered_attribute_key=cfg.ordered_attribute_key,
+                )
+            )
+    if len(component_preds) != 2:
+        raise ValueError(f"Unsupported BioLORD combo condition: {condition}")
+    return component_preds[0] + component_preds[1] - ctrl_mean.reshape(1, -1)
 
 
 def _compute_metrics_and_export_payload(
     *,
     model,
-    eval_adata: ad.AnnData,
-    train_adata: ad.AnnData,
-    split_dict: dict,
+    full_adata: ad.AnnData,
+    single_adata: ad.AnnData,
     split_id: int,
     cfg: BiolordDatasetConfig,
 ) -> tuple[pd.DataFrame, dict]:
-    name_map = _build_name_map(eval_adata)
-    gene_names = _gene_names_from_adata(eval_adata)
-    cond_all = eval_adata.obs["condition"].astype(str).map(_utils.normalize_condition)
+    split_key, _ = _require_split_columns(full_adata, split_id)
+    name_map = _build_name_map(full_adata)
+    gene_names = _gene_names_from_adata(full_adata)
+    cond_all = full_adata.obs["condition"].astype(str).map(_utils.normalize_condition)
     ctrl_mask_all = cond_all.eq("ctrl").values
-    ctrl_full = np.asarray(_utils.densify_X(eval_adata[ctrl_mask_all].X), dtype=np.float32)
+    ctrl_full = np.asarray(_utils.densify_X(full_adata[ctrl_mask_all].X), dtype=np.float32)
     ctrl_mean = ctrl_full.mean(axis=0).reshape(-1)
-    top20_degs_final = eval_adata.uns.get("top20_degs_final", {})
+    top20_degs_final = full_adata.uns.get("top20_degs_final", {})
     if not isinstance(top20_degs_final, dict):
-        raise TypeError("Expected eval_adata.uns['top20_degs_final'] to be a mapping")
+        raise TypeError("Expected full_adata.uns['top20_degs_final'] to be a mapping")
 
-    train_val_conds = list(map(str, split_dict.get("train_conds", []))) + list(map(str, split_dict.get("val_conds", [])))
-    ref_mask = eval_adata.obs["condition"].astype(str).isin(set(train_val_conds) | {"ctrl"}).values
-    reference_adata = eval_adata[ref_mask].copy()
+    ref_mask = full_adata.obs[split_key].astype(str).isin(["train", "test"]).values | ctrl_mask_all
+    reference_adata = full_adata[ref_mask].copy()
     pert_reference = average_of_perturbation_centroids(
         X=_utils.densify_X(reference_adata.X),
         conditions=reference_adata.obs["condition"].astype(str).values,
         ctrl_label="ctrl",
     )
 
-    adata_control = train_adata[train_adata.obs["condition"].astype(str) == "ctrl"].copy()
+    adata_control = single_adata[single_adata.obs["condition"].astype(str) == "ctrl"].copy()
     dataset_control = model.get_dataset(adata_control)
-    n_obs = adata_control.n_obs
+    full_condition_lookup = _condition_mean_lookup(full_adata)
+    single_condition_lookup = _single_lookup_by_condition(single_adata)
+    single_gene_lookup = _single_lookup_by_gene(single_adata)
+    train_single_mask = single_adata.obs[split_key].astype(str).eq("train").values
+    train_single_conditions = set(
+        single_adata.obs.loc[train_single_mask, "condition"].astype(str).map(_utils.normalize_condition).tolist()
+    )
+    train_single_genes = set(
+        single_adata.obs.loc[train_single_mask, "perts_name"].astype(str).map(_utils.normalize_condition).tolist()
+    ) - {"ctrl"}
+    full_train_conditions = set(_unique_conditions_for_split(full_adata, split_key, "train"))
+    train_double_conditions = {cond for cond in full_train_conditions if len(_condition_tokens_no_ctrl(cond)) > 1}
+    test_conditions = _unique_conditions_for_split(full_adata, split_key, "ood")
 
     results = []
     export_payload = {}
-    for condition in sorted(set(map(str, split_dict.get("test_conds", [])))):
+    for condition in test_conditions:
         cond_norm = _utils.normalize_condition(condition)
         cond_mask_all = cond_all.eq(cond_norm).values
         if not np.any(cond_mask_all):
-            warnings.warn(f"[biolord] test condition missing in eval adata: {condition}", RuntimeWarning, stacklevel=2)
+            warnings.warn(f"[biolord] test condition missing in full adata: {condition}", RuntimeWarning, stacklevel=2)
             continue
 
-        true_expr = _utils.densify_X(eval_adata[cond_mask_all].X)
+        true_expr = _utils.densify_X(full_adata[cond_mask_all].X)
         if true_expr.ndim == 1:
             true_expr = true_expr.reshape(1, -1)
         degs = np.asarray(top20_degs_final.get(cond_norm, []), dtype=int).reshape(-1)
@@ -518,14 +662,23 @@ def _compute_metrics_and_export_payload(
             warnings.warn(f"[biolord] skip condition without DEGs: {condition}", RuntimeWarning, stacklevel=2)
             continue
 
-        attr_tensor = _get_condition_attribute_tensor(model, train_adata, cond_norm, cfg.ordered_attribute_key)
-        dataset_pred = {
-            key: (value.clone() if torch.is_tensor(value) else value)
-            for key, value in dataset_control.items()
-        }
-        dataset_pred[cfg.ordered_attribute_key] = _repeat_n(attr_tensor, n_obs)
-        pred_expr, _ = model.module.get_expression(dataset_pred)
-        pred_expr = np.asarray(pred_expr.detach().cpu().numpy(), dtype=np.float32)
+        pred_expr = _predict_condition_expression(
+            model=model,
+            condition=cond_norm,
+            cfg=cfg,
+            single_adata=single_adata,
+            dataset_control=dataset_control,
+            train_single_conditions=train_single_conditions,
+            train_double_conditions=train_double_conditions,
+            train_single_genes=train_single_genes,
+            single_condition_lookup=single_condition_lookup,
+            single_gene_lookup=single_gene_lookup,
+            full_condition_lookup=full_condition_lookup,
+            ctrl_mean=ctrl_mean,
+        )
+        pred_expr = np.asarray(pred_expr, dtype=np.float32)
+        if pred_expr.ndim == 1:
+            pred_expr = pred_expr.reshape(1, -1)
 
         pred_vec = pred_expr[:, degs].mean(axis=0)
         ctrl_vec = ctrl_full[:, degs].mean(axis=0)
@@ -541,7 +694,7 @@ def _compute_metrics_and_export_payload(
             reference=pert_reference,
             top20_de_idxs=degs,
         )
-        scpram_metrics = _safe_scpram_metrics(true_expr, pred_expr, degs)
+        scpram_metrics = _nan_scpram_metrics()
 
         results.append(
             {
@@ -560,22 +713,22 @@ def _compute_metrics_and_export_payload(
             }
         )
         export_sample_size = max(1, int(cfg.export_control_pool_size))
-        sample_n = min(int(pred_expr.shape[0]), int(ctrl_full.shape[0]), export_sample_size)
-        if sample_n < min(int(pred_expr.shape[0]), int(ctrl_full.shape[0])):
+        sample_n = min(int(ctrl_full.shape[0]), export_sample_size)
+        if sample_n < int(ctrl_full.shape[0]):
             seed_base = (int(split_id) * 1000003) + sum(ord(ch) for ch in str(cond_norm))
             rng = np.random.default_rng(seed_base)
             sample_idx = np.sort(
                 rng.choice(
-                    min(int(pred_expr.shape[0]), int(ctrl_full.shape[0])),
+                    int(ctrl_full.shape[0]),
                     size=sample_n,
                     replace=False,
                 )
             )
-            pred_export = np.asarray(pred_expr[sample_idx], dtype=np.float32)
             ctrl_export = np.asarray(ctrl_full[sample_idx], dtype=np.float32)
         else:
-            pred_export = np.asarray(pred_expr, dtype=np.float32)
             ctrl_export = np.asarray(ctrl_full, dtype=np.float32)
+            sample_n = int(ctrl_export.shape[0])
+        pred_export = np.repeat(np.asarray(pred_expr[:1], dtype=np.float32), repeats=sample_n, axis=0)
         export_payload[cond_norm] = {
             "Pred": pred_export[:, degs],
             "Ctrl": ctrl_export[:, degs],
@@ -609,10 +762,9 @@ def run_biolord_eval(
     )
     base_cfg = DATASET_CONFIG[name]
     cfg = BiolordDatasetConfig(
-        data_rel=base_cfg.data_rel,
+        full_data_rel=base_cfg.full_data_rel,
+        single_data_rel=base_cfg.single_data_rel,
         splits=list(base_cfg.splits),
-        test_ratio=float(base_cfg.test_ratio),
-        norman_split=bool(base_cfg.norman_split),
         ordered_attribute_key=str(base_cfg.ordered_attribute_key),
         n_latent=int(base_cfg.n_latent if n_latent is None else n_latent),
         batch_size=int(base_cfg.batch_size if batch_size is None else batch_size),
@@ -646,9 +798,11 @@ def run_biolord_eval(
         export_control_pool_size=int(base_cfg.export_control_pool_size),
     )
 
-    data_path = _resolve_eval_data_path(name, cfg)
-    print(f"[biolord] loading data: {data_path}", flush=True)
-    eval_adata, data = _prepare_eval_adata(data_path)
+    full_data_path, single_data_path = _resolve_eval_data_paths(name, cfg)
+    print(f"[biolord] loading full data: {full_data_path}", flush=True)
+    full_adata, _ = _prepare_full_eval_adata(full_data_path)
+    print(f"[biolord] loading single data: {single_data_path}", flush=True)
+    single_adata = _prepare_single_train_adata(single_data_path, cfg.ordered_attribute_key)
     out_dir = ROOT / "artifacts" / "results" / "biolord" / name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[biolord] output dir: {out_dir}", flush=True)
@@ -660,25 +814,19 @@ def run_biolord_eval(
             flush=True,
         )
         set_seeds(base_seed + int(split))
-        split_dict, subgroup_df = _build_split_dict(name, data, int(split), float(cfg.test_ratio))
-        train_adata, split_key = _prepare_biolord_adata(
-            eval_adata=eval_adata,
-            split_dict=split_dict,
-            split_id=int(split),
-            cfg=cfg,
-        )
+        split_key, _ = _require_split_columns(single_adata, int(split))
+        subgroup_df = _subgroup_frame_from_full_adata(full_adata, int(split))
         model = _build_model_and_train(
             biolord_mod=biolord_mod,
-            train_adata=train_adata,
+            train_adata=single_adata,
             split_key=split_key,
             cfg=cfg,
             seed=base_seed + int(split),
         )
         metrics_df, export_payload = _compute_metrics_and_export_payload(
             model=model,
-            eval_adata=eval_adata,
-            train_adata=train_adata,
-            split_dict=split_dict,
+            full_adata=full_adata,
+            single_adata=single_adata,
             split_id=int(split),
             cfg=cfg,
         )

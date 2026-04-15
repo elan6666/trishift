@@ -66,9 +66,9 @@ def _resolve_paths_yaml(paths_path: str | Path) -> Path:
 def _load_data(dataset: str, paths_path: str | Path) -> TriShiftData:
     dataset_key = str(dataset).strip()
     cfg = load_yaml(str(_resolve_paths_yaml(paths_path)))
-    adata = load_adata(cfg["datasets"][dataset_key])
+    adata = load_adata(str((REPO_ROOT / cfg["datasets"][dataset_key]).resolve()))
     emb_key = DATASET_EMBEDDING_KEYS[dataset_key]
-    embd_df = load_embedding_df(cfg["embeddings"][emb_key])
+    embd_df = load_embedding_df(str((REPO_ROOT / cfg["embeddings"][emb_key]).resolve()))
     embd_df = apply_alias_mapping(embd_df, dataset_key)
     data = TriShiftData(adata, embd_df)
     data.setup_embedding_index()

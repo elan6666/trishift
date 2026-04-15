@@ -60,6 +60,20 @@ def _resolve_paths_yaml(paths_path: str | Path) -> Path:
     raise FileNotFoundError(f"Could not resolve paths yaml: {paths_path}")
 
 
+def _resolve_repo_relative(path_like: str | Path) -> Path:
+    p = Path(path_like)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.extend([Path.cwd() / p, REPO_ROOT / p])
+    for cand in candidates:
+        cand = cand.resolve()
+        if cand.exists():
+            return cand
+    raise FileNotFoundError(f"Could not resolve repo-relative path: {path_like}")
+
+
 def _load_split_dataset(dataset: str, split_id: int, paths_path: str | Path) -> tuple[TriShiftData, dict[str, Any]]:
     cfg = load_yaml(str(_resolve_paths_yaml(paths_path)))
     emb_key_map = {
@@ -69,8 +83,8 @@ def _load_split_dataset(dataset: str, split_id: int, paths_path: str | Path) -> 
         "replogle_k562_essential": "emb_c",
         "replogle_rpe1_essential": "emb_b",
     }
-    adata = load_adata(cfg["datasets"][dataset])
-    embd_df = load_embedding_df(cfg["embeddings"][emb_key_map[dataset]])
+    adata = load_adata(str(_resolve_repo_relative(cfg["datasets"][dataset])))
+    embd_df = load_embedding_df(str(_resolve_repo_relative(cfg["embeddings"][emb_key_map[dataset]])))
     embd_df = apply_alias_mapping(embd_df, dataset)
     data = TriShiftData(adata, embd_df)
     split_dict = split_by_dataset_policy(data, dataset, seed=int(split_id))

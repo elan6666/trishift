@@ -28,7 +28,6 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
-    compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
     regression_r2_safe,
 )
@@ -74,16 +73,6 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5],
         test_ratio=0.2,
         norman_split=True,
-    ),
-    "replogle_k562_essential": GenePertDatasetConfig(
-        data_rel="data/replogle_k562_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
-    ),
-    "replogle_rpe1_essential": GenePertDatasetConfig(
-        data_rel="data/replogle_rpe1_essential/perturb_processed.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        test_ratio=0.2,
     ),
 }
 
@@ -288,10 +277,8 @@ def _dataset_topgene_prefix(dataset_name: str) -> str:
         return "K562(?)_"
     if dataset_name == "norman":
         return "A549_"
-    if dataset_name in {"dixit", "replogle_k562_essential"}:
+    if dataset_name == "dixit":
         return "K562_"
-    if dataset_name == "replogle_rpe1_essential":
-        return "rpe1_"
     raise ValueError(f"Unsupported GenePert dataset for topgene prefix: {dataset_name}")
 
 
@@ -386,6 +373,21 @@ def _combine_splits(adata: ad.AnnData, conds: list[str]) -> ad.AnnData:
     return adata[mask].copy()
 
 
+def _ctrl_mean_from_adata(adata: ad.AnnData) -> np.ndarray:
+    ctrl_mask = adata.obs["condition"].astype(str).eq("ctrl").values
+    if not bool(ctrl_mask.any()):
+        raise ValueError("GenePert split is missing ctrl cells")
+    return np.asarray(adata[ctrl_mask].to_df().mean(), dtype=np.float32)
+
+
+def _nan_scpram_metrics() -> dict[str, float]:
+    return {
+        "scpram_r2_degs_mean_mean": np.nan,
+        "scpram_r2_degs_var_mean": np.nan,
+        "scpram_wasserstein_degs_sum": np.nan,
+    }
+
+
 def _topgene_dict_or_raise(eval_adata: ad.AnnData) -> dict:
     topgene_dict = eval_adata.uns.get("top_non_dropout_de_20", {})
     if not isinstance(topgene_dict, dict):
@@ -404,7 +406,7 @@ def _compute_metrics_and_export_payload(
     results = []
     export_payload = {}
     eval_conds = eval_adata.obs["condition"].astype(str).values
-    ctrl_mean = _utils.densify_X(eval_adata[eval_adata.obs["condition"] == "ctrl"].X).mean(
+    ctrl_mean = _utils.densify_X(reference_adata[reference_adata.obs["condition"] == "ctrl"].X).mean(
         axis=0,
         keepdims=True,
     )
@@ -469,14 +471,7 @@ def _compute_metrics_and_export_payload(
             reference=pert_reference,
             top20_de_idxs=degs,
         )
-        scpram_metrics = compute_scpram_metrics_from_arrays(
-            X_true=true,
-            X_pred=pred,
-            deg_idx=degs,
-            n_degs=100,
-            sample_ratio=0.8,
-            times=100,
-        )
+        scpram_metrics = _nan_scpram_metrics()
         results.append(
             {
                 "condition": raw_cond,
@@ -575,10 +570,7 @@ def run_genepert_eval(
 
         experiment = GenePertExperiment(filtered_embeddings)
         experiment.adata = filtered_adata
-        experiment.mean_expression = np.asarray(
-            filtered_adata[filtered_adata.obs["condition"] == "ctrl"].to_df().mean(),
-            dtype=np.float32,
-        )
+        experiment.mean_expression = _ctrl_mean_from_adata(split_dict["train"])
 
         ridge_params = [{"alpha": float(alpha)} for alpha in alpha_grid_eff]
         val_result = experiment.run_experiment_with_adata(
@@ -593,6 +585,7 @@ def run_genepert_eval(
         train_val_conds = split_dict["train_conds"] + split_dict["val_conds"]
         train_val_adata = _combine_splits(filtered_adata, train_val_conds)
         train_val_no_ctrl = _subset_no_ctrl(train_val_adata)
+        experiment.mean_expression = _ctrl_mean_from_adata(train_val_adata)
         final_result = experiment.run_experiment_with_adata(
             train_val_no_ctrl,
             test_no_ctrl,

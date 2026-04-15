@@ -46,16 +46,6 @@ DEFAULT_PLANS: dict[str, DatasetPlan] = {
         split_seeds=(1, 2, 3, 4, 5),
         prepare_kwargs={},
     ),
-    "replogle_k562_essential": DatasetPlan(
-        dataset_name="replogle_k562_essential",
-        split_seeds=(1, 2, 3, 4, 5),
-        prepare_kwargs={},
-    ),
-    "replogle_rpe1_essential": DatasetPlan(
-        dataset_name="replogle_rpe1_essential",
-        split_seeds=(1, 2, 3, 4, 5),
-        prepare_kwargs={},
-    ),
 }
 
 
@@ -167,8 +157,7 @@ def build_argparser() -> argparse.ArgumentParser:
         nargs="+",
         default=["adamson", "dixit", "norman"],
         help=(
-            "Datasets to prepare. Default: adamson dixit norman. "
-            "Also supports replogle_k562_essential and replogle_rpe1_essential."
+            "Datasets to prepare. Default: adamson dixit norman."
         ),
     )
     ap.add_argument(
