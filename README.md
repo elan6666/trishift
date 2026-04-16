@@ -49,7 +49,7 @@ Run it after installing the package:
 python examples/adamson_mini/run_demo.py
 ```
 
-This demo trains and evaluates a tiny TriShift model end to end and writes outputs to `artifacts/demo/adamson_mini`. It is meant to validate the code path, not to reproduce paper metrics.
+This demo trains and evaluates a 10% Adamson subset with Adamson-like settings, `1` split, and `20` epochs, then writes outputs to `artifacts/demo/adamson_mini`. It is meant to validate the code path, not to reproduce paper metrics.
 
 ### Minimal custom-dataset tutorial
 

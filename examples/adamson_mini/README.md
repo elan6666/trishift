@@ -1,14 +1,13 @@
 # Adamson Mini Demo
 
-This directory contains a tiny Adamson-derived smoke-test dataset that can be committed to GitHub.
-It is intended to verify that the TriShift training and evaluation code path runs end to end after cloning the repository.
+This directory contains a local Adamson-derived 10% subset for quicker TriShift validation.
+It is intended to verify that the TriShift training and evaluation code path runs end to end with Adamson-like settings.
 It is not intended to reproduce the paper metrics.
 
 ## Files
 
-- `data/adamson_mini.h5ad`: 320 cells by 160 genes, sampled from the public Adamson dataset.
-- `data/genept_mini.pickle`: GenePT vectors for the perturbation genes present in the mini dataset.
-- `config.yaml`: Small CPU-friendly TriShift config that points to the mini data.
+- `data/adamson_mini.h5ad`: a 10% cell subset of the public Adamson dataset.
+- `config.yaml`: Adamson-like TriShift config with `1` split and `20` epochs.
 - `run_demo.py`: One-command training and evaluation entrypoint.
 
 ## Run

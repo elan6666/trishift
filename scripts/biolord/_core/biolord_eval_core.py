@@ -43,6 +43,7 @@ class BiolordDatasetConfig:
     n_latent: int = 32
     batch_size: int = 32
     max_epochs: int = 75
+    early_stopping: bool = True
     early_stopping_patience: int = 10
     check_val_every_n_epoch: int = 5
     attribute_nn_width: int = 64
@@ -86,6 +87,7 @@ DATASET_CONFIG = {
         full_data_rel="data/dixit/dixit_biolord.h5ad",
         single_data_rel="data/dixit/dixit_single_biolord.h5ad",
         splits=[1, 2, 3, 4, 5],
+        early_stopping=False,
     ),
     "norman": BiolordDatasetConfig(
         full_data_rel="data/norman/norman_biolord.h5ad",
@@ -197,6 +199,64 @@ def _write_mean_metrics(path: Path, metrics_df: pd.DataFrame) -> None:
         lines.append(f"mean_{key}={float(numeric_means[key])}\n")
     _append_subgroup_mean_lines(lines, metrics_df, keys)
     path.write_text("".join(lines), encoding="utf-8")
+
+
+def _export_training_history_artifacts(model, out_dir: Path, dataset_name: str, split_id: int) -> None:
+    history_obj = getattr(getattr(model, "training_plan", None), "epoch_history", None)
+    if not isinstance(history_obj, dict) or not history_obj:
+        return
+
+    history_df = pd.DataFrame.from_dict(history_obj)
+    if history_df.empty:
+        return
+
+    history_csv = out_dir / f"biolord_{dataset_name}_epoch_hist_{int(split_id)}.csv"
+    history_df.to_csv(history_csv, index=False)
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        warnings.warn(
+            f"[biolord] matplotlib unavailable; skipped loss plot export for {dataset_name} split={split_id}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+
+    plot_columns = [
+        "reconstruction_loss",
+        "unknown_attribute_penalty_loss",
+        "biolord_metric",
+        "generative_mean_accuracy",
+        "generative_var_accuracy",
+    ]
+    available = [col for col in plot_columns if col in history_df.columns]
+    if not available or "mode" not in history_df.columns or "epoch" not in history_df.columns:
+        return
+
+    fig, axes = plt.subplots(len(available), 1, figsize=(8, 2.4 * len(available)), sharex=True)
+    if len(available) == 1:
+        axes = [axes]
+
+    for ax, col in zip(axes, available):
+        for mode, color in [("train", "#1f77b4"), ("valid", "#d62728"), ("test", "#2ca02c")]:
+            sub = history_df[history_df["mode"].astype(str) == mode]
+            if sub.empty:
+                continue
+            ax.plot(sub["epoch"], sub[col], label=mode, linewidth=1.8, color=color, alpha=0.95)
+        ax.set_ylabel(col)
+        ax.grid(alpha=0.25, linewidth=0.6)
+        ax.legend(frameon=False, fontsize=8, loc="best")
+
+    axes[-1].set_xlabel("epoch")
+    fig.suptitle(f"BioLORD {dataset_name} split {int(split_id)} training history", fontsize=12)
+    fig.tight_layout()
+    plot_path = out_dir / f"biolord_{dataset_name}_loss_{int(split_id)}.png"
+    fig.savefig(plot_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
 
 
 def set_seeds(seed: int = 24) -> None:
@@ -533,7 +593,7 @@ def _build_model_and_train(
         max_epochs=int(cfg.max_epochs),
         batch_size=int(cfg.batch_size),
         plan_kwargs=_build_trainer_params(cfg),
-        early_stopping=True,
+        early_stopping=bool(cfg.early_stopping),
         early_stopping_patience=int(cfg.early_stopping_patience),
         check_val_every_n_epoch=int(cfg.check_val_every_n_epoch),
         num_workers=0,
@@ -831,6 +891,7 @@ def run_biolord_eval(
         n_latent=int(base_cfg.n_latent if n_latent is None else n_latent),
         batch_size=int(base_cfg.batch_size if batch_size is None else batch_size),
         max_epochs=int(base_cfg.max_epochs if max_epochs is None else max_epochs),
+        early_stopping=bool(base_cfg.early_stopping),
         early_stopping_patience=int(base_cfg.early_stopping_patience),
         check_val_every_n_epoch=int(base_cfg.check_val_every_n_epoch),
         attribute_nn_width=int(base_cfg.attribute_nn_width if attribute_width is None else attribute_width),
@@ -885,6 +946,7 @@ def run_biolord_eval(
             cfg=cfg,
             seed=base_seed + int(split),
         )
+        _export_training_history_artifacts(model, out_dir, name, int(split))
         metrics_df, export_payload = _compute_metrics_and_export_payload(
             model=model,
             full_adata=full_adata,

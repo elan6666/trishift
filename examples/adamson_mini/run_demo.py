@@ -16,7 +16,7 @@ from scripts.trishift._core.train_main_core import run_from_dataset_config
 def main() -> None:
     config_path = Path(__file__).with_name("config.yaml")
     out_dir = REPO_ROOT / "artifacts" / "demo" / "adamson_mini"
-    run_from_dataset_config(config_path, fast=True, out_dir=str(out_dir))
+    run_from_dataset_config(config_path, fast=False, out_dir=str(out_dir))
     print(f"[adamson-mini] finished. Outputs: {out_dir}")
 
 

@@ -60,8 +60,8 @@ Before downloading the full datasets, verify the core TriShift code path:
 python examples/adamson_mini/run_demo.py
 ```
 
-This uses a small Adamson subset committed under `examples/adamson_mini/data`.
-It trains and evaluates a tiny TriShift model and writes outputs to:
+This uses a 10% Adamson subset under `examples/adamson_mini/data`.
+It trains and evaluates TriShift with Adamson-like settings, `1` split, and `20` epochs, and writes outputs to:
 
 ```text
 artifacts/demo/adamson_mini
