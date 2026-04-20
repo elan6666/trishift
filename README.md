@@ -157,7 +157,7 @@ conda env create -f environment_baselines.yml
 conda activate trishift-baselines
 ```
 
-`environment_baselines.yml` covers the common stack used by `scouter`, `GEARS`, and shared evaluation tools. `GEARS` still requires a Torch/PyG installation matched to your local CUDA runtime; follow the comments in that file for the final install step.
+`environment_baselines.yml` covers the common stack used by `GEARS` and shared evaluation tools. `GEARS` still requires a Torch/PyG installation matched to your local CUDA runtime; follow the comments in that file for the final install step.
 
 ### Data download and preprocessing
 
@@ -191,7 +191,7 @@ It also copies each generated `perturb_processed.h5ad` into the standard outer d
 This keeps the repository consistent across:
 
 - GEARS, which reads from `src/data/Data_GEARS`
-- TriShift, Scouter, and Systema-style evaluation, which read from `src/data/<dataset>`
+- TriShift and Systema-style evaluation, which read from `src/data/<dataset>`
 
 ### Training and evaluation entrypoints
 
@@ -211,12 +211,6 @@ TriShift:
 - `scripts/trishift/adamson/run_adamson.py`
 - `scripts/trishift/dixit/run_dixit.py`
 - `scripts/trishift/norman/run_norman.py`
-
-Scouter:
-
-- `scripts/scouter/adamson/run_scouter_adamson.py`
-- `scripts/scouter/dixit/run_scouter_dixit.py`
-- `scripts/scouter/norman/run_scouter_norman.py`
 
 GEARS:
 

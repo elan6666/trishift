@@ -157,7 +157,7 @@ artifacts/results/<dataset>
 ## 6. Run baseline methods
 
 Run baselines after the full h5ad files and embeddings are available.
-The usual order is GEARS and Scouter first, then the additional representation/foundation-model baselines.
+The usual order is GEARS first, then the additional representation/foundation-model baselines.
 
 GEARS:
 
@@ -165,14 +165,6 @@ GEARS:
 python scripts/gears/adamson/run_gears_adamson.py
 python scripts/gears/dixit/run_gears_dixit.py
 python scripts/gears/norman/run_gears_norman.py
-```
-
-Scouter:
-
-```bash
-python scripts/scouter/adamson/run_scouter_adamson.py
-python scripts/scouter/dixit/run_scouter_dixit.py
-python scripts/scouter/norman/run_scouter_norman.py
 ```
 
 biolord:
