@@ -8,11 +8,11 @@ The project uses a `src/` layout and is installable as a Python package.
 
 Overall framework:
 
-![TriShift overview](output/paper_bundle_cn/fig1a_readme.png)
+![TriShift overview](assets/readme/fig1a_readme.png)
 
 Detailed pipeline:
 
-![TriShift pipeline](output/paper_bundle_cn/fig1b_readme.png)
+![TriShift pipeline](assets/readme/fig1b_readme.png)
 
 ## For Users
 
