@@ -240,7 +240,7 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         loss_lambda=0.05,
         lr=0.01,
-        test_ratio=0.1,
+        test_ratio=0.2,
     ),
     "norman": ScouterDatasetConfig(
         data_rel="data/Data_GEARS/norman/perturb_processed.h5ad",

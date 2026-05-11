@@ -95,7 +95,7 @@ def render() -> Path:
         y_top,
         box_w,
         box_h,
-        "Build train-side top-k OT map\nfor each train perturbation condition",
+        "Build one train-side global top-k OT map\nthen slice rows by nearest condition",
         colors.HexColor("#EAF7EE"),
     )
     _draw_round_box(

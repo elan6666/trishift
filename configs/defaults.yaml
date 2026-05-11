@@ -125,9 +125,9 @@ loss:
   # 额外表达 MSE 权重（0 表示关闭）。
   lambda_expr_mse: 0
   # 预测表达负值惩罚权重（0 表示关闭）。
-  lambda_neg_expr: 0.0
+  lambda_neg_expr: 0.5
   # 负值惩罚形式：mse=平方惩罚，mae=线性惩罚。
-  neg_expr_penalty: mse
+  neg_expr_penalty: mae
 
 ablation:
   # Stage1 是否使用 train split 的 ctrl+pert（false 则仅 ctrl）。
@@ -137,7 +137,12 @@ ablation:
   # 软权重场景下是否按分布采样 control（否则取 argmax）。
   sample_soft_ctrl: false
   # OT 是否按 perturbation 条件分组计算（更细粒度，通常更慢）。
-  per_condition_ot: true
+  per_condition_ot: false
+  # OT-family 匹配前是否按 obs 分组上采样平衡 control/perturbation 池。
+  # 对齐 scPRAM 的 balancer 思路；默认关闭以保持现有实验不变。
+  balance_ot_by_group: false
+  # balance_ot_by_group=true 时使用的 obs 列，例如 cell_type。
+  balance_ot_group_key: cell_type
   # 是否允许复用 OT/soft_ot/knn_ot 的 top-k 缓存（knn 一直可复用）。
   # 注意：缓存文件名和校验键已包含 matching_mode 与 stage1 配置指纹，避免误复用。
   reuse_ot_cache: true

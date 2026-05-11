@@ -27,6 +27,9 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
+    compute_distributional_systema_metrics_from_arrays,
+    compute_mean_effect_metrics,
+    compute_scpram_metrics_bundle_from_arrays,
     pearson_delta_reference_metrics,
     regression_r2_safe,
 )
@@ -37,9 +40,21 @@ from scripts.common.yaml_utils import load_yaml_file
 @dataclass(frozen=True)
 class BiolordDatasetConfig:
     full_data_rel: str
-    single_data_rel: str
     splits: list[int]
+    single_data_rel: str = ""
     ordered_attribute_key: str = "perturbation_neighbors"
+    legacy_multihot_fallback: bool = False
+    test_ratio: float | None = None
+    split_policy: str = "condition"
+    domain_key: str = ""
+    train_domain_values: tuple[str, ...] = ()
+    test_domain_values: tuple[str, ...] = ()
+    domain_test_ratio: float = 0.2
+    drug_test_ratio: float = 0.2
+    val_ratio: float = 0.1
+    valid_split: str = "test"
+    test_split: str = "ood"
+    aggregate_legacy_condition_means: bool = False
     n_latent: int = 32
     batch_size: int = 32
     max_epochs: int = 75
@@ -86,7 +101,7 @@ DATASET_CONFIG = {
     "dixit": BiolordDatasetConfig(
         full_data_rel="data/dixit/dixit_biolord.h5ad",
         single_data_rel="data/dixit/dixit_single_biolord.h5ad",
-        splits=[1, 2, 3, 4, 5],
+        splits=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         early_stopping=False,
     ),
     "norman": BiolordDatasetConfig(
@@ -108,6 +123,37 @@ DATASET_CONFIG = {
         latent_wd=1e-5,
         decoder_lr=1e-2,
         unknown_attribute_noise_param=0.2,
+    ),
+    "openproblems_donor": BiolordDatasetConfig(
+        full_data_rel="data/openproblems/perturb_processed_hvg5000.h5ad",
+        splits=[1, 2, 3, 4, 5],
+        ordered_attribute_key="rdkit2d",
+        legacy_multihot_fallback=True,
+        test_ratio=0.2,
+        split_policy="donor_unseen_drug",
+        domain_key="donor_id",
+        train_domain_values=("donor_0", "donor_1"),
+        test_domain_values=("donor_2",),
+        drug_test_ratio=0.2,
+        val_ratio=0.1,
+        valid_split="val",
+        test_split="test",
+        aggregate_legacy_condition_means=False,
+    ),
+    "openproblems_celltype": BiolordDatasetConfig(
+        full_data_rel="data/openproblems/perturb_processed_hvg5000.h5ad",
+        splits=[1, 2, 3, 4, 5],
+        ordered_attribute_key="rdkit2d",
+        legacy_multihot_fallback=True,
+        test_ratio=0.2,
+        split_policy="celltype_unseen_drug",
+        domain_key="cell_type",
+        domain_test_ratio=0.2,
+        drug_test_ratio=0.2,
+        val_ratio=0.1,
+        valid_split="val",
+        test_split="test",
+        aggregate_legacy_condition_means=False,
     ),
 }
 
@@ -138,6 +184,8 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "deg_mean_r2",
         "systema_corr_20de_allpert",
         "systema_corr_deg_r2",
+        "systema_corr_20de_allpert_dist",
+        "systema_corr_deg_r2_dist",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
@@ -288,9 +336,9 @@ def _resolve_dataset_path(name: str, data_rel: str) -> Path:
     )
 
 
-def _resolve_eval_data_paths(name: str, cfg: BiolordDatasetConfig) -> tuple[Path, Path]:
+def _resolve_eval_data_paths(name: str, cfg: BiolordDatasetConfig) -> tuple[Path, Path | None]:
     full_path = _resolve_dataset_path(name, cfg.full_data_rel)
-    single_path = _resolve_dataset_path(name, cfg.single_data_rel)
+    single_path = _resolve_dataset_path(name, cfg.single_data_rel) if str(cfg.single_data_rel).strip() else None
     return full_path, single_path
 
 
@@ -308,6 +356,329 @@ def _prepare_single_train_adata(data_path: Path, ordered_attribute_key: str) -> 
             f"Missing ordered attribute key '{ordered_attribute_key}' in BioLORD single adata: {data_path}"
         )
     return adata
+
+
+def _build_split_dict_legacy(data: TriShiftData, split_id: int, test_ratio: float) -> dict:
+    return data.split_by_condition(seed=int(split_id), test_ratio=float(test_ratio))
+
+
+def _split_conditions_for_holdout(
+    conditions: list[str],
+    *,
+    ratio: float,
+    seed: int,
+) -> tuple[list[str], list[str]]:
+    conds = np.array([str(c) for c in conditions], dtype=object)
+    rng = np.random.RandomState(int(seed))
+    rng.shuffle(conds)
+    n_test = round(float(ratio) * len(conds))
+    test_arr, train_arr = np.split(conds, [n_test])
+    return list(test_arr), list(train_arr)
+
+
+def _domain_values(adata: ad.AnnData, domain_key: str) -> list[str]:
+    if domain_key not in adata.obs.columns:
+        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+    return sorted(adata.obs[domain_key].astype(str).unique().tolist())
+
+
+def _condition_values(data: TriShiftData) -> list[str]:
+    return [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
+
+
+def _ensure_domain_test_perturbation(
+    *,
+    adata: ad.AnnData,
+    label_key: str,
+    ctrl_label: str,
+    domain_key: str,
+    test_domain_values: list[str],
+    test_conds: list[str],
+    seed: int,
+) -> list[str]:
+    cond_series = adata.obs[label_key].astype(str)
+    domain_series = adata.obs[domain_key].astype(str)
+    test_domain_set = {str(x) for x in test_domain_values}
+    test_cond_set = {str(x) for x in test_conds}
+    domain_mask = domain_series.isin(test_domain_set)
+    domain_conds = sorted(
+        c
+        for c in cond_series[domain_mask].unique().tolist()
+        if str(c) != ctrl_label
+    )
+    if test_cond_set.intersection(domain_conds):
+        return list(test_conds)
+    candidates = [c for c in domain_conds if c not in test_cond_set]
+    if not candidates:
+        raise ValueError(
+            f"No non-control conditions available in held-out {domain_key}={test_domain_values}"
+        )
+    replacement = candidates[(int(seed) - 1) % len(candidates)]
+    out = list(test_conds)
+    if not out:
+        return [replacement]
+    out[-1] = replacement
+    return out
+
+
+def _split_domain_unseen_drug(
+    data: TriShiftData,
+    *,
+    seed: int,
+    domain_key: str,
+    train_domain_values: list[str],
+    test_domain_values: list[str],
+    drug_test_ratio: float,
+    val_ratio: float,
+    ensure_test_perturbation: bool,
+) -> dict:
+    adata = data.adata_all
+    label_key = data.label_key
+    ctrl_label = data.ctrl_label
+    if domain_key not in adata.obs.columns:
+        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+
+    all_conds = _condition_values(data)
+    test_conds, remaining_conds = _split_conditions_for_holdout(
+        all_conds,
+        ratio=float(drug_test_ratio),
+        seed=int(seed),
+    )
+    if ensure_test_perturbation:
+        test_conds = _ensure_domain_test_perturbation(
+            adata=adata,
+            label_key=label_key,
+            ctrl_label=ctrl_label,
+            domain_key=domain_key,
+            test_domain_values=test_domain_values,
+            test_conds=test_conds,
+            seed=int(seed),
+        )
+        remaining_conds = [c for c in all_conds if c not in set(test_conds)]
+
+    val_conds, train_conds = _split_conditions_for_holdout(
+        remaining_conds,
+        ratio=float(val_ratio),
+        seed=int(seed),
+    )
+
+    cond_series = adata.obs[label_key].astype(str)
+    domain_series = adata.obs[domain_key].astype(str)
+    train_domain_set = {str(x) for x in train_domain_values}
+    test_domain_set = {str(x) for x in test_domain_values}
+
+    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(
+        list(train_conds) + [ctrl_label]
+    )
+    val_mask = domain_series.isin(train_domain_set) & cond_series.isin(
+        list(val_conds) + [ctrl_label]
+    )
+    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(
+        list(test_conds) + [ctrl_label]
+    )
+
+    if not np.any(train_mask.values):
+        raise ValueError("domain unseen-drug split produced empty train set")
+    if not np.any(val_mask.values):
+        raise ValueError("domain unseen-drug split produced empty validation set")
+    if not np.any(test_mask.values):
+        raise ValueError("domain unseen-drug split produced empty test set")
+    test_pert_mask = test_mask.values & (cond_series.values != ctrl_label)
+    if not np.any(test_pert_mask):
+        raise ValueError("domain unseen-drug split produced no test perturbation cells")
+
+    return {
+        "train": adata[train_mask.values],
+        "val": adata[val_mask.values],
+        "test": adata[test_mask.values],
+        "train_conds": [str(c) for c in train_conds],
+        "val_conds": [str(c) for c in val_conds],
+        "test_conds": [str(c) for c in test_conds],
+        "split_policy": "domain_unseen_drug",
+        "split_domain_key": str(domain_key),
+        "train_domain_values": [str(x) for x in train_domain_values],
+        "test_domain_values": [str(x) for x in test_domain_values],
+    }
+
+
+def _build_split_dict_for_config(data: TriShiftData, cfg: BiolordDatasetConfig, split_id: int) -> dict:
+    policy = str(cfg.split_policy or "condition").strip()
+    if policy in {"", "condition"}:
+        return _build_split_dict_legacy(data, int(split_id), float(cfg.test_ratio or 0.2))
+    if policy == "donor_unseen_drug":
+        return _split_domain_unseen_drug(
+            data,
+            seed=int(split_id),
+            domain_key=str(cfg.domain_key or "donor_id"),
+            train_domain_values=[str(x) for x in cfg.train_domain_values],
+            test_domain_values=[str(x) for x in cfg.test_domain_values],
+            drug_test_ratio=float(cfg.drug_test_ratio or cfg.test_ratio or 0.2),
+            val_ratio=float(cfg.val_ratio),
+            ensure_test_perturbation=True,
+        )
+    if policy == "celltype_unseen_drug":
+        domain_key = str(cfg.domain_key or "cell_type")
+        test_domains, train_domains = _split_conditions_for_holdout(
+            _domain_values(data.adata_all, domain_key),
+            ratio=float(cfg.domain_test_ratio),
+            seed=int(split_id),
+        )
+        return _split_domain_unseen_drug(
+            data,
+            seed=int(split_id),
+            domain_key=domain_key,
+            train_domain_values=train_domains,
+            test_domain_values=test_domains,
+            drug_test_ratio=float(cfg.drug_test_ratio or cfg.test_ratio or 0.2),
+            val_ratio=float(cfg.val_ratio),
+            ensure_test_perturbation=True,
+        )
+    raise ValueError(f"Unsupported BioLORD split_policy={policy!r}")
+
+
+def _assign_split_labels_legacy(adata: ad.AnnData, split_dict: dict, split_key: str) -> ad.AnnData:
+    out = adata.copy()
+    cond_series = out.obs["condition"].astype(str)
+    split_vals = np.full(out.n_obs, "ignore", dtype=object)
+    split_vals[cond_series.eq("ctrl").values] = "train"
+    split_vals[cond_series.isin(list(map(str, split_dict.get("train_conds", [])))).values] = "train"
+    split_vals[cond_series.isin(list(map(str, split_dict.get("val_conds", [])))).values] = "val"
+    split_vals[cond_series.isin(list(map(str, split_dict.get("test_conds", [])))).values] = "test"
+    out.obs[split_key] = pd.Categorical(split_vals, categories=["train", "val", "test", "ignore"])
+    keep_mask = out.obs[split_key].astype(str).isin(["train", "val", "test"]).values
+    return out[keep_mask].copy()
+
+
+def _assign_split_labels_from_split_dict(adata: ad.AnnData, split_dict: dict, split_key: str) -> ad.AnnData:
+    out = adata.copy()
+    split_vals = np.full(out.n_obs, "ignore", dtype=object)
+    obs_names = out.obs_names.astype(str)
+    for label in ("val", "test", "train"):
+        split_adata = split_dict.get(label)
+        if isinstance(split_adata, ad.AnnData):
+            split_vals[obs_names.isin(split_adata.obs_names.astype(str))] = label
+    out.obs[split_key] = pd.Categorical(split_vals, categories=["train", "val", "test", "ignore"])
+    keep_mask = out.obs[split_key].astype(str).isin(["train", "val", "test"]).values
+    return out[keep_mask].copy()
+
+
+def _build_multihot_attributes(adata: ad.AnnData, key: str) -> ad.AnnData:
+    out = adata.copy()
+    conds = out.obs["condition"].astype(str).tolist()
+    pert_basis = sorted(
+        {
+            token
+            for cond in conds
+            for token in _condition_tokens_no_ctrl(_utils.normalize_condition(cond))
+        }
+    )
+    if not pert_basis:
+        raise ValueError("No perturbation tokens found for BioLORD multihot attribute construction")
+    token_to_idx = {tok: i for i, tok in enumerate(pert_basis)}
+    emb = np.zeros((out.n_obs, len(pert_basis)), dtype=np.float32)
+    for row_idx, cond in enumerate(conds):
+        for tok in _condition_tokens_no_ctrl(_utils.normalize_condition(cond)):
+            idx = token_to_idx.get(tok)
+            if idx is not None:
+                emb[row_idx, idx] = 1.0
+    out.obsm[key] = emb
+    return out
+
+
+def _as_mean_vector(x) -> np.ndarray:
+    return np.asarray(x.mean(axis=0)).reshape(-1).astype(np.float32)
+
+
+def _aggregate_legacy_condition_means(
+    adata: ad.AnnData,
+    *,
+    split_key: str,
+    cfg: BiolordDatasetConfig,
+) -> ad.AnnData:
+    group_cols = [split_key]
+    if cfg.domain_key and cfg.domain_key in adata.obs.columns:
+        group_cols.append(str(cfg.domain_key))
+    group_cols.append("condition")
+
+    obs = adata.obs.copy()
+    grouped = obs.groupby(group_cols, sort=False, observed=True).indices
+    if not grouped:
+        raise ValueError("Cannot aggregate empty BioLORD training AnnData")
+
+    x_rows: list[np.ndarray] = []
+    attr_rows: list[np.ndarray] = []
+    obs_rows: list[dict] = []
+    attr = np.asarray(adata.obsm[cfg.ordered_attribute_key], dtype=np.float32)
+    optional_first_cols = [
+        col
+        for col in ["condition_name", "SMILES", "sm_name", "donor_id", "cell_type"]
+        if col in obs.columns and col not in group_cols
+    ]
+
+    for group_key, idx in grouped.items():
+        idx_arr = np.asarray(idx, dtype=int)
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        row = {col: str(val) for col, val in zip(group_cols, group_key)}
+        for col in optional_first_cols:
+            row[col] = str(obs.iloc[idx_arr[0]][col])
+        row["n_cells_aggregated"] = int(idx_arr.size)
+        obs_rows.append(row)
+        x_rows.append(_as_mean_vector(adata.X[idx_arr]))
+        attr_rows.append(attr[idx_arr].mean(axis=0).astype(np.float32))
+
+    obs_df = pd.DataFrame(obs_rows)
+    obs_names = [
+        "|".join(str(row[col]) for col in group_cols)
+        for _, row in obs_df.iterrows()
+    ]
+    obs_df.index = pd.Index(obs_names, dtype="object")
+    out = ad.AnnData(
+        X=np.vstack(x_rows).astype(np.float32),
+        obs=obs_df,
+        var=adata.var.copy(),
+        dtype=np.float32,
+    )
+    out.obs[split_key] = pd.Categorical(
+        out.obs[split_key].astype(str),
+        categories=["train", "val", "test", "ignore"],
+    )
+    out.obs["condition"] = out.obs["condition"].astype(str).astype("category")
+    if cfg.domain_key and cfg.domain_key in out.obs.columns:
+        out.obs[str(cfg.domain_key)] = out.obs[str(cfg.domain_key)].astype(str).astype("category")
+    out.obsm[cfg.ordered_attribute_key] = np.vstack(attr_rows).astype(np.float32)
+    return out
+
+
+def _prepare_legacy_train_adata(
+    *,
+    eval_adata: ad.AnnData,
+    split_dict: dict,
+    split_id: int,
+    cfg: BiolordDatasetConfig,
+) -> tuple[ad.AnnData, str]:
+    split_key = f"split{int(split_id)}"
+    if str(cfg.split_policy or "condition").strip() in {"", "condition"}:
+        split_adata = _assign_split_labels_legacy(eval_adata, split_dict, split_key)
+    else:
+        split_adata = _assign_split_labels_from_split_dict(eval_adata, split_dict, split_key)
+
+    if cfg.ordered_attribute_key in split_adata.obsm:
+        split_adata.obsm[cfg.ordered_attribute_key] = np.asarray(
+            split_adata.obsm[cfg.ordered_attribute_key],
+            dtype=np.float32,
+        )
+    else:
+        if str(cfg.ordered_attribute_key) == "rdkit2d":
+            raise KeyError("OpenProblems BioLORD requires adata.obsm['rdkit2d']")
+        split_adata = _build_multihot_attributes(split_adata, cfg.ordered_attribute_key)
+    if bool(cfg.aggregate_legacy_condition_means):
+        split_adata = _aggregate_legacy_condition_means(
+            split_adata,
+            split_key=split_key,
+            cfg=cfg,
+        )
+    return split_adata, split_key
 
 
 def _gene_names_from_adata(adata: ad.AnnData) -> np.ndarray:
@@ -586,8 +957,8 @@ def _build_model_and_train(
         train_classifiers=False,
         split_key=split_key,
         train_split="train",
-        valid_split="test",
-        test_split="ood",
+        valid_split=str(cfg.valid_split),
+        test_split=str(cfg.test_split),
     )
     model.train(
         max_epochs=int(cfg.max_epochs),
@@ -617,6 +988,158 @@ def _repeat_n(x: torch.Tensor, n: int) -> torch.Tensor:
     return x.to(x.device).view(1, -1).repeat(int(n), 1)
 
 
+def _stable_condition_seed(base_seed: int, split_id: int, condition: str) -> int:
+    raw = f"{int(base_seed)}::{int(split_id)}::{condition}"
+    return int(sum((i + 1) * ord(ch) for i, ch in enumerate(raw)) % (2**32 - 1))
+
+
+def _array_summary(x: np.ndarray) -> dict:
+    arr = np.asarray(x, dtype=np.float32)
+    return {
+        "n_cells": int(arr.shape[0]) if arr.ndim == 2 else 0,
+        "mean": arr.mean(axis=0).astype(np.float32) if arr.ndim == 2 and arr.shape[0] > 0 else np.asarray([], dtype=np.float32),
+        "var": arr.var(axis=0, ddof=1).astype(np.float32)
+        if arr.ndim == 2 and arr.shape[0] > 1
+        else (np.zeros(arr.shape[1], dtype=np.float32) if arr.ndim == 2 else np.asarray([], dtype=np.float32)),
+    }
+
+
+def _sample_rows_for_export(x: np.ndarray, sample_size: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    arr = np.asarray(x, dtype=np.float32)
+    n_rows = int(arr.shape[0]) if arr.ndim == 2 else 0
+    if n_rows <= 0:
+        return arr[:0], np.asarray([], dtype=int)
+    sample_n = min(n_rows, max(1, int(sample_size)))
+    if sample_n < n_rows:
+        rng = np.random.default_rng(int(seed))
+        idx = np.sort(rng.choice(n_rows, size=sample_n, replace=False))
+    else:
+        idx = np.arange(n_rows, dtype=int)
+    return np.asarray(arr[idx], dtype=np.float32), idx.astype(int)
+
+
+def _top20_degs_mapping(adata: ad.AnnData) -> dict:
+    for key in (
+        "top20_degs_final",
+        "top20_degs_non_dropout",
+        "top_non_dropout_de_20",
+        "top_non_zero_de_20",
+        "top20_degs",
+    ):
+        obj = adata.uns.get(key, None)
+        if isinstance(obj, dict):
+            return obj
+    raise TypeError("Expected a top-20 DEG mapping in adata.uns")
+
+
+def _slice_dataset_batch(dataset: dict, start: int, end: int, n_obs: int) -> dict:
+    out = {}
+    for key, value in dataset.items():
+        if torch.is_tensor(value) and value.ndim > 0 and int(value.shape[0]) == int(n_obs):
+            out[key] = value[start:end]
+        elif isinstance(value, np.ndarray) and value.ndim > 0 and int(value.shape[0]) == int(n_obs):
+            out[key] = value[start:end]
+        else:
+            out[key] = value
+    return out
+
+
+def _predict_biolord_expr_in_batches(
+    *,
+    model,
+    dataset_control: dict,
+    attr_tensor: torch.Tensor,
+    ordered_attribute_key: str,
+    n_obs: int,
+    batch_size: int = 4096,
+) -> np.ndarray:
+    pieces = []
+    step = max(1, int(batch_size))
+    with torch.no_grad():
+        for start in range(0, int(n_obs), step):
+            end = min(start + step, int(n_obs))
+            dataset_pred = _slice_dataset_batch(dataset_control, start, end, int(n_obs))
+            dataset_pred[ordered_attribute_key] = _repeat_n(attr_tensor, end - start)
+            pred_expr, _ = model.module.get_expression(dataset_pred)
+            pieces.append(np.asarray(pred_expr.detach().cpu().numpy(), dtype=np.float32))
+    if not pieces:
+        return np.zeros((0, 0), dtype=np.float32)
+    return np.vstack(pieces).astype(np.float32, copy=False)
+
+
+def _condition_metric_summary(
+    *,
+    X_true: np.ndarray,
+    X_pred: np.ndarray,
+    X_ctrl: np.ndarray,
+    degs: np.ndarray,
+    condition: str,
+    split_dict: dict,
+    split_id: int,
+    base_seed: int,
+    systema_reference: np.ndarray,
+    eval_ctrl_source: str,
+) -> tuple[dict, dict]:
+    metric_seed = _stable_condition_seed(base_seed, split_id, condition)
+    mean_metrics = compute_mean_effect_metrics(
+        X_true=X_true,
+        X_pred=X_pred,
+        X_ctrl=X_ctrl,
+        deg_idx=degs,
+    )
+    systema_metrics = pearson_delta_reference_metrics(
+        X_true=np.asarray(X_true, dtype=np.float32).mean(axis=0),
+        X_pred=np.asarray(X_pred, dtype=np.float32).mean(axis=0),
+        reference=systema_reference,
+        top20_de_idxs=degs,
+    )
+    scpram_bundle = compute_scpram_metrics_bundle_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        deg_idx=degs,
+        n_degs=100,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    dist_bundle = compute_distributional_systema_metrics_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        reference=systema_reference,
+        deg_idx=degs,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    metrics = {
+        **mean_metrics,
+        "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+        "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
+        **scpram_bundle["metrics"],
+        **dist_bundle["metrics"],
+    }
+    full_summary = {
+        "metrics": dict(metrics),
+        "true": _array_summary(X_true),
+        "pred": _array_summary(X_pred),
+        "ctrl": _array_summary(X_ctrl),
+        "scpram_repeats": scpram_bundle["repeats"],
+        "scpram_wasserstein_degs_by_gene": scpram_bundle["wasserstein_degs_by_gene"],
+        "scpram_degs_used": scpram_bundle["degs_used"],
+        "systema_distributional_repeats": dist_bundle["repeats"],
+        "systema_distributional_degs_used": dist_bundle["degs_used"],
+        "metric_seed": int(metric_seed),
+        "sample_ratio": 0.8,
+        "times": 100,
+        "split_policy": split_dict.get("split_policy", None),
+        "split_domain_key": split_dict.get("split_domain_key", None),
+        "train_domain_values": split_dict.get("train_domain_values", None),
+        "test_domain_values": split_dict.get("test_domain_values", None),
+        "eval_ctrl_source": str(eval_ctrl_source),
+    }
+    return metrics, full_summary
+
+
 def _nan_scpram_metrics() -> dict[str, float]:
     # BioLORD's current adapter produces control-conditioned samples whose
     # variance structure can collapse, so distribution-level scPRAM metrics are
@@ -626,6 +1149,155 @@ def _nan_scpram_metrics() -> dict[str, float]:
         "scpram_r2_degs_var_mean": np.nan,
         "scpram_wasserstein_degs_sum": np.nan,
     }
+
+
+def _compute_metrics_and_export_payload_legacy(
+    *,
+    model,
+    eval_adata: ad.AnnData,
+    train_adata: ad.AnnData,
+    split_dict: dict,
+    split_id: int,
+    cfg: BiolordDatasetConfig,
+    base_seed: int = 24,
+) -> tuple[pd.DataFrame, dict]:
+    name_map = _build_name_map(eval_adata)
+    gene_names = _gene_names_from_adata(eval_adata)
+    truth_adata = split_dict.get("test") if isinstance(split_dict.get("test"), ad.AnnData) else eval_adata
+    cond_truth = truth_adata.obs["condition"].astype(str).map(_utils.normalize_condition)
+    split_key = f"split{int(split_id)}"
+    use_target_ctrl = str(split_dict.get("split_policy", "")) == "domain_unseen_drug"
+    if use_target_ctrl:
+        ctrl_mask = truth_adata.obs["condition"].astype(str).eq("ctrl").values
+        if not np.any(ctrl_mask):
+            raise ValueError("OpenProblems BioLORD target-domain test split has no ctrl cells")
+        adata_control = truth_adata[ctrl_mask].copy()
+        eval_ctrl_source = "target_domain_test_ctrl"
+    else:
+        train_ctrl_mask = train_adata.obs["condition"].astype(str).eq("ctrl").values
+        if split_key in train_adata.obs.columns:
+            train_ctrl_mask = train_ctrl_mask & train_adata.obs[split_key].astype(str).eq("train").values
+        if not np.any(train_ctrl_mask):
+            train_ctrl_mask = train_adata.obs["condition"].astype(str).eq("ctrl").values
+        adata_control = train_adata[train_ctrl_mask].copy()
+        eval_ctrl_source = "train_ctrl"
+    ctrl_full = np.asarray(_utils.densify_X(adata_control.X), dtype=np.float32)
+    top20_degs_final = _top20_degs_mapping(eval_adata)
+
+    train_ref = split_dict.get("train")
+    val_ref = split_dict.get("val")
+    if isinstance(train_ref, ad.AnnData) and isinstance(val_ref, ad.AnnData):
+        val_ref_non_ctrl = val_ref[val_ref.obs["condition"].astype(str) != "ctrl"]
+        reference_adata = ad.concat(
+            [train_ref, val_ref_non_ctrl],
+            join="outer",
+            merge="same",
+            index_unique=None,
+        ).copy()
+    else:
+        train_val_conds = list(map(str, split_dict.get("train_conds", []))) + list(map(str, split_dict.get("val_conds", [])))
+        ref_mask = eval_adata.obs["condition"].astype(str).isin(set(train_val_conds) | {"ctrl"}).values
+        reference_adata = eval_adata[ref_mask].copy()
+    if use_target_ctrl:
+        pert_reference = ctrl_full.mean(axis=0).reshape(-1)
+    else:
+        pert_reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(reference_adata.X),
+            conditions=reference_adata.obs["condition"].astype(str).values,
+            ctrl_label="ctrl",
+        )
+
+    dataset_control = model.get_dataset(adata_control)
+
+    results = []
+    export_payload = {}
+    for condition in sorted(set(map(str, split_dict.get("test_conds", [])))):
+        cond_norm = _utils.normalize_condition(condition)
+        cond_mask_truth = cond_truth.eq(cond_norm).values
+        if not np.any(cond_mask_truth):
+            warnings.warn(f"[biolord] test condition missing in eval adata: {condition}", RuntimeWarning, stacklevel=2)
+            continue
+
+        true_expr = _utils.densify_X(truth_adata[cond_mask_truth].X)
+        if true_expr.ndim == 1:
+            true_expr = true_expr.reshape(1, -1)
+        degs = np.asarray(top20_degs_final.get(cond_norm, []), dtype=int).reshape(-1)
+        if degs.size == 0:
+            warnings.warn(f"[biolord] skip condition without DEGs: {condition}", RuntimeWarning, stacklevel=2)
+            continue
+
+        attr_tensor = _get_condition_attribute_tensor(model, train_adata, cond_norm, cfg.ordered_attribute_key)
+        pred_expr = _predict_biolord_expr_in_batches(
+            model=model,
+            dataset_control=dataset_control,
+            attr_tensor=attr_tensor,
+            ordered_attribute_key=cfg.ordered_attribute_key,
+            n_obs=int(adata_control.n_obs),
+            batch_size=4096,
+        )
+        metrics, full_summary = _condition_metric_summary(
+            X_true=true_expr,
+            X_pred=pred_expr,
+            X_ctrl=ctrl_full,
+            degs=degs,
+            condition=cond_norm,
+            split_dict=split_dict,
+            split_id=split_id,
+            base_seed=base_seed,
+            systema_reference=pert_reference,
+            eval_ctrl_source=eval_ctrl_source,
+        )
+
+        results.append(
+            {
+                "condition": cond_norm,
+                "condition_name": name_map.get(cond_norm, cond_norm),
+                **metrics,
+                "split_id": int(split_id),
+                "n_ensemble": int(pred_expr.shape[0]),
+                "n_eval_ctrl": int(ctrl_full.shape[0]),
+                "eval_ctrl_source": str(eval_ctrl_source),
+            }
+        )
+        export_sample_size = max(1, int(cfg.export_control_pool_size))
+        seed_base = _stable_condition_seed(base_seed, split_id, str(cond_norm))
+        pred_export, pred_idx = _sample_rows_for_export(pred_expr, export_sample_size, seed_base + 11)
+        if int(ctrl_full.shape[0]) == int(pred_expr.shape[0]) and pred_idx.size > 0:
+            ctrl_export = np.asarray(ctrl_full[pred_idx], dtype=np.float32)
+            ctrl_idx = pred_idx
+        else:
+            ctrl_export, ctrl_idx = _sample_rows_for_export(ctrl_full, export_sample_size, seed_base + 17)
+        truth_export, truth_idx = _sample_rows_for_export(true_expr, export_sample_size, seed_base + 23)
+        export_payload[cond_norm] = {
+            "Pred": pred_export[:, degs],
+            "Ctrl": ctrl_export[:, degs],
+            "Truth": truth_export[:, degs],
+            "Pred_full": pred_export,
+            "Ctrl_full": ctrl_export,
+            "Truth_full": truth_export,
+            "DE_idx": degs,
+            "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
+            "gene_name_full": gene_names,
+            "export_metadata": {
+                "export_is_subset": True,
+                "export_sample_size": int(export_sample_size),
+                "metrics_computed_on_full": True,
+                "eval_ctrl_source": str(eval_ctrl_source),
+                "split_id": int(split_id),
+                "split_policy": split_dict.get("split_policy", None),
+                "split_domain_key": split_dict.get("split_domain_key", None),
+                "train_domain_values": split_dict.get("train_domain_values", None),
+                "test_domain_values": split_dict.get("test_domain_values", None),
+                "pred_sample_idx": pred_idx.astype(int),
+                "ctrl_sample_idx": ctrl_idx.astype(int),
+                "truth_sample_idx": truth_idx.astype(int),
+                "n_pred_full": int(pred_expr.shape[0]),
+                "n_ctrl_full": int(ctrl_full.shape[0]),
+                "n_truth_full": int(true_expr.shape[0]),
+            },
+            "full_summary": full_summary,
+        }
+    return pd.DataFrame(results), export_payload
 
 
 def _condition_mean_lookup(adata: ad.AnnData) -> dict[str, np.ndarray]:
@@ -888,6 +1560,18 @@ def run_biolord_eval(
         single_data_rel=base_cfg.single_data_rel,
         splits=list(base_cfg.splits),
         ordered_attribute_key=str(base_cfg.ordered_attribute_key),
+        legacy_multihot_fallback=bool(base_cfg.legacy_multihot_fallback),
+        test_ratio=base_cfg.test_ratio,
+        split_policy=str(base_cfg.split_policy),
+        domain_key=str(base_cfg.domain_key),
+        train_domain_values=tuple(map(str, base_cfg.train_domain_values)),
+        test_domain_values=tuple(map(str, base_cfg.test_domain_values)),
+        domain_test_ratio=float(base_cfg.domain_test_ratio),
+        drug_test_ratio=float(base_cfg.drug_test_ratio),
+        val_ratio=float(base_cfg.val_ratio),
+        valid_split=str(base_cfg.valid_split),
+        test_split=str(base_cfg.test_split),
+        aggregate_legacy_condition_means=bool(base_cfg.aggregate_legacy_condition_means),
         n_latent=int(base_cfg.n_latent if n_latent is None else n_latent),
         batch_size=int(base_cfg.batch_size if batch_size is None else batch_size),
         max_epochs=int(base_cfg.max_epochs if max_epochs is None else max_epochs),
@@ -924,12 +1608,66 @@ def run_biolord_eval(
     full_data_path, single_data_path = _resolve_eval_data_paths(name, cfg)
     print(f"[biolord] loading full data: {full_data_path}", flush=True)
     full_adata, _ = _prepare_full_eval_adata(full_data_path)
-    print(f"[biolord] loading single data: {single_data_path}", flush=True)
-    single_adata = _prepare_single_train_adata(single_data_path, cfg.ordered_attribute_key)
     out_dir = ROOT / "artifacts" / "results" / "biolord" / name
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[biolord] output dir: {out_dir}", flush=True)
 
+    if bool(cfg.legacy_multihot_fallback):
+        print(
+            f"[biolord] using full-data attribute path key={cfg.ordered_attribute_key} "
+            f"split_policy={cfg.split_policy}",
+            flush=True,
+        )
+        data = TriShiftData(full_adata.copy(), _dummy_embedding_df())
+        metrics_all = []
+        for split in cfg.splits:
+            print(
+                f"[biolord] dataset={name} split={split} max_epochs={cfg.max_epochs} "
+                f"attribute_key={cfg.ordered_attribute_key}",
+                flush=True,
+            )
+            set_seeds(base_seed + int(split))
+            split_dict = _build_split_dict_for_config(data, cfg, int(split))
+            train_adata, split_key = _prepare_legacy_train_adata(
+                eval_adata=full_adata,
+                split_dict=split_dict,
+                split_id=int(split),
+                cfg=cfg,
+            )
+            model = _build_model_and_train(
+                biolord_mod=biolord_mod,
+                train_adata=train_adata,
+                split_key=split_key,
+                cfg=cfg,
+                seed=base_seed + int(split),
+            )
+            _export_training_history_artifacts(model, out_dir, name, int(split))
+            metrics_df, export_payload = _compute_metrics_and_export_payload_legacy(
+                model=model,
+                eval_adata=full_adata,
+                train_adata=train_adata,
+                split_dict=split_dict,
+                split_id=int(split),
+                cfg=cfg,
+                base_seed=base_seed,
+            )
+            metrics_all.append(metrics_df)
+            if export_notebook_pkl:
+                out_pkl = out_dir / f"biolord_{name}_{split}.pkl"
+                with out_pkl.open("wb") as handle:
+                    pickle.dump(export_payload, handle)
+                print(f"[biolord] saved notebook payload: {out_pkl}", flush=True)
+
+        metrics_df_all = pd.concat(metrics_all, ignore_index=True)
+        metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
+        _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
+        print(f"[biolord] saved metrics: {out_dir / 'metrics.csv'}", flush=True)
+        return
+
+    if single_data_path is None:
+        raise FileNotFoundError(f"Missing BioLORD single-data path for dataset={name}")
+    print(f"[biolord] loading single data: {single_data_path}", flush=True)
+    single_adata = _prepare_single_train_adata(single_data_path, cfg.ordered_attribute_key)
     metrics_all = []
     for split in cfg.splits:
         print(

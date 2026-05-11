@@ -14,30 +14,64 @@ def _stable_seed(file_path: Path, condition: str) -> int:
 def _shrink_condition_payload(payload: dict, sample_size: int, seed: int) -> tuple[dict, bool]:
     pred_full = payload.get("Pred_full")
     ctrl_full = payload.get("Ctrl_full")
-    if pred_full is None or ctrl_full is None:
+    truth_full = payload.get("Truth_full")
+    if pred_full is None or ctrl_full is None or truth_full is None:
         return payload, False
 
     pred_full = np.asarray(pred_full)
     ctrl_full = np.asarray(ctrl_full)
-    if pred_full.ndim != 2 or ctrl_full.ndim != 2:
+    truth_full = np.asarray(truth_full)
+    if pred_full.ndim != 2 or ctrl_full.ndim != 2 or truth_full.ndim != 2:
         return payload, False
 
-    n_rows = min(int(pred_full.shape[0]), int(ctrl_full.shape[0]))
-    if n_rows <= 0 or n_rows <= int(sample_size):
+    pred_rows = int(pred_full.shape[0])
+    ctrl_rows = int(ctrl_full.shape[0])
+    truth_rows = int(truth_full.shape[0])
+    if min(pred_rows, ctrl_rows, truth_rows) <= 0:
+        return payload, False
+    needs_pred = pred_rows > int(sample_size)
+    needs_ctrl = ctrl_rows > int(sample_size)
+    needs_truth = truth_rows > int(sample_size)
+    if not needs_pred and not needs_ctrl and not needs_truth:
         return payload, False
 
-    rng = np.random.default_rng(seed)
-    idx = np.sort(rng.choice(n_rows, size=int(sample_size), replace=False))
+    def pick_rows(n_rows: int, salt: int) -> np.ndarray:
+        if n_rows > int(sample_size):
+            local_rng = np.random.default_rng(int(seed) + int(salt))
+            return np.sort(local_rng.choice(n_rows, size=int(sample_size), replace=False))
+        return np.arange(n_rows, dtype=int)
 
-    pred_small = np.asarray(pred_full[idx], dtype=np.float32)
-    ctrl_small = np.asarray(ctrl_full[idx], dtype=np.float32)
+    if pred_rows == ctrl_rows:
+        pred_idx = pick_rows(pred_rows, 11)
+        ctrl_idx = pred_idx
+    else:
+        pred_idx = pick_rows(pred_rows, 11)
+        ctrl_idx = pick_rows(ctrl_rows, 17)
+    truth_idx = pick_rows(truth_rows, 23)
+
+    pred_small = np.asarray(pred_full[pred_idx], dtype=np.float32)
+    ctrl_small = np.asarray(ctrl_full[ctrl_idx], dtype=np.float32)
+    truth_small = np.asarray(truth_full[truth_idx], dtype=np.float32)
     deg_idx = np.asarray(payload.get("DE_idx", []), dtype=int).reshape(-1)
 
     updated = dict(payload)
     updated["Pred_full"] = pred_small
     updated["Ctrl_full"] = ctrl_small
+    updated["Truth_full"] = truth_small
     updated["Pred"] = pred_small[:, deg_idx] if deg_idx.size > 0 else pred_small[:, :0]
     updated["Ctrl"] = ctrl_small[:, deg_idx] if deg_idx.size > 0 else ctrl_small[:, :0]
+    updated["Truth"] = truth_small[:, deg_idx] if deg_idx.size > 0 else truth_small[:, :0]
+    meta = dict(updated.get("export_metadata", {}) or {})
+    meta.update(
+        {
+            "export_is_subset": True,
+            "export_sample_size": int(sample_size),
+            "pred_sample_idx": np.asarray(pred_idx, dtype=int),
+            "ctrl_sample_idx": np.asarray(ctrl_idx, dtype=int),
+            "truth_sample_idx": np.asarray(truth_idx, dtype=int),
+        }
+    )
+    updated["export_metadata"] = meta
     return updated, True
 
 

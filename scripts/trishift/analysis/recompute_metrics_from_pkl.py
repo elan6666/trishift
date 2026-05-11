@@ -38,6 +38,13 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "mse_pred",
         "mse_ctrl",
         "deg_mean_r2",
+        "systema_corr_20de_allpert",
+        "systema_corr_deg_r2",
+        "systema_corr_20de_allpert_dist",
+        "systema_corr_deg_r2_dist",
+        "scpram_r2_degs_mean_mean",
+        "scpram_r2_degs_var_mean",
+        "scpram_wasserstein_degs_sum",
     ]
     exclude_keys = {"split_id", "n_ensemble"}
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
@@ -133,6 +140,27 @@ def _compute_rows_from_pkl(
 
     rows: list[dict] = []
     for cond, obj in payload.items():
+        if not isinstance(obj, dict):
+            continue
+        meta = obj.get("export_metadata", {}) or {}
+        summary = obj.get("full_summary", {}) or {}
+        summary_metrics = summary.get("metrics", {}) if isinstance(summary, dict) else {}
+        if bool(meta.get("metrics_computed_on_full", False)) and isinstance(summary_metrics, dict):
+            row = {"condition": str(cond)}
+            for key, value in summary_metrics.items():
+                if np.isscalar(value):
+                    row[str(key)] = float(value)
+            row["split_id"] = int(split_id)
+            row["n_ensemble"] = int(meta.get("n_pred_full", 0) or 0)
+            if "n_ctrl_full" in meta:
+                row["n_eval_ctrl"] = int(meta.get("n_ctrl_full", 0) or 0)
+            if "eval_ctrl_source" in meta:
+                row["eval_ctrl_source"] = str(meta.get("eval_ctrl_source"))
+            if subgroup_map is not None:
+                row["subgroup"] = str(subgroup_map.get(str(cond), "unknown"))
+            rows.append(row)
+            continue
+
         pred = np.asarray(obj.get("Pred"), dtype=np.float32)
         ctrl = np.asarray(obj.get("Ctrl"), dtype=np.float32)
         truth = np.asarray(obj.get("Truth"), dtype=np.float32)
@@ -194,8 +222,17 @@ def _write_outputs_for_tag(
         "nmse",
         "pearson",
         "deg_mean_r2",
+        "systema_corr_20de_allpert",
+        "systema_corr_deg_r2",
+        "systema_corr_20de_allpert_dist",
+        "systema_corr_deg_r2_dist",
+        "scpram_r2_degs_mean_mean",
+        "scpram_r2_degs_var_mean",
+        "scpram_wasserstein_degs_sum",
         "split_id",
         "n_ensemble",
+        "n_eval_ctrl",
+        "eval_ctrl_source",
     ]
     keep = [c for c in col_order if c in df.columns]
     tail = [c for c in df.columns if c not in keep]
@@ -271,7 +308,7 @@ def main() -> None:
     )
     print(
         "[pkl-eval] note: pkl payload contains DE-subset arrays plus optional full-gene arrays; "
-        "recomputed metrics still use the DE-subset fields Pred/Ctrl/Truth."
+        "when full_summary.metrics is present it is used instead of recomputing from exported subsets."
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[pkl-eval] pkl_dir={pkl_dir}")

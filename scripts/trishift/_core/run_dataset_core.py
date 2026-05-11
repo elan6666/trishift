@@ -46,14 +46,41 @@ DATASET_CONFIG = {
         "emb_key": "emb_c",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 10,
-        # Align split policy with Scouter for Dixit.
-        "test_ratio": 0.1,
+        # Align Dixit condition split policy with Adamson while retaining 10 random splits.
+        "test_ratio": 0.2,
     },
     "norman": {
         "emb_key": "emb_a",
         "defaults": {"stage1": 5, "stage23": 10, "stage2": 5, "stage3": 5},
         "multi_split_default": 5,
         "test_ratio": 0.2,
+    },
+    "openproblems_donor": {
+        "emb_key": "emb_openproblems_rdkit2d",
+        "defaults": {"stage1": 10, "stage23": 6, "stage2": 3, "stage3": 3},
+        "multi_split_default": 5,
+        "test_ratio": 0.2,
+        "split_policy": {
+            "name": "donor_unseen_drug",
+            "domain_key": "donor_id",
+            "train_domain_values": ["donor_0", "donor_1"],
+            "test_domain_values": ["donor_2"],
+            "drug_test_ratio": 0.2,
+            "val_ratio": 0.1,
+        },
+    },
+    "openproblems_celltype": {
+        "emb_key": "emb_openproblems_rdkit2d",
+        "defaults": {"stage1": 10, "stage23": 6, "stage2": 3, "stage3": 3},
+        "multi_split_default": 5,
+        "test_ratio": 0.2,
+        "split_policy": {
+            "name": "celltype_unseen_drug",
+            "domain_key": "cell_type",
+            "domain_test_ratio": 0.2,
+            "drug_test_ratio": 0.2,
+            "val_ratio": 0.1,
+        },
     },
 }
 
@@ -167,6 +194,8 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "deg_mean_r2",
         "systema_corr_20de_allpert",
         "systema_corr_deg_r2",
+        "systema_corr_20de_allpert_dist",
+        "systema_corr_deg_r2_dist",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
@@ -517,6 +546,193 @@ def _split_list_by_ratio(lst: list[str], ratios: list[float], seed: int) -> list
     return _shared_split_list_by_ratio(lst=lst, ratios=ratios, seed=seed)
 
 
+def _split_conditions_for_holdout(
+    conditions: list[str],
+    *,
+    ratio: float,
+    seed: int,
+) -> tuple[list[str], list[str]]:
+    """Split non-control conditions with TriShiftData/Scouter-compatible RNG semantics."""
+    conds = np.array([str(c) for c in conditions], dtype=object)
+    rng = np.random.RandomState(int(seed))
+    rng.shuffle(conds)
+    n_test = round(float(ratio) * len(conds))
+    test_arr, train_arr = np.split(conds, [n_test])
+    return list(test_arr), list(train_arr)
+
+
+def _domain_values(adata, domain_key: str) -> list[str]:
+    """Return deterministic domain values from an AnnData obs column."""
+    if domain_key not in adata.obs.columns:
+        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+    return sorted(adata.obs[domain_key].astype(str).unique().tolist())
+
+
+def _condition_values(data: TriShiftData) -> list[str]:
+    """Return non-control conditions in their current dataset order."""
+    return [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
+
+
+def _ensure_domain_test_perturbation(
+    *,
+    adata,
+    label_key: str,
+    ctrl_label: str,
+    domain_key: str,
+    test_domain_values: list[str],
+    test_conds: list[str],
+    seed: int,
+) -> list[str]:
+    """Ensure held-out domain has at least one held-out perturbation cell."""
+    cond_series = adata.obs[label_key].astype(str)
+    domain_series = adata.obs[domain_key].astype(str)
+    test_domain_set = {str(x) for x in test_domain_values}
+    test_cond_set = {str(x) for x in test_conds}
+    domain_mask = domain_series.isin(test_domain_set)
+    domain_conds = sorted(
+        c
+        for c in cond_series[domain_mask].unique().tolist()
+        if str(c) != ctrl_label
+    )
+    if test_cond_set.intersection(domain_conds):
+        return list(test_conds)
+    candidates = [c for c in domain_conds if c not in test_cond_set]
+    if not candidates:
+        raise ValueError(
+            f"No non-control conditions available in held-out {domain_key}={test_domain_values}"
+        )
+    replacement = candidates[(int(seed) - 1) % len(candidates)]
+    out = list(test_conds)
+    if not out:
+        return [replacement]
+    out[-1] = replacement
+    return out
+
+
+def _split_domain_unseen_drug(
+    data: TriShiftData,
+    *,
+    seed: int,
+    domain_key: str,
+    train_domain_values: list[str],
+    test_domain_values: list[str],
+    drug_test_ratio: float,
+    val_ratio: float,
+    ensure_test_perturbation: bool,
+) -> dict:
+    """Build train/val/test splits for unseen-domain and unseen-drug evaluation."""
+    adata = data.adata_all
+    label_key = data.label_key
+    ctrl_label = data.ctrl_label
+    if domain_key not in adata.obs.columns:
+        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+
+    all_conds = _condition_values(data)
+    test_conds, remaining_conds = _split_conditions_for_holdout(
+        all_conds,
+        ratio=float(drug_test_ratio),
+        seed=int(seed),
+    )
+    if ensure_test_perturbation:
+        test_conds = _ensure_domain_test_perturbation(
+            adata=adata,
+            label_key=label_key,
+            ctrl_label=ctrl_label,
+            domain_key=domain_key,
+            test_domain_values=test_domain_values,
+            test_conds=test_conds,
+            seed=int(seed),
+        )
+        remaining_conds = [c for c in all_conds if c not in set(test_conds)]
+
+    val_conds, train_conds = _split_conditions_for_holdout(
+        remaining_conds,
+        ratio=float(val_ratio),
+        seed=int(seed),
+    )
+
+    cond_series = adata.obs[label_key].astype(str)
+    domain_series = adata.obs[domain_key].astype(str)
+    train_domain_set = {str(x) for x in train_domain_values}
+    test_domain_set = {str(x) for x in test_domain_values}
+
+    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(
+        list(train_conds) + [ctrl_label]
+    )
+    val_mask = domain_series.isin(train_domain_set) & cond_series.isin(
+        list(val_conds) + [ctrl_label]
+    )
+    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(
+        list(test_conds) + [ctrl_label]
+    )
+
+    if not np.any(train_mask.values):
+        raise ValueError("domain unseen-drug split produced empty train set")
+    if not np.any(val_mask.values):
+        raise ValueError("domain unseen-drug split produced empty validation set")
+    if not np.any(test_mask.values):
+        raise ValueError("domain unseen-drug split produced empty test set")
+    test_pert_mask = test_mask.values & (cond_series.values != ctrl_label)
+    if not np.any(test_pert_mask):
+        raise ValueError("domain unseen-drug split produced no test perturbation cells")
+
+    return {
+        "train": adata[train_mask.values],
+        "val": adata[val_mask.values],
+        "test": adata[test_mask.values],
+        "train_conds": [str(c) for c in train_conds],
+        "val_conds": [str(c) for c in val_conds],
+        "test_conds": [str(c) for c in test_conds],
+        "split_policy": "domain_unseen_drug",
+        "split_domain_key": str(domain_key),
+        "train_domain_values": [str(x) for x in train_domain_values],
+        "test_domain_values": [str(x) for x in test_domain_values],
+    }
+
+
+def _split_by_dataset_config_policy(
+    data: TriShiftData,
+    *,
+    dataset_cfg: dict,
+    seed: int,
+) -> dict | None:
+    """Return a custom split dict when a dataset declares split_policy."""
+    policy = dataset_cfg.get("split_policy")
+    if not policy:
+        return None
+    policy_name = str(policy.get("name", "")).strip()
+    if policy_name == "donor_unseen_drug":
+        return _split_domain_unseen_drug(
+            data,
+            seed=int(seed),
+            domain_key=str(policy.get("domain_key", "donor_id")),
+            train_domain_values=[str(x) for x in policy.get("train_domain_values", [])],
+            test_domain_values=[str(x) for x in policy.get("test_domain_values", [])],
+            drug_test_ratio=float(policy.get("drug_test_ratio", dataset_cfg.get("test_ratio", 0.2))),
+            val_ratio=float(policy.get("val_ratio", 0.1)),
+            ensure_test_perturbation=True,
+        )
+    if policy_name == "celltype_unseen_drug":
+        domain_key = str(policy.get("domain_key", "cell_type"))
+        domains = _domain_values(data.adata_all, domain_key)
+        test_domains, train_domains = _split_conditions_for_holdout(
+            domains,
+            ratio=float(policy.get("domain_test_ratio", 0.2)),
+            seed=int(seed),
+        )
+        return _split_domain_unseen_drug(
+            data,
+            seed=int(seed),
+            domain_key=domain_key,
+            train_domain_values=train_domains,
+            test_domain_values=test_domains,
+            drug_test_ratio=float(policy.get("drug_test_ratio", dataset_cfg.get("test_ratio", 0.2))),
+            val_ratio=float(policy.get("val_ratio", 0.1)),
+            ensure_test_perturbation=True,
+        )
+    raise ValueError(f"Unsupported split_policy.name={policy_name!r}")
+
+
 def _make_stage1_cache_signature(
     *,
     stage1_train_cfg: dict,
@@ -665,11 +881,13 @@ def run_dataset_with_paths(
     k = int(defaults.get("k_topk", 5))
     n_eval_ensemble = int(defaults.get("n_eval_ensemble", 300))
     eval_ctrl_pool_mode = str(defaults.get("eval_ctrl_pool_mode", "random_train_ctrl"))
+    eval_ctrl_source = str(defaults.get("eval_ctrl_source", "train_ctrl"))
     eval_genept_distance = str(defaults.get("eval_genept_distance", "both"))
     eval_genept_compare_mode = str(defaults.get("eval_genept_compare_mode", "aggregate_cond"))
     eval_genept_train_candidate_mode = str(
         defaults.get("eval_genept_train_candidate_mode", "all_train_pert")
     )
+    eval_batch_size = int(defaults.get("performance", {}).get("chunk_size", 4096))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
     if train_mode not in valid_train_modes:
@@ -705,6 +923,12 @@ def run_dataset_with_paths(
             f"Unsupported eval_ctrl_pool_mode={eval_ctrl_pool_mode}. "
             f"Supported: {sorted(valid_eval_pool_modes)}"
         )
+    valid_eval_ctrl_sources = {"train_ctrl", "target_domain_test_ctrl"}
+    if eval_ctrl_source not in valid_eval_ctrl_sources:
+        raise ValueError(
+            f"Unsupported eval_ctrl_source={eval_ctrl_source}. "
+            f"Supported: {sorted(valid_eval_ctrl_sources)}"
+        )
     valid_eval_distances = {"cosine", "l2", "both"}
     if eval_genept_distance not in valid_eval_distances:
         raise ValueError(
@@ -735,6 +959,8 @@ def run_dataset_with_paths(
         )
     sample_soft_ctrl = bool(ablation_cfg.get("sample_soft_ctrl", True))
     per_condition_ot = bool(ablation_cfg.get("per_condition_ot", False))
+    balance_ot_by_group = bool(ablation_cfg.get("balance_ot_by_group", False))
+    balance_ot_group_key = str(ablation_cfg.get("balance_ot_group_key", "cell_type"))
     reuse_ot_cache = bool(ablation_cfg.get("reuse_ot_cache", False))
     reuse_z_mu_cache = bool(ablation_cfg.get("reuse_z_mu_cache", False))
     latent_loss_type = str(ablation_cfg.get("latent_loss_type", "gears"))
@@ -806,7 +1032,9 @@ def run_dataset_with_paths(
     if mode == "scpram_ot":
         msg = (
             f"[run] matching_mode=scpram_ot (EMD hard-match semantics; "
-            f"k_topk={k}, per_condition_ot={per_condition_ot})"
+            f"k_topk={k}, per_condition_ot={per_condition_ot}, "
+            f"balance_ot_by_group={balance_ot_by_group}, "
+            f"balance_ot_group_key={balance_ot_group_key})"
         )
         if k > 1:
             msg += " [top-k extension of scPRAM OT]"
@@ -836,6 +1064,16 @@ def run_dataset_with_paths(
             f"candidate_mode={eval_genept_train_candidate_mode}, "
             f"sample_size=n_eval_ensemble={n_eval_ensemble}"
         )
+    if eval_ctrl_source == "target_domain_test_ctrl":
+        print(
+            "[run] eval_ctrl_source=target_domain_test_ctrl "
+            "(OpenProblems cell-level target-domain controls; ignores nearest/random ctrl sampling)"
+        )
+    if balance_ot_by_group:
+        print(
+            "[run] OT group balancing enabled: "
+            f"group_key={balance_ot_group_key}"
+        )
 
     # Snapshot the exact configs used for this run for reproducibility.
     # Keep names stable for downstream scripts.
@@ -863,6 +1101,7 @@ def run_dataset_with_paths(
             "paths_path": str(paths_path),
             "out_dir": str(out_dir_path),
             "fast": bool(fast),
+            "split_policy": dataset_cfg.get("split_policy", None),
             "seed": int(base_seed),
             "train_mode": str(train_mode),
             "matching_mode": str(mode),
@@ -872,6 +1111,7 @@ def run_dataset_with_paths(
             "predict_shift_auto_overrides": list(predict_shift_auto_overrides),
             "n_eval_ensemble": int(n_eval_ensemble),
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
+            "eval_ctrl_source": str(eval_ctrl_source),
             "eval_ctrl_modes_executed": (
                 ["random_train_ctrl", "nearest_genept_ot_pool"]
                 if str(eval_ctrl_pool_mode) == "all"
@@ -883,8 +1123,11 @@ def run_dataset_with_paths(
             "eval_compare_modes_executed": list(compare_modes_executed),
             "eval_candidate_modes_executed": list(candidate_modes_executed),
             "eval_ctrl_sample_size_source": "n_eval_ensemble",
+            "eval_batch_size": int(eval_batch_size),
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
+            "balance_ot_by_group": bool(balance_ot_by_group),
+            "balance_ot_group_key": str(balance_ot_group_key),
         }
         meta_path = out_dir_path / "run_meta.json"
         if meta_path.exists():
@@ -971,7 +1214,23 @@ def run_dataset_with_paths(
         print(f"[run] split {split_idx}/{n_splits} (split_id={split_id})")
         set_seeds(base_seed)
         subgroup_df = None
-        if name == "norman":
+        custom_split = _split_by_dataset_config_policy(
+            data,
+            dataset_cfg=dataset_cfg,
+            seed=split_id,
+        )
+        if custom_split is not None:
+            split_dict = custom_split
+            print(
+                "[split] policy="
+                f"{split_dict.get('split_policy')} domain_key={split_dict.get('split_domain_key')} "
+                f"train_domains={split_dict.get('train_domain_values')} "
+                f"test_domains={split_dict.get('test_domain_values')} "
+                f"train_conds={len(split_dict.get('train_conds', []))} "
+                f"val_conds={len(split_dict.get('val_conds', []))} "
+                f"test_conds={len(split_dict.get('test_conds', []))}"
+            )
+        elif name == "norman":
             subgroup_df = _norman_subgroup(
                 list(adata.obs["condition"].astype(str).unique()),
                 seed=split_id,
@@ -1073,7 +1332,9 @@ def run_dataset_with_paths(
 
         topk_cache_key = (
             f"name={name}|mode={mode}|k={k}|split_id={split_id}|"
-            f"stage1_sig={stage1_cache_sig}|per_condition_ot={bool(per_condition_ot)}"
+            f"stage1_sig={stage1_cache_sig}|per_condition_ot={bool(per_condition_ot)}|"
+            f"balance_ot_by_group={bool(balance_ot_by_group)}|"
+            f"balance_ot_group_key={str(balance_ot_group_key)}"
         )
         cache_path = cache_dir / (
             f"{name}_split{split_id}_{mode}_k{k}_s1{stage1_cache_sig[:12]}.npz"
@@ -1141,6 +1402,8 @@ def run_dataset_with_paths(
                 lambda_neg_expr=loss.lambda_neg_expr,
                 neg_expr_penalty=loss.neg_expr_penalty,
                 per_condition_ot=per_condition_ot,
+                balance_ot_by_group=balance_ot_by_group,
+                balance_ot_group_key=balance_ot_group_key,
                 disable_loss_z_supervision=disable_loss_z_supervision,
                 reuse_ot_cache=reuse_ot_cache,
                 topk_cache_key=topk_cache_key,
@@ -1176,6 +1439,8 @@ def run_dataset_with_paths(
                 lambda_neg_expr=loss.lambda_neg_expr,
                 neg_expr_penalty=loss.neg_expr_penalty,
                 per_condition_ot=per_condition_ot,
+                balance_ot_by_group=balance_ot_by_group,
+                balance_ot_group_key=balance_ot_group_key,
                 disable_loss_z_supervision=disable_loss_z_supervision,
                 reuse_ot_cache=reuse_ot_cache,
                 topk_cache_key=topk_cache_key,
@@ -1210,6 +1475,8 @@ def run_dataset_with_paths(
                     reuse_ot_cache=reuse_ot_cache,
                     cache_key=topk_cache_key,
                     ctrl_global_indices=train_ctrl_global_idx,
+                    balance_ot_by_group=balance_ot_by_group,
+                    balance_ot_group_key=balance_ot_group_key,
                 )
                 eval_distances = (
                     ["cosine", "l2"] if eval_genept_distance == "both" else [eval_genept_distance]
@@ -1313,6 +1580,8 @@ def run_dataset_with_paths(
                                 n_ensemble=n_eval_ensemble,
                                 base_seed=base_seed,
                                 eval_ctrl_strategy=eval_strategy,
+                                eval_ctrl_source=eval_ctrl_source,
+                                eval_batch_size=eval_batch_size,
                             )
                             metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
 
@@ -1366,6 +1635,8 @@ def run_dataset_with_paths(
                                 base_seed=base_seed,
                                 out_path=str(out_pkl),
                                 eval_ctrl_strategy=eval_strategy,
+                                eval_ctrl_source=eval_ctrl_source,
+                                eval_batch_size=eval_batch_size,
                             )
 
                             # Alias policy for nearest-only mode:
@@ -1392,6 +1663,8 @@ def run_dataset_with_paths(
                     split_id=split_id,
                     n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
+                    eval_ctrl_source=eval_ctrl_source,
+                    eval_batch_size=eval_batch_size,
                 )
                 metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
                 out_default = out_dir_path / f"trishift_{name}_{split_id}.pkl"
@@ -1402,6 +1675,8 @@ def run_dataset_with_paths(
                     n_ensemble=n_eval_ensemble,
                     base_seed=base_seed,
                     out_path=str(out_default),
+                    eval_ctrl_source=eval_ctrl_source,
+                    eval_batch_size=eval_batch_size,
                 )
                 if eval_ctrl_pool_mode == "all":
                     with open(out_dir_path / f"trishift_{name}_{split_id}_random.pkl", "wb") as f:

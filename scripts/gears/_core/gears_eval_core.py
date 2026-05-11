@@ -81,7 +81,7 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
         project_name="dixit",
         train_gene_set_size=0.9,
-        test_ratio=0.1,
+        test_ratio=0.2,
     ),
     "norman": GearsDatasetConfig(
         gears_data_name="norman",

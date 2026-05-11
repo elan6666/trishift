@@ -12,6 +12,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from trishift._external_metrics import (  # noqa: E402
+    compute_distributional_systema_metrics_from_arrays,
+    compute_mean_effect_metrics,
     compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
     regression_r2_safe,
@@ -74,11 +76,38 @@ def test_compute_scpram_metrics_contains_regression_var_r2():
     assert np.isfinite(float(out["r2_degs_var_mean"])) or np.isnan(float(out["r2_degs_var_mean"]))
 
 
+def test_mean_effect_and_distributional_systema_metrics():
+    ctrl = np.ones((8, 6), dtype=np.float32)
+    true = ctrl.copy()
+    pred = ctrl.copy()
+    true[:, [1, 2, 3]] += np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+    pred[:, [1, 2, 3]] += np.asarray([1.0, 2.0, 3.0], dtype=np.float32)
+    deg_idx = np.asarray([1, 2, 3], dtype=int)
+    mean_out = compute_mean_effect_metrics(true, pred, ctrl, deg_idx)
+    assert abs(float(mean_out["nmse"])) < 1e-12
+    assert abs(float(mean_out["pearson"]) - 1.0) < 1e-12
+    assert abs(float(mean_out["deg_mean_r2"]) - 1.0) < 1e-12
+
+    dist = compute_distributional_systema_metrics_from_arrays(
+        X_true=true,
+        X_pred=pred,
+        reference=ctrl.mean(axis=0),
+        deg_idx=deg_idx,
+        sample_ratio=0.8,
+        times=5,
+        seed=7,
+    )
+    assert "systema_corr_20de_allpert_dist" in dist["metrics"]
+    assert "systema_corr_deg_r2_dist" in dist["metrics"]
+    assert abs(float(dist["metrics"]["systema_corr_20de_allpert_dist"]) - 1.0) < 1e-12
+
+
 def main():
     test_regression_r2_safe_matches_sklearn()
     test_regression_r2_safe_nan_on_invalid_inputs()
     test_pearson_delta_reference_metrics_adds_regression_r2()
     test_compute_scpram_metrics_contains_regression_var_r2()
+    test_mean_effect_and_distributional_systema_metrics()
     print("test_regression_r2_metrics: PASS")
 
 

@@ -4,6 +4,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 import anndata as ad
+import scipy.sparse as sp
 
 from trishift import _utils
 
@@ -66,6 +67,22 @@ class TriShiftData:
             "generator": str(generator),
             "version": int(version),
         }
+
+    def _ensure_scanpy_sparse_index_dtype(self) -> None:
+        """Normalize sparse X index arrays before Scanpy mutates the matrix in DEG."""
+        X = self.adata_all.X
+        if not sp.issparse(X):
+            return
+        X_csr = X.tocsr(copy=True)
+        if X_csr.nnz > np.iinfo(np.int32).max:
+            raise ValueError(
+                "Sparse X has too many non-zero entries for Scanpy's int32 sparse index path"
+            )
+        if X_csr.indices.dtype != np.int32:
+            X_csr.indices = X_csr.indices.astype(np.int32, copy=False)
+        if X_csr.indptr.dtype != np.int32:
+            X_csr.indptr = X_csr.indptr.astype(np.int32, copy=False)
+        self.adata_all.X = X_csr
 
     def _refresh_condition_cache(self) -> None:
         """Refresh condition-derived caches after adata changes."""
@@ -147,6 +164,7 @@ class TriShiftData:
             print("[degs] computing with scanpy")
             deg_method = "t-test"
             var_names_backup = None
+            self._ensure_scanpy_sparse_index_dtype()
             if self.var_gene_key in self.adata_all.var.columns:
                 var_names_backup = self.adata_all.var_names.copy()
                 self.adata_all.var_names = (
@@ -403,6 +421,8 @@ class TriShiftData:
         reuse_ot_cache: bool = False,
         cache_key: str | None = None,
         ctrl_global_indices: np.ndarray | None = None,
+        balance_ot_by_group: bool = False,
+        balance_ot_group_key: str = "cell_type",
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Build or load top-k control indices for pert cells in split_adata.
 
@@ -428,7 +448,9 @@ class TriShiftData:
 
         print(
             f"[topk] start: mode={mode}, k={k}, seed={seed}, "
-            f"candidates={candidates}, per_condition_ot={per_condition_ot}"
+            f"candidates={candidates}, per_condition_ot={per_condition_ot}, "
+            f"balance_ot_by_group={bool(balance_ot_by_group)}, "
+            f"balance_ot_group_key={balance_ot_group_key}"
         )
         split_cond = split_adata.obs[self.label_key].astype(str).values
         expected_n_pert = int(np.sum(split_cond != self.ctrl_label))
@@ -486,6 +508,23 @@ class TriShiftData:
                             f"{bool(cached['per_condition_ot']) if 'per_condition_ot' in cached else False}, "
                             f"expected={bool(per_condition_ot)}"
                         )
+                    elif bool(cached["balance_ot_by_group"]) != bool(balance_ot_by_group) if "balance_ot_by_group" in cached else bool(balance_ot_by_group):
+                        print(
+                            "[topk] cache OT balance mode mismatch; rebuilding: "
+                            f"path={cache_path_eff}, cached_balance_ot_by_group="
+                            f"{bool(cached['balance_ot_by_group']) if 'balance_ot_by_group' in cached else False}, "
+                            f"expected={bool(balance_ot_by_group)}"
+                        )
+                    elif (
+                        bool(balance_ot_by_group)
+                        and "balance_ot_group_key" in cached
+                        and str(cached["balance_ot_group_key"]) != str(balance_ot_group_key)
+                    ):
+                        print(
+                            "[topk] cache OT balance group key mismatch; rebuilding: "
+                            f"path={cache_path_eff}, cached_group={str(cached['balance_ot_group_key'])}, "
+                            f"expected={balance_ot_group_key}"
+                        )
                     elif cache_key is not None and (
                         "cache_key" not in cached or str(cached["cache_key"]) != str(cache_key)
                     ):
@@ -531,6 +570,149 @@ class TriShiftData:
         n_ctrl = z_ctrl.shape[0]
         n_pert = z_pert.shape[0]
         topk_weights = None
+        balance_ot_active = bool(balance_ot_by_group) and mode in {"ot", "soft_ot", "scpram_ot"}
+        if balance_ot_active and str(balance_ot_group_key) not in self.adata_all.obs.columns:
+            raise ValueError(
+                f"balance_ot_by_group=True requires adata.obs[{balance_ot_group_key!r}]"
+            )
+
+        def _balanced_local_indices(
+            global_idx_local: np.ndarray,
+            *,
+            seed_offset: int,
+        ) -> np.ndarray:
+            """Return local row indices upsampled to equal counts per group."""
+            if not balance_ot_active:
+                return np.arange(len(global_idx_local), dtype=int)
+            group_values = (
+                self.adata_all.obs.iloc[np.asarray(global_idx_local, dtype=int)][
+                    str(balance_ot_group_key)
+                ]
+                .astype(str)
+                .values
+            )
+            unique_groups = sorted(pd.unique(group_values).tolist())
+            if len(unique_groups) <= 1:
+                return np.arange(len(global_idx_local), dtype=int)
+            group_to_idx = {
+                group: np.where(group_values == group)[0]
+                for group in unique_groups
+            }
+            target_n = max(len(idx) for idx in group_to_idx.values())
+            rng = np.random.RandomState(int(seed) + int(seed_offset))
+            balanced: list[np.ndarray] = []
+            for group in unique_groups:
+                idx = group_to_idx[group]
+                if idx.size == 0:
+                    continue
+                replace = idx.size < target_n
+                balanced.append(rng.choice(idx, size=target_n, replace=replace))
+            if not balanced:
+                return np.arange(len(global_idx_local), dtype=int)
+            return np.concatenate(balanced).astype(int, copy=False)
+
+        def _balance_pair(
+            z_ctrl_local: torch.Tensor,
+            z_pert_local: torch.Tensor,
+            ctrl_global_idx_local: np.ndarray,
+            pert_global_idx_local: np.ndarray,
+            *,
+            seed_offset: int,
+        ) -> tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]:
+            """Balance ctrl/pert tensors and return balanced-to-original local maps."""
+            ctrl_map = _balanced_local_indices(
+                ctrl_global_idx_local,
+                seed_offset=seed_offset,
+            )
+            pert_map = _balanced_local_indices(
+                pert_global_idx_local,
+                seed_offset=seed_offset + 7919,
+            )
+            if not balance_ot_active:
+                return z_ctrl_local, z_pert_local, ctrl_map, pert_map
+            ctrl_t = torch.as_tensor(ctrl_map, dtype=torch.long, device=z_ctrl_local.device)
+            pert_t = torch.as_tensor(pert_map, dtype=torch.long, device=z_pert_local.device)
+            return (
+                torch.index_select(z_ctrl_local, 0, ctrl_t),
+                torch.index_select(z_pert_local, 0, pert_t),
+                ctrl_map,
+                pert_map,
+            )
+
+        def _aggregate_balanced_coupling(
+            coupling_balanced: np.ndarray,
+            *,
+            ctrl_map: np.ndarray,
+            pert_map: np.ndarray,
+            n_ctrl_local: int,
+            n_pert_local: int,
+        ) -> np.ndarray:
+            """Collapse duplicated balanced rows/columns back to original local rows."""
+            coupling_balanced = np.asarray(coupling_balanced, dtype=np.float64)
+            if not balance_ot_active:
+                return coupling_balanced
+            out = np.zeros((int(n_ctrl_local), int(n_pert_local)), dtype=np.float64)
+            row_idx = np.repeat(np.asarray(ctrl_map, dtype=int), len(pert_map))
+            col_idx = np.tile(np.asarray(pert_map, dtype=int), len(ctrl_map))
+            np.add.at(out, (row_idx, col_idx), coupling_balanced.reshape(-1))
+            return out
+
+        def _topk_from_coupling_np(
+            coupling_local: np.ndarray,
+            k_local: int,
+            need_weights_local: bool,
+        ) -> tuple[np.ndarray, np.ndarray | None]:
+            """Convert a ctrl x pert coupling matrix to pert-row top-k ctrl indices."""
+            if coupling_local.ndim != 2:
+                raise ValueError(f"coupling must be 2D, got shape={coupling_local.shape}")
+            n_ctrl_local, n_pert_local = coupling_local.shape
+            if n_ctrl_local <= 0:
+                raise ValueError("coupling has no ctrl rows")
+            k_eff_local = min(k_local, n_ctrl_local)
+            sorted_idx = np.argsort(coupling_local, axis=0)[::-1, :]
+            topk_idx_local = np.ascontiguousarray(
+                sorted_idx[:k_eff_local, :].T.astype(np.int64, copy=False)
+            )
+            weights_local = None
+            if need_weights_local:
+                col_idx = np.arange(n_pert_local)[None, :]
+                topk_vals = coupling_local[sorted_idx[:k_eff_local, :], col_idx].T
+                topk_vals = np.asarray(topk_vals, dtype=np.float64)
+                row_sum = topk_vals.sum(axis=1, keepdims=True)
+                safe = row_sum > 0
+                weights_local = np.zeros_like(topk_vals, dtype=np.float32)
+                if np.any(safe):
+                    weights_local[safe[:, 0]] = (
+                        topk_vals[safe[:, 0]] / row_sum[safe[:, 0]]
+                    ).astype(np.float32, copy=False)
+                if np.any(~safe[:, 0]):
+                    weights_local[~safe[:, 0]] = 1.0 / max(k_eff_local, 1)
+
+            if k_eff_local < k_local:
+                pad_idx = np.repeat(topk_idx_local[:, -1:], k_local - k_eff_local, axis=1)
+                topk_idx_local = np.concatenate([topk_idx_local, pad_idx], axis=1)
+                if need_weights_local and weights_local is not None:
+                    pad_w = np.repeat(weights_local[:, -1:], k_local - k_eff_local, axis=1)
+                    weights_local = np.concatenate([weights_local, pad_w], axis=1)
+                    row_sum = np.clip(weights_local.sum(axis=1, keepdims=True), 1e-12, None)
+                    weights_local = (weights_local / row_sum).astype(np.float32, copy=False)
+
+            return topk_idx_local.astype(int, copy=False), weights_local
+
+        if balance_ot_active:
+            group_counts = (
+                self.adata_all.obs.iloc[np.asarray(ctrl_global_idx, dtype=int)][
+                    str(balance_ot_group_key)
+                ]
+                .astype(str)
+                .value_counts()
+                .sort_index()
+                .to_dict()
+            )
+            print(
+                "[topk] OT group balancing enabled: "
+                f"group_key={balance_ot_group_key}, ctrl_group_counts={group_counts}"
+            )
 
         if mode == "knn":
             print("[topk] computing knn")
@@ -583,6 +765,36 @@ class TriShiftData:
                 )
                 return vals_local, idx_local
 
+            def _compute_ot_coupling(
+                z_ctrl_local: torch.Tensor,
+                z_pert_local: torch.Tensor,
+                reg_local: float,
+            ) -> torch.Tensor:
+                n_ctrl_local = z_ctrl_local.shape[0]
+                n_pert_local = z_pert_local.shape[0]
+                a_local = torch.full(
+                    (n_ctrl_local,),
+                    1.0 / max(n_ctrl_local, 1),
+                    device=z_ctrl_local.device,
+                )
+                b_local = torch.full(
+                    (n_pert_local,),
+                    1.0 / max(n_pert_local, 1),
+                    device=z_pert_local.device,
+                )
+                u_local = torch.ones_like(a_local)
+                v_local = torch.ones_like(b_local)
+                cost_local = torch.cdist(z_ctrl_local, z_pert_local, p=2)
+                K_local = torch.exp(-cost_local / reg_local)
+                for _ in range(200):
+                    Kv_local = K_local @ v_local
+                    Kv_local = torch.clamp(Kv_local, min=1e-12)
+                    u_local = a_local / Kv_local
+                    KTu_local = K_local.T @ u_local
+                    KTu_local = torch.clamp(KTu_local, min=1e-12)
+                    v_local = b_local / KTu_local
+                return (u_local[:, None] * K_local) * v_local[None, :]
+
             def _compute_with_fallback(
                 z_ctrl_local: torch.Tensor,
                 z_pert_local: torch.Tensor,
@@ -621,6 +833,39 @@ class TriShiftData:
                         k,
                     )
 
+            def _compute_coupling_with_fallback(
+                z_ctrl_local: torch.Tensor,
+                z_pert_local: torch.Tensor,
+            ) -> torch.Tensor:
+                pair_count = int(z_ctrl_local.shape[0]) * int(z_pert_local.shape[0])
+                if z_ctrl_local.device.type == "cuda" and pair_count > 30_000_000:
+                    print(
+                        "[topk] large balanced ot matrix on cuda "
+                        f"(ctrl={z_ctrl_local.shape[0]}, pert={z_pert_local.shape[0]}, pairs={pair_count}); "
+                        "using cpu for ot"
+                    )
+                    return _compute_ot_coupling(
+                        z_ctrl_local.detach().cpu(),
+                        z_pert_local.detach().cpu(),
+                        reg,
+                    )
+                try:
+                    return _compute_ot_coupling(z_ctrl_local, z_pert_local, reg)
+                except RuntimeError as exc:
+                    oom = "out of memory" in str(exc).lower()
+                    if z_ctrl_local.device.type != "cuda" or not oom:
+                        raise
+                    print("[topk] cuda oom in balanced ot; falling back to cpu")
+                    try:
+                        torch.cuda.empty_cache()
+                    except RuntimeError as cache_exc:
+                        print(f"[topk] warning: empty_cache failed after oom: {cache_exc}")
+                    return _compute_ot_coupling(
+                        z_ctrl_local.detach().cpu(),
+                        z_pert_local.detach().cpu(),
+                        reg,
+                    )
+
             if per_condition_ot:
                 split_pert_cond = split_cond[split_pert_mask]
                 unique_conds = pd.unique(split_pert_cond)
@@ -634,32 +879,72 @@ class TriShiftData:
                         continue
                     cond_t = torch.as_tensor(cond_local_idx, dtype=torch.long, device=z_pert.device)
                     z_pert_cond = torch.index_select(z_pert, 0, cond_t)
-                    vals_cond, idx_cond = _compute_with_fallback(z_ctrl, z_pert_cond)
+                    if balance_ot_active:
+                        pert_global_cond = pert_global_idx[cond_local_idx]
+                        z_ctrl_bal, z_pert_bal, ctrl_map, pert_map = _balance_pair(
+                            z_ctrl,
+                            z_pert_cond,
+                            ctrl_global_idx,
+                            pert_global_cond,
+                            seed_offset=1009 + len(str(cond)),
+                        )
+                        coupling_bal = _compute_coupling_with_fallback(z_ctrl_bal, z_pert_bal)
+                        coupling_cond = _aggregate_balanced_coupling(
+                            coupling_bal.detach().cpu().numpy(),
+                            ctrl_map=ctrl_map,
+                            pert_map=pert_map,
+                            n_ctrl_local=n_ctrl,
+                            n_pert_local=cond_local_idx.size,
+                        )
+                        idx_np, w_np = _topk_from_coupling_np(coupling_cond, k, need_weights)
+                        topk_map[cond_local_idx] = idx_np
+                        if need_weights and w_np is not None:
+                            topk_weights[cond_local_idx] = w_np
+                    else:
+                        vals_cond, idx_cond = _compute_with_fallback(z_ctrl, z_pert_cond)
 
-                    k_eff = idx_cond.shape[1]
-                    if k_eff < k:
-                        pad_idx = idx_cond[:, -1:].repeat(1, k - k_eff)
-                        idx_cond = torch.cat([idx_cond, pad_idx], dim=1)
-                        vals_cond = torch.cat([vals_cond, vals_cond[:, -1:].repeat(1, k - k_eff)], dim=1)
+                        k_eff = idx_cond.shape[1]
+                        if k_eff < k:
+                            pad_idx = idx_cond[:, -1:].repeat(1, k - k_eff)
+                            idx_cond = torch.cat([idx_cond, pad_idx], dim=1)
+                            vals_cond = torch.cat([vals_cond, vals_cond[:, -1:].repeat(1, k - k_eff)], dim=1)
 
-                    idx_np = idx_cond.cpu().numpy().astype(int)
-                    topk_map[cond_local_idx] = idx_np
-                    if need_weights:
-                        weight_sum = vals_cond.sum(dim=1, keepdim=True).clamp_min(1e-12)
-                        w_cond = (vals_cond / weight_sum).cpu().numpy().astype(np.float32)
-                        topk_weights[cond_local_idx] = w_cond
+                        idx_np = idx_cond.cpu().numpy().astype(int)
+                        topk_map[cond_local_idx] = idx_np
+                        if need_weights:
+                            weight_sum = vals_cond.sum(dim=1, keepdim=True).clamp_min(1e-12)
+                            w_cond = (vals_cond / weight_sum).cpu().numpy().astype(np.float32)
+                            topk_weights[cond_local_idx] = w_cond
             else:
-                vals, idx = _compute_with_fallback(z_ctrl, z_pert)
-                k_eff = idx.shape[1]
-                if k_eff < k:
-                    pad = idx[:, -1:].repeat(1, k - k_eff)
-                    idx = torch.cat([idx, pad], dim=1)
-                    vals = torch.cat([vals, vals[:, -1:].repeat(1, k - k_eff)], dim=1)
-                topk_map = idx.cpu().numpy().astype(int)
-                if need_weights:
-                    weight_sum = vals.sum(dim=1, keepdim=True).clamp_min(1e-12)
-                    weights = vals / weight_sum
-                    topk_weights = weights.cpu().numpy().astype(np.float32)
+                if balance_ot_active:
+                    z_ctrl_bal, z_pert_bal, ctrl_map, pert_map = _balance_pair(
+                        z_ctrl,
+                        z_pert,
+                        ctrl_global_idx,
+                        pert_global_idx,
+                        seed_offset=1009,
+                    )
+                    coupling_bal = _compute_coupling_with_fallback(z_ctrl_bal, z_pert_bal)
+                    coupling = _aggregate_balanced_coupling(
+                        coupling_bal.detach().cpu().numpy(),
+                        ctrl_map=ctrl_map,
+                        pert_map=pert_map,
+                        n_ctrl_local=n_ctrl,
+                        n_pert_local=n_pert,
+                    )
+                    topk_map, topk_weights = _topk_from_coupling_np(coupling, k, need_weights)
+                else:
+                    vals, idx = _compute_with_fallback(z_ctrl, z_pert)
+                    k_eff = idx.shape[1]
+                    if k_eff < k:
+                        pad = idx[:, -1:].repeat(1, k - k_eff)
+                        idx = torch.cat([idx, pad], dim=1)
+                        vals = torch.cat([vals, vals[:, -1:].repeat(1, k - k_eff)], dim=1)
+                    topk_map = idx.cpu().numpy().astype(int)
+                    if need_weights:
+                        weight_sum = vals.sum(dim=1, keepdim=True).clamp_min(1e-12)
+                        weights = vals / weight_sum
+                        topk_weights = weights.cpu().numpy().astype(np.float32)
 
         elif mode == "scpram_ot":
             print("[topk] computing scpram_ot (EMD)")
@@ -755,13 +1040,50 @@ class TriShiftData:
                     cond_local_idx = np.where(split_pert_cond == cond)[0]
                     if cond_local_idx.size == 0:
                         continue
-                    coupling_cond = _compute_emd_coupling(z_ctrl_np, z_pert_np[cond_local_idx])
+                    if balance_ot_active:
+                        pert_global_cond = pert_global_idx[cond_local_idx]
+                        ctrl_map = _balanced_local_indices(
+                            ctrl_global_idx,
+                            seed_offset=2003 + len(str(cond)),
+                        )
+                        pert_map = _balanced_local_indices(
+                            pert_global_cond,
+                            seed_offset=2003 + 7919 + len(str(cond)),
+                        )
+                        coupling_bal = _compute_emd_coupling(
+                            z_ctrl_np[ctrl_map],
+                            z_pert_np[cond_local_idx][pert_map],
+                        )
+                        coupling_cond = _aggregate_balanced_coupling(
+                            coupling_bal,
+                            ctrl_map=ctrl_map,
+                            pert_map=pert_map,
+                            n_ctrl_local=n_ctrl,
+                            n_pert_local=cond_local_idx.size,
+                        )
+                    else:
+                        coupling_cond = _compute_emd_coupling(z_ctrl_np, z_pert_np[cond_local_idx])
                     idx_np, w_np = _emd_topk_from_coupling(coupling_cond, k, need_weights)
                     topk_map[cond_local_idx] = idx_np
                     if need_weights and w_np is not None:
                         topk_weights[cond_local_idx] = w_np
             else:
-                coupling = _compute_emd_coupling(z_ctrl_np, z_pert_np)
+                if balance_ot_active:
+                    ctrl_map = _balanced_local_indices(ctrl_global_idx, seed_offset=2003)
+                    pert_map = _balanced_local_indices(pert_global_idx, seed_offset=2003 + 7919)
+                    coupling_bal = _compute_emd_coupling(
+                        z_ctrl_np[ctrl_map],
+                        z_pert_np[pert_map],
+                    )
+                    coupling = _aggregate_balanced_coupling(
+                        coupling_bal,
+                        ctrl_map=ctrl_map,
+                        pert_map=pert_map,
+                        n_ctrl_local=n_ctrl,
+                        n_pert_local=n_pert,
+                    )
+                else:
+                    coupling = _compute_emd_coupling(z_ctrl_np, z_pert_np)
                 topk_map, topk_weights = _emd_topk_from_coupling(coupling, k, need_weights)
 
         else:
@@ -789,6 +1111,8 @@ class TriShiftData:
                 split_sig=split_sig,
                 ctrl_sig=ctrl_sig,
                 per_condition_ot=bool(per_condition_ot),
+                balance_ot_by_group=bool(balance_ot_by_group),
+                balance_ot_group_key=str(balance_ot_group_key),
             )
             if cache_key is not None:
                 save_kwargs["cache_key"] = str(cache_key)

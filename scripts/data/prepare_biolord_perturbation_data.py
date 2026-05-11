@@ -47,9 +47,9 @@ DEFAULT_CONFIGS: dict[str, BiolordPrepConfig] = {
     ),
     "dixit": BiolordPrepConfig(
         dataset_name="dixit",
-        split_ids=(1, 2, 3, 4, 5),
+        split_ids=(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
         ordered_attribute_key="perturbation_neighbors",
-        test_ratio=0.1,
+        test_ratio=0.2,
     ),
 }
 
@@ -409,8 +409,11 @@ def build_argparser() -> argparse.ArgumentParser:
         "--split-ids",
         nargs="+",
         type=int,
-        default=[1, 2, 3, 4, 5],
-        help="Split ids to materialize into split*/subgroup* columns.",
+        default=None,
+        help=(
+            "Optional explicit split ids to materialize into split*/subgroup* columns. "
+            "If omitted, each dataset uses its configured default split ids."
+        ),
     )
     ap.add_argument(
         "--overwrite",
@@ -428,8 +431,13 @@ def build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
     ap = build_argparser()
     args = ap.parse_args()
-    split_ids = tuple(int(x) for x in args.split_ids)
     for dataset_name in args.datasets:
+        cfg = DEFAULT_CONFIGS[str(dataset_name)]
+        split_ids = (
+            tuple(int(x) for x in args.split_ids)
+            if args.split_ids is not None
+            else tuple(int(x) for x in cfg.split_ids)
+        )
         summary = prepare_dataset(
             dataset_name,
             split_ids=split_ids,

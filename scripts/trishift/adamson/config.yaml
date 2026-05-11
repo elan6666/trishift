@@ -73,7 +73,7 @@ defaults_overrides:
     stage1_use_train_split: true
     topk_strategy: random
     sample_soft_ctrl: false
-    per_condition_ot: true
+    per_condition_ot: false
     reuse_ot_cache: true
     reuse_z_mu_cache: false
     latent_loss_type: gears

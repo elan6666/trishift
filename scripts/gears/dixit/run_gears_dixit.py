@@ -35,7 +35,7 @@ def main() -> None:
         "dixit",
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
-        split_ids=[1, 2, 3, 4, 5],
+        split_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     )
 
 

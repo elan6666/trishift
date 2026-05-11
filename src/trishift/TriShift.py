@@ -6,8 +6,6 @@ import pickle
 import torch
 import torch.nn.functional as F
 import scipy.sparse as sp
-from scipy.stats import pearsonr
-from sklearn.metrics import mean_squared_error as mse
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from tqdm import tqdm
 
@@ -15,9 +13,11 @@ from trishift._model import TriShiftNet, aggregate_cond_embedding
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
+    compute_distributional_systema_metrics_from_arrays,
+    compute_mean_effect_metrics,
+    compute_scpram_metrics_bundle_from_arrays,
     compute_scpram_metrics_from_arrays,
     pearson_delta_reference_metrics,
-    regression_r2_safe,
 )
 
 
@@ -427,6 +427,176 @@ class TriShift:
         pick = rng.choice(valid.shape[0], size=sample_size, replace=True)
         ctrl_idx = valid[pick]
         return self._select_dense(X_ctrl, ctrl_idx)
+
+    @staticmethod
+    def _stable_condition_seed(base_seed: int, split_id: int, condition: str) -> int:
+        raw = f"{int(base_seed)}::{int(split_id)}::{condition}"
+        return int(sum((i + 1) * ord(ch) for i, ch in enumerate(raw)) % (2**32 - 1))
+
+    def _get_eval_ctrl_pool(
+        self,
+        split_dict: dict,
+        eval_ctrl_source: str = "train_ctrl",
+    ):
+        """Return eval control AnnData/X and a normalized control source label."""
+        source = str(eval_ctrl_source or "train_ctrl").strip()
+        if source in {"train_ctrl", "random_train_ctrl"}:
+            ctrl_adata, _ = self._get_ctrl_pool_from_split(split_dict.get("train"))
+            return ctrl_adata, ctrl_adata.X, "train_ctrl"
+        if source == "target_domain_test_ctrl":
+            test_adata = split_dict.get("test")
+            if test_adata is None:
+                raise ValueError("target_domain_test_ctrl requires split_dict['test']")
+            ctrl_adata, _ = self._get_ctrl_pool_from_split(test_adata)
+            if getattr(ctrl_adata, "n_obs", 0) <= 0:
+                raise ValueError("target_domain_test_ctrl found no ctrl cells in split_dict['test']")
+            return ctrl_adata, ctrl_adata.X, source
+        raise ValueError("eval_ctrl_source must be one of: train_ctrl, target_domain_test_ctrl")
+
+    @staticmethod
+    def _array_summary(x: np.ndarray) -> dict:
+        arr = np.asarray(x, dtype=np.float32)
+        return {
+            "n_cells": int(arr.shape[0]) if arr.ndim == 2 else 0,
+            "mean": arr.mean(axis=0).astype(np.float32) if arr.ndim == 2 and arr.shape[0] > 0 else np.asarray([], dtype=np.float32),
+            "var": arr.var(axis=0, ddof=1).astype(np.float32)
+            if arr.ndim == 2 and arr.shape[0] > 1
+            else (np.zeros(arr.shape[1], dtype=np.float32) if arr.ndim == 2 else np.asarray([], dtype=np.float32)),
+        }
+
+    @staticmethod
+    def _sample_rows_for_export(
+        x: np.ndarray,
+        sample_size: int,
+        seed: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        arr = np.asarray(x, dtype=np.float32)
+        n_rows = int(arr.shape[0]) if arr.ndim == 2 else 0
+        if n_rows <= 0:
+            return arr[:0], np.asarray([], dtype=int)
+        sample_n = min(n_rows, max(1, int(sample_size)))
+        if sample_n < n_rows:
+            rng = np.random.default_rng(int(seed))
+            idx = np.sort(rng.choice(n_rows, size=sample_n, replace=False))
+        else:
+            idx = np.arange(n_rows, dtype=int)
+        return np.asarray(arr[idx], dtype=np.float32), idx.astype(int)
+
+    def _predict_expr_for_condition(
+        self,
+        ctrl_expr: np.ndarray,
+        emb_table: torch.Tensor,
+        embd_idx_list,
+        batch_size: int = 4096,
+    ) -> np.ndarray:
+        ctrl_expr = np.asarray(ctrl_expr, dtype=np.float32)
+        if ctrl_expr.ndim != 2:
+            raise ValueError("ctrl_expr must be a 2D array")
+        pieces = []
+        step = max(1, int(batch_size))
+        for start in range(0, int(ctrl_expr.shape[0]), step):
+            end = min(start + step, int(ctrl_expr.shape[0]))
+            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, end - start)
+            pieces.append(self._predict_expr_from_ctrl(ctrl_expr[start:end], cond_vec))
+        if not pieces:
+            return np.zeros_like(ctrl_expr, dtype=np.float32)
+        return np.vstack(pieces).astype(np.float32, copy=False)
+
+    def _metrics_and_summary_for_condition(
+        self,
+        *,
+        cond: str,
+        true_expr: np.ndarray,
+        pred_expr: np.ndarray,
+        ctrl_expr: np.ndarray,
+        deg_idx: np.ndarray,
+        split_dict: dict,
+        split_id: int,
+        base_seed: int,
+        eval_ctrl_source: str,
+        systema_reference: np.ndarray,
+        include_distributional: bool = True,
+    ) -> tuple[dict, dict]:
+        metric_seed = self._stable_condition_seed(base_seed, split_id, cond)
+        mean_metrics = compute_mean_effect_metrics(
+            X_true=true_expr,
+            X_pred=pred_expr,
+            X_ctrl=ctrl_expr,
+            deg_idx=deg_idx,
+        )
+        systema_metrics = pearson_delta_reference_metrics(
+            X_true=np.asarray(true_expr, dtype=np.float32).mean(axis=0),
+            X_pred=np.asarray(pred_expr, dtype=np.float32).mean(axis=0),
+            reference=systema_reference,
+            top20_de_idxs=deg_idx,
+        )
+        metrics = {
+            **mean_metrics,
+            "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+            "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
+        }
+        if include_distributional:
+            scpram_bundle = compute_scpram_metrics_bundle_from_arrays(
+                X_true=true_expr,
+                X_pred=pred_expr,
+                deg_idx=deg_idx,
+                n_degs=100,
+                sample_ratio=0.8,
+                times=100,
+                seed=metric_seed,
+            )
+            dist_bundle = compute_distributional_systema_metrics_from_arrays(
+                X_true=true_expr,
+                X_pred=pred_expr,
+                reference=systema_reference,
+                deg_idx=deg_idx,
+                sample_ratio=0.8,
+                times=100,
+                seed=metric_seed,
+            )
+            metrics.update(scpram_bundle["metrics"])
+            metrics.update(dist_bundle["metrics"])
+            scpram_repeats = scpram_bundle["repeats"]
+            scpram_wasserstein = scpram_bundle["wasserstein_degs_by_gene"]
+            scpram_degs_used = scpram_bundle["degs_used"]
+            systema_repeats = dist_bundle["repeats"]
+            systema_degs_used = dist_bundle["degs_used"]
+        else:
+            metrics.update(
+                compute_scpram_metrics_from_arrays(
+                    X_true=true_expr,
+                    X_pred=pred_expr,
+                    deg_idx=deg_idx,
+                    n_degs=100,
+                    sample_ratio=0.8,
+                    times=100,
+                )
+            )
+            scpram_repeats = {}
+            scpram_wasserstein = np.asarray([], dtype=np.float32)
+            scpram_degs_used = np.asarray([], dtype=int)
+            systema_repeats = {}
+            systema_degs_used = np.asarray([], dtype=int)
+        full_summary = {
+            "metrics": dict(metrics),
+            "true": self._array_summary(true_expr),
+            "pred": self._array_summary(pred_expr),
+            "ctrl": self._array_summary(ctrl_expr),
+            "scpram_repeats": scpram_repeats,
+            "scpram_wasserstein_degs_by_gene": scpram_wasserstein,
+            "scpram_degs_used": scpram_degs_used,
+            "systema_distributional_repeats": systema_repeats,
+            "systema_distributional_degs_used": systema_degs_used,
+            "metric_seed": int(metric_seed),
+            "sample_ratio": 0.8,
+            "times": 100,
+            "split_policy": split_dict.get("split_policy", None),
+            "split_domain_key": split_dict.get("split_domain_key", None),
+            "train_domain_values": split_dict.get("train_domain_values", None),
+            "test_domain_values": split_dict.get("test_domain_values", None),
+            "eval_ctrl_source": str(eval_ctrl_source),
+        }
+        return metrics, full_summary
 
     def _build_condition_embedding_map(
         self,
@@ -972,6 +1142,8 @@ class TriShift:
         need_topk_weights: bool,
         reuse_ot_cache: bool = False,
         cache_key: str | None = None,
+        balance_ot_by_group: bool = False,
+        balance_ot_group_key: str = "cell_type",
     ) -> tuple[np.ndarray, np.ndarray | None]:
         if need_topk_weights:
             topk_map, topk_weights = self.data.build_or_load_topk_map(
@@ -986,6 +1158,8 @@ class TriShift:
                 reuse_ot_cache=reuse_ot_cache,
                 cache_key=cache_key,
                 ctrl_global_indices=ctrl_global_idx,
+                balance_ot_by_group=balance_ot_by_group,
+                balance_ot_group_key=balance_ot_group_key,
             )
             return topk_map, topk_weights
         topk_map = self.data.build_or_load_topk_map(
@@ -999,6 +1173,8 @@ class TriShift:
             reuse_ot_cache=reuse_ot_cache,
             cache_key=cache_key,
             ctrl_global_indices=ctrl_global_idx,
+            balance_ot_by_group=balance_ot_by_group,
+            balance_ot_group_key=balance_ot_group_key,
         )
         return topk_map, None
 
@@ -1631,6 +1807,8 @@ class TriShift:
         lambda_neg_expr: float = 0.0,
         neg_expr_penalty: str = "mse",
         per_condition_ot: bool = False,
+        balance_ot_by_group: bool = False,
+        balance_ot_group_key: str = "cell_type",
         disable_loss_z_supervision: bool = False,
         reuse_ot_cache: bool = False,
         topk_cache_key: str | None = None,
@@ -1710,6 +1888,8 @@ class TriShift:
             need_topk_weights=need_topk_weights,
             reuse_ot_cache=reuse_ot_cache,
             cache_key=topk_cache_key,
+            balance_ot_by_group=balance_ot_by_group,
+            balance_ot_group_key=balance_ot_group_key,
         )
         print(f"[stage23] topk_map built: shape={topk_map.shape}")
 
@@ -1737,6 +1917,8 @@ class TriShift:
                 need_topk_weights=need_topk_weights,
                 reuse_ot_cache=reuse_ot_cache,
                 cache_key=topk_cache_key,
+                balance_ot_by_group=balance_ot_by_group,
+                balance_ot_group_key=balance_ot_group_key,
             )
         z_ctrl_mu_all = z_mu_all[train_ctrl_global_idx]
         all_idx_map = {n: i for i, n in enumerate(self.data.adata_all.obs_names)}
@@ -2012,6 +2194,8 @@ class TriShift:
         lambda_neg_expr: float = 0.0,
         neg_expr_penalty: str = "mse",
         per_condition_ot: bool = False,
+        balance_ot_by_group: bool = False,
+        balance_ot_group_key: str = "cell_type",
         disable_loss_z_supervision: bool = False,
         reuse_ot_cache: bool = False,
         topk_cache_key: str | None = None,
@@ -2094,6 +2278,8 @@ class TriShift:
             need_topk_weights=need_topk_weights,
             reuse_ot_cache=reuse_ot_cache,
             cache_key=topk_cache_key,
+            balance_ot_by_group=balance_ot_by_group,
+            balance_ot_group_key=balance_ot_group_key,
         )
         print(f"[stage23] topk_map built: shape={topk_map.shape}")
 
@@ -2149,6 +2335,8 @@ class TriShift:
                 need_topk_weights=need_topk_weights,
                 reuse_ot_cache=reuse_ot_cache,
                 cache_key=topk_cache_key,
+                balance_ot_by_group=balance_ot_by_group,
+                balance_ot_group_key=balance_ot_group_key,
             )
 
         val_dataset = None
@@ -2638,6 +2826,8 @@ class TriShift:
         n_ensemble: int = 300,
         base_seed: int = 24,
         eval_ctrl_strategy: dict | None = None,
+        eval_ctrl_source: str = "train_ctrl",
+        eval_batch_size: int = 4096,
     ) -> pd.DataFrame:
         """Evaluate per condition with ensemble control sampling.
 
@@ -2656,7 +2846,13 @@ class TriShift:
         rng = np.random.RandomState(eval_seed)
         conds = split_dict["test_conds"]
         results = []
+        ctrl_adata, X_ctrl, ctrl_source_eff = self._get_eval_ctrl_pool(
+            split_dict=split_dict,
+            eval_ctrl_source=eval_ctrl_source,
+        )
         use_eval_pool = (
+            ctrl_source_eff != "target_domain_test_ctrl"
+            and
             isinstance(eval_ctrl_strategy, dict)
             and str(eval_ctrl_strategy.get("mode", "")) == "nearest_genept_ot_pool"
         )
@@ -2669,18 +2865,25 @@ class TriShift:
             n_ensemble
         )
 
-        train_ctrl_adata, _ = self._get_ctrl_pool_from_split(split_dict.get("train"))
-        X_ctrl = train_ctrl_adata.X
-        X_all = self.data.adata_all.X
-        cond_series = self.data.adata_all.obs[self.data.label_key].astype(str).values
+        test_adata = split_dict.get("test")
+        if test_adata is None:
+            raise ValueError("split_dict['test'] is required for evaluation")
+        X_test = test_adata.X
+        cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
+        cond_series_test = test_adata.obs[self.data.label_key].astype(str).values
         if sp.issparse(X_ctrl):
             ctrl_mean_all = np.asarray(X_ctrl.mean(axis=0), dtype=np.float32).reshape(1, -1)
         else:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
+        target_ctrl_expr = None
+        if ctrl_source_eff == "target_domain_test_ctrl":
+            target_ctrl_expr = self._select_dense(X_ctrl, np.arange(int(X_ctrl.shape[0])))
 
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
         train_adata = split_dict.get("train", None)
-        if train_adata is not None:
+        if ctrl_source_eff == "target_domain_test_ctrl":
+            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
+        elif train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
             pert_reference = average_of_perturbation_centroids(
                 X=train_adata.X,
@@ -2691,13 +2894,20 @@ class TriShift:
             pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
 
         for cond in conds:
-            cond_mask = cond_series == cond
-            if not np.any(cond_mask):
+            cond_mask_all = cond_series_all == cond
+            cond_mask_test = cond_series_test == cond
+            if not np.any(cond_mask_all):
                 print(f"[eval] skip missing condition: {cond}")
                 continue
-            embd_idx_list = self._get_cond_embd_idx(cond_mask)
+            if not np.any(cond_mask_test):
+                print(f"[eval] skip condition missing from test split: {cond}")
+                continue
+            embd_idx_list = self._get_cond_embd_idx(cond_mask_all)
             ensemble_size = int(n_ensemble)
-            if use_eval_pool:
+            if ctrl_source_eff == "target_domain_test_ctrl":
+                ctrl_expr = np.asarray(target_ctrl_expr, dtype=np.float32)
+                ensemble_size = int(ctrl_expr.shape[0])
+            elif use_eval_pool:
                 pool_idx = pool_map.get(str(cond))
                 if pool_idx is not None and np.asarray(pool_idx).size > 0:
                     ctrl_expr = self._sample_ctrl_expr_from_index_pool(
@@ -2716,13 +2926,17 @@ class TriShift:
             else:
                 ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
 
-            true_expr = self._select_dense(X_all, cond_mask)
+            true_expr = self._select_dense(X_test, cond_mask_test)
             true_mean = true_expr.mean(axis=0, keepdims=True)
             if true_expr.size == 0 or np.isnan(true_mean).any():
                 print(f"[eval] empty/invalid true_mean: {cond}")
 
-            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, ensemble_size)
-            x_pred = self._predict_expr_from_ctrl(ctrl_expr, cond_vec)
+            x_pred = self._predict_expr_for_condition(
+                ctrl_expr=ctrl_expr,
+                emb_table=emb_table,
+                embd_idx_list=embd_idx_list,
+                batch_size=eval_batch_size,
+            )
             pred_mean = x_pred.mean(axis=0, keepdims=True)
             if np.isnan(pred_mean).any():
                 print(f"[eval] invalid pred_mean: {cond}")
@@ -2738,48 +2952,35 @@ class TriShift:
                 print(f"[eval] skip condition without DEGs: {cond}")
                 continue
 
-            pred_vec = pred_mean[:, deg_idx].reshape(-1)
-            true_vec = true_mean[:, deg_idx].reshape(-1)
-            ctrl_vec = ctrl_mean_all[:, deg_idx].reshape(-1)
-            mse_ctrl_val = float(mse(true_vec, ctrl_vec))
-            mse_pred_val = float(mse(true_vec, pred_vec))
-            nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
-            pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
-            deg_mean_r2_val = regression_r2_safe(
-                true_vec - ctrl_vec,
-                pred_vec - ctrl_vec,
-            )
-            if not np.isfinite(nmse_val) or not np.isfinite(pearson_val):
-                print(f"[eval] non-finite metrics: {cond} nmse={nmse_val} pearson={pearson_val}")
-
-            systema_metrics = pearson_delta_reference_metrics(
-                X_true=true_mean.reshape(-1),
-                X_pred=pred_mean.reshape(-1),
-                reference=pert_reference,
-                top20_de_idxs=deg_idx,
-            )
-            scpram_metrics = compute_scpram_metrics_from_arrays(
-                X_true=true_expr,
-                X_pred=x_pred,
+            metrics, _ = self._metrics_and_summary_for_condition(
+                cond=str(cond),
+                true_expr=true_expr,
+                pred_expr=x_pred,
+                ctrl_expr=ctrl_expr,
                 deg_idx=deg_idx,
-                n_degs=100,
-                sample_ratio=0.8,
-                times=100,
+                split_dict=split_dict,
+                split_id=split_id,
+                base_seed=base_seed,
+                eval_ctrl_source=ctrl_source_eff,
+                systema_reference=pert_reference,
+                include_distributional=(ctrl_source_eff == "target_domain_test_ctrl"),
             )
+            if not np.isfinite(float(metrics.get("nmse", np.nan))) or not np.isfinite(
+                float(metrics.get("pearson", np.nan))
+            ):
+                print(
+                    f"[eval] non-finite metrics: {cond} "
+                    f"nmse={metrics.get('nmse')} pearson={metrics.get('pearson')}"
+                )
 
             results.append(
                 {
                     "condition": cond,
-                    "mse_pred": mse_pred_val,
-                    "mse_ctrl": mse_ctrl_val,
-                    "nmse": nmse_val,
-                    "pearson": pearson_val,
-                    "deg_mean_r2": float(deg_mean_r2_val),
-                    "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
-                    "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
-                    **scpram_metrics,
+                    **metrics,
                     "split_id": split_id,
                     "n_ensemble": ensemble_size,
+                    "n_eval_ctrl": int(ctrl_expr.shape[0]),
+                    "eval_ctrl_source": str(ctrl_source_eff),
                 }
             )
 
@@ -2795,6 +2996,8 @@ class TriShift:
         base_seed: int = 24,
         out_path: str | None = None,
         eval_ctrl_strategy: dict | None = None,
+        eval_ctrl_source: str = "train_ctrl",
+        eval_batch_size: int = 4096,
     ) -> dict:
         """Export per-condition predictions for downstream plotting.
 
@@ -2813,7 +3016,13 @@ class TriShift:
         rng = np.random.RandomState(eval_seed)
         conds = split_dict["test_conds"]
         results = {}
+        ctrl_adata, X_ctrl, ctrl_source_eff = self._get_eval_ctrl_pool(
+            split_dict=split_dict,
+            eval_ctrl_source=eval_ctrl_source,
+        )
         use_eval_pool = (
+            ctrl_source_eff != "target_domain_test_ctrl"
+            and
             isinstance(eval_ctrl_strategy, dict)
             and str(eval_ctrl_strategy.get("mode", "")) == "nearest_genept_ot_pool"
         )
@@ -2826,21 +3035,48 @@ class TriShift:
             n_ensemble
         )
 
-        train_ctrl_adata, _ = self._get_ctrl_pool_from_split(split_dict.get("train"))
-        X_ctrl = train_ctrl_adata.X
-        X_all = self.data.adata_all.X
-        cond_series = self.data.adata_all.obs[self.data.label_key].astype(str).values
+        test_adata = split_dict.get("test")
+        if test_adata is None:
+            raise ValueError("split_dict['test'] is required for export")
+        X_test = test_adata.X
+        cond_series_all = self.data.adata_all.obs[self.data.label_key].astype(str).values
+        cond_series_test = test_adata.obs[self.data.label_key].astype(str).values
+        target_ctrl_expr = None
+        if ctrl_source_eff == "target_domain_test_ctrl":
+            target_ctrl_expr = self._select_dense(X_ctrl, np.arange(int(X_ctrl.shape[0])))
+        if sp.issparse(X_ctrl):
+            ctrl_mean_all = np.asarray(X_ctrl.mean(axis=0), dtype=np.float32).reshape(1, -1)
+        else:
+            ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
+        train_adata = split_dict.get("train", None)
+        if ctrl_source_eff == "target_domain_test_ctrl":
+            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
+        elif train_adata is not None:
+            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
+            pert_reference = average_of_perturbation_centroids(
+                X=train_adata.X,
+                conditions=train_cond_arr,
+                ctrl_label=self.data.ctrl_label,
+            )
+        else:
+            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
 
         gene_names = self._get_gene_names()
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
 
         for cond in conds:
-            cond_mask = cond_series == cond
-            if not np.any(cond_mask):
+            cond_mask_all = cond_series_all == cond
+            cond_mask_test = cond_series_test == cond
+            if not np.any(cond_mask_all):
                 continue
-            embd_idx_list = self._get_cond_embd_idx(cond_mask)
+            if not np.any(cond_mask_test):
+                continue
+            embd_idx_list = self._get_cond_embd_idx(cond_mask_all)
             ensemble_size = int(n_ensemble)
-            if use_eval_pool:
+            if ctrl_source_eff == "target_domain_test_ctrl":
+                ctrl_expr = np.asarray(target_ctrl_expr, dtype=np.float32)
+                ensemble_size = int(ctrl_expr.shape[0])
+            elif use_eval_pool:
                 pool_idx = pool_map.get(str(cond))
                 if pool_idx is not None and np.asarray(pool_idx).size > 0:
                     ctrl_expr = self._sample_ctrl_expr_from_index_pool(
@@ -2858,10 +3094,14 @@ class TriShift:
                     ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
             else:
                 ctrl_expr = self._sample_ctrl_expr(X_ctrl, n_ensemble, rng)
-            true_expr = self._select_dense(X_all, cond_mask)
+            true_expr = self._select_dense(X_test, cond_mask_test)
 
-            cond_vec = self._build_cond_vec(emb_table, embd_idx_list, ensemble_size)
-            x_pred = self._predict_expr_from_ctrl(ctrl_expr, cond_vec)
+            x_pred = self._predict_expr_for_condition(
+                ctrl_expr=ctrl_expr,
+                emb_table=emb_table,
+                embd_idx_list=embd_idx_list,
+                batch_size=eval_batch_size,
+            )
 
             deg_idx = degs_non_dropout.get(cond, np.array([], dtype=int))
             if deg_idx is None:
@@ -2871,6 +3111,72 @@ class TriShift:
             if remove_idx.size > 0 and deg_idx.size > 0:
                 deg_idx = np.setdiff1d(deg_idx, remove_idx)
             deg_names = gene_names[deg_idx] if deg_idx.size > 0 else np.array([], dtype=gene_names.dtype)
+
+            if ctrl_source_eff == "target_domain_test_ctrl":
+                metrics, full_summary = self._metrics_and_summary_for_condition(
+                    cond=str(cond),
+                    true_expr=true_expr,
+                    pred_expr=x_pred,
+                    ctrl_expr=ctrl_expr,
+                    deg_idx=deg_idx,
+                    split_dict=split_dict,
+                    split_id=split_id,
+                    base_seed=base_seed,
+                    eval_ctrl_source=ctrl_source_eff,
+                    systema_reference=pert_reference,
+                    include_distributional=True,
+                )
+                seed_base = self._stable_condition_seed(base_seed, split_id, str(cond))
+                sample_size = max(1, int(n_ensemble))
+                pred_export, pred_idx = self._sample_rows_for_export(
+                    x_pred,
+                    sample_size=sample_size,
+                    seed=seed_base + 11,
+                )
+                if int(ctrl_expr.shape[0]) == int(x_pred.shape[0]) and pred_idx.size > 0:
+                    ctrl_export = np.asarray(ctrl_expr[pred_idx], dtype=np.float32)
+                    ctrl_idx = pred_idx
+                else:
+                    ctrl_export, ctrl_idx = self._sample_rows_for_export(
+                        ctrl_expr,
+                        sample_size=sample_size,
+                        seed=seed_base + 17,
+                    )
+                truth_export, truth_idx = self._sample_rows_for_export(
+                    true_expr,
+                    sample_size=sample_size,
+                    seed=seed_base + 23,
+                )
+                results[cond] = {
+                    "Pred": pred_export[:, deg_idx] if deg_idx.size > 0 else pred_export[:, :0],
+                    "Ctrl": ctrl_export[:, deg_idx] if deg_idx.size > 0 else ctrl_export[:, :0],
+                    "Truth": truth_export[:, deg_idx] if deg_idx.size > 0 else truth_export[:, :0],
+                    "Pred_full": pred_export,
+                    "Ctrl_full": ctrl_export,
+                    "Truth_full": truth_export,
+                    "DE_idx": deg_idx,
+                    "DE_name": deg_names,
+                    "gene_name_full": gene_names,
+                    "export_metadata": {
+                        "export_is_subset": True,
+                        "export_sample_size": int(sample_size),
+                        "metrics_computed_on_full": True,
+                        "eval_ctrl_source": str(ctrl_source_eff),
+                        "split_id": int(split_id),
+                        "split_policy": split_dict.get("split_policy", None),
+                        "split_domain_key": split_dict.get("split_domain_key", None),
+                        "train_domain_values": split_dict.get("train_domain_values", None),
+                        "test_domain_values": split_dict.get("test_domain_values", None),
+                        "pred_sample_idx": pred_idx.astype(int),
+                        "ctrl_sample_idx": ctrl_idx.astype(int),
+                        "truth_sample_idx": truth_idx.astype(int),
+                        "n_pred_full": int(x_pred.shape[0]),
+                        "n_ctrl_full": int(ctrl_expr.shape[0]),
+                        "n_truth_full": int(true_expr.shape[0]),
+                    },
+                    "full_summary": full_summary,
+                }
+                continue
 
             results[cond] = {
                 "Pred": x_pred[:, deg_idx] if deg_idx.size > 0 else x_pred[:, :0],

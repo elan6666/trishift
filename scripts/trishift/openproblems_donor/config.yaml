@@ -1,20 +1,21 @@
-dataset: dixit
+dataset: openproblems_donor
 base:
   defaults: configs/defaults.yaml
   paths: configs/paths.yaml
 defaults_overrides:
-  k_topk: 160
+  k_topk: 300
   matching_mode: ot
   train_mode: joint
   n_eval_ensemble: 300
-  eval_ctrl_pool_mode: all
+  eval_ctrl_pool_mode: random_train_ctrl
+  eval_ctrl_source: target_domain_test_ctrl
   eval_genept_distance: l2
-  eval_genept_compare_mode: per_gene_nearest_cond
-  eval_genept_train_candidate_mode: norman_train_single_only
+  eval_genept_compare_mode: aggregate_cond
+  eval_genept_train_candidate_mode: all_train_pert
   seed: 24
   run:
     multi_split: true
-    n_splits: 10
+    n_splits: 5
   performance:
     amp: false
     num_workers: 0
@@ -74,6 +75,8 @@ defaults_overrides:
     topk_strategy: random
     sample_soft_ctrl: false
     per_condition_ot: false
+    balance_ot_by_group: false
+    balance_ot_group_key: cell_type
     reuse_ot_cache: true
     reuse_z_mu_cache: false
     latent_loss_type: gears
@@ -113,4 +116,8 @@ defaults_overrides:
       use_layer_norm: false
       dropout: 0.0
       use_residual_head: true
-paths_overrides: {}
+paths_overrides:
+  datasets:
+    openproblems_donor: src/data/openproblems/perturb_processed_hvg5000.h5ad
+  embeddings:
+    emb_openproblems_rdkit2d: src/data/openproblems/openproblems_rdkit2d.pickle

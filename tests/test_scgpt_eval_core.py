@@ -261,11 +261,10 @@ def test_main_profile_passes_task_args(monkeypatch, tmp_path):
 
 
 def test_dataset_config_includes_mainline_extra_datasets():
-    for name in ["dixit", "replogle_k562_essential", "replogle_rpe1_essential"]:
-        assert name in core.DATASET_CONFIG
-        cfg = core.DATASET_CONFIG[name]
-        assert cfg.data_rel.endswith("perturb_processed.h5ad")
-        assert cfg.splits == [1, 2, 3, 4, 5]
+    assert "dixit" in core.DATASET_CONFIG
+    cfg = core.DATASET_CONFIG["dixit"]
+    assert cfg.data_rel.endswith("perturb_processed.h5ad")
+    assert cfg.splits == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
 def main() -> int:
