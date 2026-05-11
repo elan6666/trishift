@@ -8,7 +8,7 @@ from scripts.trishift._core.train_main_core import run_from_dataset_config
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="TriShift dataset entry: openproblems_celltype")
+    ap = argparse.ArgumentParser(description="TriShift dataset entry: scgen_pbmc_celltype")
     ap.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
     ap.add_argument("--out_dir", default="", help="output directory override")
     args = ap.parse_args()

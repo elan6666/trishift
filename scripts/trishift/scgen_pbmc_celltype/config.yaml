@@ -1,8 +1,14 @@
-dataset: openproblems_celltype
+dataset: scgen_pbmc_celltype
 base:
   defaults: configs/defaults.yaml
   paths: configs/paths.yaml
 defaults_overrides:
+  # Change this key to switch the IFNB1/IFN-beta prior:
+  #   emb_scgen_ifnb1_uniprot_prott5  -> UniProt official ProtT5, dim=1024
+  #   emb_scgen_ifnb1_zenodo_prott5   -> Zenodo human SwissProt ProtT5, dim=1024
+  #   emb_scgen_ifnb1_esm2_15b        -> HuggingFace ESM2-15B, dim=5120
+  #   emb_scgen_ifnb1_genept          -> GenePT IFNB1 gene embedding, dim=1536
+  emb_key: emb_scgen_ifnb1_uniprot_prott5
   k_topk: 300
   matching_mode: ot
   train_mode: joint
@@ -15,7 +21,7 @@ defaults_overrides:
   seed: 24
   run:
     multi_split: true
-    n_splits: 1
+    n_splits: 5
   performance:
     amp: false
     num_workers: 0
@@ -118,6 +124,9 @@ defaults_overrides:
       use_residual_head: true
 paths_overrides:
   datasets:
-    openproblems_celltype: src/data/openproblems/perturb_processed_hvg5000.h5ad
+    scgen_pbmc_celltype: src/data/scgen/perturb_processed.h5ad
   embeddings:
-    emb_openproblems_rdkit2d: src/data/openproblems/openproblems_rdkit2d.pickle
+    emb_scgen_ifnb1_uniprot_prott5: src/data/scgen/priors/scgen_ifnb1_uniprot_prott5.pickle
+    emb_scgen_ifnb1_zenodo_prott5: src/data/scgen/priors/scgen_ifnb1_zenodo_prott5.pickle
+    emb_scgen_ifnb1_esm2_15b: src/data/scgen/priors/scgen_ifnb1_esm2_15b.pickle
+    emb_scgen_ifnb1_genept: src/data/scgen/priors/scgen_ifnb1_genept.pickle

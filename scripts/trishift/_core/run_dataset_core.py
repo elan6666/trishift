@@ -55,31 +55,18 @@ DATASET_CONFIG = {
         "multi_split_default": 5,
         "test_ratio": 0.2,
     },
-    "openproblems_donor": {
-        "emb_key": "emb_openproblems_rdkit2d",
+    "scgen_pbmc_celltype": {
+        "emb_key": "emb_scgen_ifnb1_uniprot_prott5",
         "defaults": {"stage1": 10, "stage23": 6, "stage2": 3, "stage3": 3},
         "multi_split_default": 5,
         "test_ratio": 0.2,
         "split_policy": {
-            "name": "donor_unseen_drug",
-            "domain_key": "donor_id",
-            "train_domain_values": ["donor_0", "donor_1"],
-            "test_domain_values": ["donor_2"],
-            "drug_test_ratio": 0.2,
-            "val_ratio": 0.1,
-        },
-    },
-    "openproblems_celltype": {
-        "emb_key": "emb_openproblems_rdkit2d",
-        "defaults": {"stage1": 10, "stage23": 6, "stage2": 3, "stage3": 3},
-        "multi_split_default": 5,
-        "test_ratio": 0.2,
-        "split_policy": {
-            "name": "celltype_unseen_drug",
+            "name": "celltype_seen_perturbation",
             "domain_key": "cell_type",
             "domain_test_ratio": 0.2,
-            "drug_test_ratio": 0.2,
-            "val_ratio": 0.1,
+            "val_domain_ratio": 0.1,
+            "condition": "stimulated",
+            "include_test_ctrl_in_train": True,
         },
     },
 }
@@ -573,120 +560,108 @@ def _condition_values(data: TriShiftData) -> list[str]:
     return [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
 
 
-def _ensure_domain_test_perturbation(
-    *,
-    adata,
-    label_key: str,
-    ctrl_label: str,
-    domain_key: str,
-    test_domain_values: list[str],
-    test_conds: list[str],
-    seed: int,
-) -> list[str]:
-    """Ensure held-out domain has at least one held-out perturbation cell."""
-    cond_series = adata.obs[label_key].astype(str)
-    domain_series = adata.obs[domain_key].astype(str)
-    test_domain_set = {str(x) for x in test_domain_values}
-    test_cond_set = {str(x) for x in test_conds}
-    domain_mask = domain_series.isin(test_domain_set)
-    domain_conds = sorted(
-        c
-        for c in cond_series[domain_mask].unique().tolist()
-        if str(c) != ctrl_label
-    )
-    if test_cond_set.intersection(domain_conds):
-        return list(test_conds)
-    candidates = [c for c in domain_conds if c not in test_cond_set]
-    if not candidates:
+def _infer_single_perturbation_condition(data: TriShiftData, configured: str | None) -> str:
+    """Return the configured single perturbation condition, or infer it from the dataset."""
+    all_conds = _condition_values(data)
+    if configured:
+        cond = str(configured)
+        if cond not in all_conds:
+            raise ValueError(
+                f"Configured perturbation condition {cond!r} is not present; "
+                f"available non-control conditions: {all_conds}"
+            )
+        return cond
+    if len(all_conds) != 1:
         raise ValueError(
-            f"No non-control conditions available in held-out {domain_key}={test_domain_values}"
+            "celltype_seen_perturbation requires exactly one non-control condition "
+            f"or split_policy.condition; found {all_conds}"
         )
-    replacement = candidates[(int(seed) - 1) % len(candidates)]
-    out = list(test_conds)
-    if not out:
-        return [replacement]
-    out[-1] = replacement
-    return out
+    return str(all_conds[0])
 
 
-def _split_domain_unseen_drug(
+def _split_celltype_seen_perturbation(
     data: TriShiftData,
     *,
     seed: int,
     domain_key: str,
-    train_domain_values: list[str],
-    test_domain_values: list[str],
-    drug_test_ratio: float,
-    val_ratio: float,
-    ensure_test_perturbation: bool,
+    domain_test_ratio: float,
+    val_domain_ratio: float,
+    perturbation_condition: str | None,
+    include_test_ctrl_in_train: bool,
 ) -> dict:
-    """Build train/val/test splits for unseen-domain and unseen-drug evaluation."""
+    """Build cell-type holdout splits when the single perturbation is seen in train."""
     adata = data.adata_all
     label_key = data.label_key
     ctrl_label = data.ctrl_label
-    if domain_key not in adata.obs.columns:
-        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+    pert_cond = _infer_single_perturbation_condition(data, perturbation_condition)
 
-    all_conds = _condition_values(data)
-    test_conds, remaining_conds = _split_conditions_for_holdout(
-        all_conds,
-        ratio=float(drug_test_ratio),
-        seed=int(seed),
-    )
-    if ensure_test_perturbation:
-        test_conds = _ensure_domain_test_perturbation(
-            adata=adata,
-            label_key=label_key,
-            ctrl_label=ctrl_label,
-            domain_key=domain_key,
-            test_domain_values=test_domain_values,
-            test_conds=test_conds,
-            seed=int(seed),
+    domains = _domain_values(adata, domain_key)
+    if len(domains) < 3:
+        raise ValueError(
+            f"celltype_seen_perturbation needs at least 3 {domain_key} values; found {domains}"
         )
-        remaining_conds = [c for c in all_conds if c not in set(test_conds)]
-
-    val_conds, train_conds = _split_conditions_for_holdout(
-        remaining_conds,
-        ratio=float(val_ratio),
+    test_domains, remaining_domains = _split_conditions_for_holdout(
+        domains,
+        ratio=float(domain_test_ratio),
         seed=int(seed),
     )
+    if not test_domains:
+        test_domains = [domains[(int(seed) - 1) % len(domains)]]
+        remaining_domains = [d for d in domains if d not in set(test_domains)]
+
+    val_domains, train_domains = _split_conditions_for_holdout(
+        remaining_domains,
+        ratio=float(val_domain_ratio),
+        seed=int(seed),
+    )
+    if not val_domains:
+        val_domains = [remaining_domains[(int(seed) - 1) % len(remaining_domains)]]
+        train_domains = [d for d in remaining_domains if d not in set(val_domains)]
+    if not train_domains:
+        raise ValueError(
+            "celltype_seen_perturbation produced no train domains; "
+            f"domains={domains}, test={test_domains}, val={val_domains}"
+        )
 
     cond_series = adata.obs[label_key].astype(str)
     domain_series = adata.obs[domain_key].astype(str)
-    train_domain_set = {str(x) for x in train_domain_values}
-    test_domain_set = {str(x) for x in test_domain_values}
+    train_domain_set = {str(x) for x in train_domains}
+    val_domain_set = {str(x) for x in val_domains}
+    test_domain_set = {str(x) for x in test_domains}
+    allowed_conds = [ctrl_label, pert_cond]
 
-    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(
-        list(train_conds) + [ctrl_label]
-    )
-    val_mask = domain_series.isin(train_domain_set) & cond_series.isin(
-        list(val_conds) + [ctrl_label]
-    )
-    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(
-        list(test_conds) + [ctrl_label]
-    )
+    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(allowed_conds)
+    if include_test_ctrl_in_train:
+        train_mask = train_mask | (
+            domain_series.isin(test_domain_set) & (cond_series == ctrl_label)
+        )
+    val_mask = domain_series.isin(val_domain_set) & cond_series.isin(allowed_conds)
+    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(allowed_conds)
 
-    if not np.any(train_mask.values):
-        raise ValueError("domain unseen-drug split produced empty train set")
-    if not np.any(val_mask.values):
-        raise ValueError("domain unseen-drug split produced empty validation set")
-    if not np.any(test_mask.values):
-        raise ValueError("domain unseen-drug split produced empty test set")
-    test_pert_mask = test_mask.values & (cond_series.values != ctrl_label)
+    for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
+        if not np.any(mask.values):
+            raise ValueError(f"celltype_seen_perturbation produced empty {split_name} set")
+
+    test_ctrl_mask = test_mask.values & (cond_series.values == ctrl_label)
+    test_pert_mask = test_mask.values & (cond_series.values == pert_cond)
+    if not np.any(test_ctrl_mask):
+        raise ValueError("celltype_seen_perturbation produced no target-domain ctrl cells")
     if not np.any(test_pert_mask):
-        raise ValueError("domain unseen-drug split produced no test perturbation cells")
+        raise ValueError("celltype_seen_perturbation produced no target-domain perturbed cells")
 
     return {
         "train": adata[train_mask.values],
         "val": adata[val_mask.values],
         "test": adata[test_mask.values],
-        "train_conds": [str(c) for c in train_conds],
-        "val_conds": [str(c) for c in val_conds],
-        "test_conds": [str(c) for c in test_conds],
-        "split_policy": "domain_unseen_drug",
+        "train_conds": [pert_cond],
+        "val_conds": [pert_cond],
+        "test_conds": [pert_cond],
+        "split_policy": "celltype_seen_perturbation",
         "split_domain_key": str(domain_key),
-        "train_domain_values": [str(x) for x in train_domain_values],
-        "test_domain_values": [str(x) for x in test_domain_values],
+        "train_domain_values": [str(x) for x in train_domains],
+        "val_domain_values": [str(x) for x in val_domains],
+        "test_domain_values": [str(x) for x in test_domains],
+        "include_test_ctrl_in_train": bool(include_test_ctrl_in_train),
     }
 
 
@@ -701,34 +676,17 @@ def _split_by_dataset_config_policy(
     if not policy:
         return None
     policy_name = str(policy.get("name", "")).strip()
-    if policy_name == "donor_unseen_drug":
-        return _split_domain_unseen_drug(
+    if policy_name == "celltype_seen_perturbation":
+        return _split_celltype_seen_perturbation(
             data,
             seed=int(seed),
-            domain_key=str(policy.get("domain_key", "donor_id")),
-            train_domain_values=[str(x) for x in policy.get("train_domain_values", [])],
-            test_domain_values=[str(x) for x in policy.get("test_domain_values", [])],
-            drug_test_ratio=float(policy.get("drug_test_ratio", dataset_cfg.get("test_ratio", 0.2))),
-            val_ratio=float(policy.get("val_ratio", 0.1)),
-            ensure_test_perturbation=True,
-        )
-    if policy_name == "celltype_unseen_drug":
-        domain_key = str(policy.get("domain_key", "cell_type"))
-        domains = _domain_values(data.adata_all, domain_key)
-        test_domains, train_domains = _split_conditions_for_holdout(
-            domains,
-            ratio=float(policy.get("domain_test_ratio", 0.2)),
-            seed=int(seed),
-        )
-        return _split_domain_unseen_drug(
-            data,
-            seed=int(seed),
-            domain_key=domain_key,
-            train_domain_values=train_domains,
-            test_domain_values=test_domains,
-            drug_test_ratio=float(policy.get("drug_test_ratio", dataset_cfg.get("test_ratio", 0.2))),
-            val_ratio=float(policy.get("val_ratio", 0.1)),
-            ensure_test_perturbation=True,
+            domain_key=str(policy.get("domain_key", "cell_type")),
+            domain_test_ratio=float(policy.get("domain_test_ratio", 0.2)),
+            val_domain_ratio=float(policy.get("val_domain_ratio", policy.get("val_ratio", 0.1))),
+            perturbation_condition=(
+                None if policy.get("condition", None) is None else str(policy.get("condition"))
+            ),
+            include_test_ctrl_in_train=bool(policy.get("include_test_ctrl_in_train", True)),
         )
     raise ValueError(f"Unsupported split_policy.name={policy_name!r}")
 
@@ -805,7 +763,12 @@ def run_dataset_with_paths(
     set_seeds(base_seed)
 
     h5ad_path = _resolve_repo_path(cfg["datasets"][name])
-    emb_key = dataset_cfg["emb_key"]
+    emb_key = str(defaults.get("emb_key", dataset_cfg["emb_key"]))
+    if emb_key not in cfg["embeddings"]:
+        raise ValueError(
+            f"Embedding key {emb_key!r} is not defined in paths config; "
+            f"available keys: {sorted(cfg['embeddings'].keys())}"
+        )
     emb_path = _resolve_repo_path(cfg["embeddings"][emb_key])
 
     print("[run] load data")
@@ -1067,7 +1030,7 @@ def run_dataset_with_paths(
     if eval_ctrl_source == "target_domain_test_ctrl":
         print(
             "[run] eval_ctrl_source=target_domain_test_ctrl "
-            "(OpenProblems cell-level target-domain controls; ignores nearest/random ctrl sampling)"
+            "(cell-level target-domain controls; ignores nearest/random ctrl sampling)"
         )
     if balance_ot_by_group:
         print(
@@ -1097,6 +1060,8 @@ def run_dataset_with_paths(
             "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "git_commit": _safe_git_commit(),
             "dataset": name,
+            "emb_key": str(emb_key),
+            "emb_path": str(emb_path),
             "defaults_path": str(defaults_path),
             "paths_path": str(paths_path),
             "out_dir": str(out_dir_path),

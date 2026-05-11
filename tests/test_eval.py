@@ -62,7 +62,7 @@ def test_evaluate_and_export():
         )
 
 
-def test_openproblems_target_domain_ctrl_export_contract():
+def test_target_domain_ctrl_export_contract():
     data, model = make_data_and_model()
     train_stage1_and_cache(model, data)
     adata = data.adata_all
@@ -108,7 +108,7 @@ def test_openproblems_target_domain_ctrl_export_contract():
     assert "systema_corr_deg_r2_dist" in df.columns
 
     with temp_dir() as td:
-        out_path = Path(td) / "openproblems.pkl"
+        out_path = Path(td) / "target_domain.pkl"
         preds = model.export_predictions(
             split_dict=split,
             emb_table=emb_table,
@@ -133,7 +133,7 @@ def test_openproblems_target_domain_ctrl_export_contract():
 
 def main():
     test_evaluate_and_export()
-    test_openproblems_target_domain_ctrl_export_contract()
+    test_target_domain_ctrl_export_contract()
     print("test_eval: PASS")
 
 

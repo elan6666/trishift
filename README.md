@@ -75,7 +75,7 @@ python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson di
 
 This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, and synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers.
 Run this command in an environment that has `GEARS/PertData` installed. The core `pip install -e .` environment is enough for TriShift package imports, but the public benchmark downloader needs the baseline-oriented environment described below.
-The maintained public benchmark scope in this repository is now limited to `adamson`, `dixit`, and `norman`.
+The maintained public benchmark scope in this repository is `adamson`, `dixit`, `norman`, plus the scGen PBMC IFN-beta cell-type transfer case described below.
 
 If you want to run the BioLORD baseline, add the BioLORD-specific preprocessing step after the benchmark download:
 
@@ -97,6 +97,46 @@ By default, the repository expects local data under `src/data`. You can still ov
 - `configs/paths.yaml`
 
 `src/data` is intentionally ignored by git. It is a local cache for downloaded datasets, processed `.h5ad` files, and embedding files; do not rely on files under `src/data` as repository entrypoints. Use the maintained script above for reproducible data preparation.
+
+### scGen PBMC IFN-beta case study
+
+The scGen PBMC dataset is prepared through a dedicated local script:
+
+```bash
+python scripts/data/prepare_scgen_pbmc.py
+```
+
+The script expects the scGen-preprocessed Kang PBMC file at:
+
+- `src/data/scgen/train_kang_scgen.h5ad`
+
+It writes the TriShift-ready file:
+
+- `src/data/scgen/perturb_processed.h5ad`
+
+It also extracts the IFNB1/IFN-beta perturbation prior for the single `stimulated` condition and writes four switchable prior files under:
+
+- `src/data/scgen/priors`
+
+Prior extraction expects the local protein embedding files under `src/data/protein_embeddings` and the GenePT file under `src/data/Data_GeneEmbd`. Use `--skip_priors` if you only need to regenerate the `.h5ad`.
+
+The TriShift entrypoint is:
+
+```bash
+python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
+```
+
+This experiment holds out cell types, not perturbations: the only perturbation is `stimulated`, so the model trains on `stimulated` responses in seen cell types and evaluates on held-out cell types using their target-domain control cells.
+To switch the prior, edit `defaults_overrides.emb_key` in:
+
+- `scripts/trishift/scgen_pbmc_celltype/config.yaml`
+
+Supported keys are:
+
+- `emb_scgen_ifnb1_uniprot_prott5`
+- `emb_scgen_ifnb1_zenodo_prott5`
+- `emb_scgen_ifnb1_esm2_15b`
+- `emb_scgen_ifnb1_genept`
 
 ## For Reproducibility
 
@@ -127,6 +167,13 @@ python scripts/trishift/norman/run_norman.py
 ```
 
 This reproduces the maintained TriShift benchmark scope in this repository and writes model outputs under `artifacts/results/trishift`.
+
+For the scGen PBMC case study:
+
+```bash
+python scripts/data/prepare_scgen_pbmc.py
+python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
+```
 
 3. Paper-figure regeneration
 
@@ -196,7 +243,7 @@ This keeps the repository consistent across:
 ### Training and evaluation entrypoints
 
 Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
-Only `adamson`, `dixit`, and `norman` are maintained public benchmark targets.
+The maintained public targets are `adamson`, `dixit`, `norman`, and the scGen PBMC IFN-beta cell-type transfer case.
 
 The maintained public interfaces for manuscript reproduction are:
 
@@ -211,6 +258,7 @@ TriShift:
 - `scripts/trishift/adamson/run_adamson.py`
 - `scripts/trishift/dixit/run_dixit.py`
 - `scripts/trishift/norman/run_norman.py`
+- `scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py`
 
 GEARS:
 

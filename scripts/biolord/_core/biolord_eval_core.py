@@ -124,37 +124,6 @@ DATASET_CONFIG = {
         decoder_lr=1e-2,
         unknown_attribute_noise_param=0.2,
     ),
-    "openproblems_donor": BiolordDatasetConfig(
-        full_data_rel="data/openproblems/perturb_processed_hvg5000.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        ordered_attribute_key="rdkit2d",
-        legacy_multihot_fallback=True,
-        test_ratio=0.2,
-        split_policy="donor_unseen_drug",
-        domain_key="donor_id",
-        train_domain_values=("donor_0", "donor_1"),
-        test_domain_values=("donor_2",),
-        drug_test_ratio=0.2,
-        val_ratio=0.1,
-        valid_split="val",
-        test_split="test",
-        aggregate_legacy_condition_means=False,
-    ),
-    "openproblems_celltype": BiolordDatasetConfig(
-        full_data_rel="data/openproblems/perturb_processed_hvg5000.h5ad",
-        splits=[1, 2, 3, 4, 5],
-        ordered_attribute_key="rdkit2d",
-        legacy_multihot_fallback=True,
-        test_ratio=0.2,
-        split_policy="celltype_unseen_drug",
-        domain_key="cell_type",
-        domain_test_ratio=0.2,
-        drug_test_ratio=0.2,
-        val_ratio=0.1,
-        valid_split="val",
-        test_split="test",
-        aggregate_legacy_condition_means=False,
-    ),
 }
 
 
@@ -362,177 +331,10 @@ def _build_split_dict_legacy(data: TriShiftData, split_id: int, test_ratio: floa
     return data.split_by_condition(seed=int(split_id), test_ratio=float(test_ratio))
 
 
-def _split_conditions_for_holdout(
-    conditions: list[str],
-    *,
-    ratio: float,
-    seed: int,
-) -> tuple[list[str], list[str]]:
-    conds = np.array([str(c) for c in conditions], dtype=object)
-    rng = np.random.RandomState(int(seed))
-    rng.shuffle(conds)
-    n_test = round(float(ratio) * len(conds))
-    test_arr, train_arr = np.split(conds, [n_test])
-    return list(test_arr), list(train_arr)
-
-
-def _domain_values(adata: ad.AnnData, domain_key: str) -> list[str]:
-    if domain_key not in adata.obs.columns:
-        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
-    return sorted(adata.obs[domain_key].astype(str).unique().tolist())
-
-
-def _condition_values(data: TriShiftData) -> list[str]:
-    return [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
-
-
-def _ensure_domain_test_perturbation(
-    *,
-    adata: ad.AnnData,
-    label_key: str,
-    ctrl_label: str,
-    domain_key: str,
-    test_domain_values: list[str],
-    test_conds: list[str],
-    seed: int,
-) -> list[str]:
-    cond_series = adata.obs[label_key].astype(str)
-    domain_series = adata.obs[domain_key].astype(str)
-    test_domain_set = {str(x) for x in test_domain_values}
-    test_cond_set = {str(x) for x in test_conds}
-    domain_mask = domain_series.isin(test_domain_set)
-    domain_conds = sorted(
-        c
-        for c in cond_series[domain_mask].unique().tolist()
-        if str(c) != ctrl_label
-    )
-    if test_cond_set.intersection(domain_conds):
-        return list(test_conds)
-    candidates = [c for c in domain_conds if c not in test_cond_set]
-    if not candidates:
-        raise ValueError(
-            f"No non-control conditions available in held-out {domain_key}={test_domain_values}"
-        )
-    replacement = candidates[(int(seed) - 1) % len(candidates)]
-    out = list(test_conds)
-    if not out:
-        return [replacement]
-    out[-1] = replacement
-    return out
-
-
-def _split_domain_unseen_drug(
-    data: TriShiftData,
-    *,
-    seed: int,
-    domain_key: str,
-    train_domain_values: list[str],
-    test_domain_values: list[str],
-    drug_test_ratio: float,
-    val_ratio: float,
-    ensure_test_perturbation: bool,
-) -> dict:
-    adata = data.adata_all
-    label_key = data.label_key
-    ctrl_label = data.ctrl_label
-    if domain_key not in adata.obs.columns:
-        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
-
-    all_conds = _condition_values(data)
-    test_conds, remaining_conds = _split_conditions_for_holdout(
-        all_conds,
-        ratio=float(drug_test_ratio),
-        seed=int(seed),
-    )
-    if ensure_test_perturbation:
-        test_conds = _ensure_domain_test_perturbation(
-            adata=adata,
-            label_key=label_key,
-            ctrl_label=ctrl_label,
-            domain_key=domain_key,
-            test_domain_values=test_domain_values,
-            test_conds=test_conds,
-            seed=int(seed),
-        )
-        remaining_conds = [c for c in all_conds if c not in set(test_conds)]
-
-    val_conds, train_conds = _split_conditions_for_holdout(
-        remaining_conds,
-        ratio=float(val_ratio),
-        seed=int(seed),
-    )
-
-    cond_series = adata.obs[label_key].astype(str)
-    domain_series = adata.obs[domain_key].astype(str)
-    train_domain_set = {str(x) for x in train_domain_values}
-    test_domain_set = {str(x) for x in test_domain_values}
-
-    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(
-        list(train_conds) + [ctrl_label]
-    )
-    val_mask = domain_series.isin(train_domain_set) & cond_series.isin(
-        list(val_conds) + [ctrl_label]
-    )
-    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(
-        list(test_conds) + [ctrl_label]
-    )
-
-    if not np.any(train_mask.values):
-        raise ValueError("domain unseen-drug split produced empty train set")
-    if not np.any(val_mask.values):
-        raise ValueError("domain unseen-drug split produced empty validation set")
-    if not np.any(test_mask.values):
-        raise ValueError("domain unseen-drug split produced empty test set")
-    test_pert_mask = test_mask.values & (cond_series.values != ctrl_label)
-    if not np.any(test_pert_mask):
-        raise ValueError("domain unseen-drug split produced no test perturbation cells")
-
-    return {
-        "train": adata[train_mask.values],
-        "val": adata[val_mask.values],
-        "test": adata[test_mask.values],
-        "train_conds": [str(c) for c in train_conds],
-        "val_conds": [str(c) for c in val_conds],
-        "test_conds": [str(c) for c in test_conds],
-        "split_policy": "domain_unseen_drug",
-        "split_domain_key": str(domain_key),
-        "train_domain_values": [str(x) for x in train_domain_values],
-        "test_domain_values": [str(x) for x in test_domain_values],
-    }
-
-
 def _build_split_dict_for_config(data: TriShiftData, cfg: BiolordDatasetConfig, split_id: int) -> dict:
     policy = str(cfg.split_policy or "condition").strip()
     if policy in {"", "condition"}:
         return _build_split_dict_legacy(data, int(split_id), float(cfg.test_ratio or 0.2))
-    if policy == "donor_unseen_drug":
-        return _split_domain_unseen_drug(
-            data,
-            seed=int(split_id),
-            domain_key=str(cfg.domain_key or "donor_id"),
-            train_domain_values=[str(x) for x in cfg.train_domain_values],
-            test_domain_values=[str(x) for x in cfg.test_domain_values],
-            drug_test_ratio=float(cfg.drug_test_ratio or cfg.test_ratio or 0.2),
-            val_ratio=float(cfg.val_ratio),
-            ensure_test_perturbation=True,
-        )
-    if policy == "celltype_unseen_drug":
-        domain_key = str(cfg.domain_key or "cell_type")
-        test_domains, train_domains = _split_conditions_for_holdout(
-            _domain_values(data.adata_all, domain_key),
-            ratio=float(cfg.domain_test_ratio),
-            seed=int(split_id),
-        )
-        return _split_domain_unseen_drug(
-            data,
-            seed=int(split_id),
-            domain_key=domain_key,
-            train_domain_values=train_domains,
-            test_domain_values=test_domains,
-            drug_test_ratio=float(cfg.drug_test_ratio or cfg.test_ratio or 0.2),
-            val_ratio=float(cfg.val_ratio),
-            ensure_test_perturbation=True,
-        )
     raise ValueError(f"Unsupported BioLORD split_policy={policy!r}")
 
 
@@ -670,7 +472,7 @@ def _prepare_legacy_train_adata(
         )
     else:
         if str(cfg.ordered_attribute_key) == "rdkit2d":
-            raise KeyError("OpenProblems BioLORD requires adata.obsm['rdkit2d']")
+            raise KeyError("BioLORD requires adata.obsm['rdkit2d'] for this config")
         split_adata = _build_multihot_attributes(split_adata, cfg.ordered_attribute_key)
     if bool(cfg.aggregate_legacy_condition_means):
         split_adata = _aggregate_legacy_condition_means(
@@ -1166,21 +968,13 @@ def _compute_metrics_and_export_payload_legacy(
     truth_adata = split_dict.get("test") if isinstance(split_dict.get("test"), ad.AnnData) else eval_adata
     cond_truth = truth_adata.obs["condition"].astype(str).map(_utils.normalize_condition)
     split_key = f"split{int(split_id)}"
-    use_target_ctrl = str(split_dict.get("split_policy", "")) == "domain_unseen_drug"
-    if use_target_ctrl:
-        ctrl_mask = truth_adata.obs["condition"].astype(str).eq("ctrl").values
-        if not np.any(ctrl_mask):
-            raise ValueError("OpenProblems BioLORD target-domain test split has no ctrl cells")
-        adata_control = truth_adata[ctrl_mask].copy()
-        eval_ctrl_source = "target_domain_test_ctrl"
-    else:
+    train_ctrl_mask = train_adata.obs["condition"].astype(str).eq("ctrl").values
+    if split_key in train_adata.obs.columns:
+        train_ctrl_mask = train_ctrl_mask & train_adata.obs[split_key].astype(str).eq("train").values
+    if not np.any(train_ctrl_mask):
         train_ctrl_mask = train_adata.obs["condition"].astype(str).eq("ctrl").values
-        if split_key in train_adata.obs.columns:
-            train_ctrl_mask = train_ctrl_mask & train_adata.obs[split_key].astype(str).eq("train").values
-        if not np.any(train_ctrl_mask):
-            train_ctrl_mask = train_adata.obs["condition"].astype(str).eq("ctrl").values
-        adata_control = train_adata[train_ctrl_mask].copy()
-        eval_ctrl_source = "train_ctrl"
+    adata_control = train_adata[train_ctrl_mask].copy()
+    eval_ctrl_source = "train_ctrl"
     ctrl_full = np.asarray(_utils.densify_X(adata_control.X), dtype=np.float32)
     top20_degs_final = _top20_degs_mapping(eval_adata)
 
