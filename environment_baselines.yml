@@ -16,7 +16,6 @@ dependencies:
   - ipykernel
   - jupyterlab
   - pip:
-      - scouter-learn
       - cell-gears
       - POT
 

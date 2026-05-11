@@ -1,2 +1,0 @@
-"""Norman-specific ablation entrypoints."""
-
