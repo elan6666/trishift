@@ -13,7 +13,6 @@ MODEL_COLORS = {
     "TriShift nearest": "#4C72B0",
     "TriShift random": "#9ECAE1",
     "GEARS": "#55A868",
-    "biolord": "#C44E52",
     "GenePert": "#8172B2",
     "scGPT": "#CCB974",
     "Scouter": "#64B5CD",
@@ -74,4 +73,3 @@ def style_axis(ax, *, grid_axis: str | None = None) -> None:
     ax.tick_params(length=3.0, width=0.8, colors="#3A3A3A")
     if grid_axis:
         ax.grid(axis=grid_axis, color="#D5D8DC", linewidth=0.7, alpha=0.35)
-

@@ -26,7 +26,6 @@ except ImportError as exc:  # pragma: no cover - dependency check
 
 DEFAULT_RESULT_ROOTS = {
     "trishift": REPO_ROOT / "artifacts" / "results",
-    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",

@@ -105,6 +105,23 @@ train:
     # sequential 模式 Phase B (Stage3) 轮数/学习率。
     epochs: 40
     lr: 0.001
+    ecs:
+      # Stage3 主训练结束后是否追加 ECS 微调阶段；作用在 generator 的 z_state 上。
+      enable: false
+      # ECS 微调轮数。
+      epochs: 10
+      # ECS 微调学习率。
+      lr: 0.0001
+      # ECS 微调学习率指数衰减系数。
+      sched_gamma: 0.9
+      # Stage3 ECS loss 权重。
+      weight: 10.0
+      # Stage3 ECS cosine similarity threshold。
+      threshold: 0.8
+      # ECS 微调早停耐心。
+      patience: 5
+      # ECS 微调早停最小提升阈值。
+      min_delta: 0.001
     sched_gamma: 0.9
     patience: 5
     min_delta: 0.001

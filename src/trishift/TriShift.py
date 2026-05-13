@@ -1268,6 +1268,224 @@ class TriShift:
             loss_expr = loss_expr + loss_expr_neg
         return loss_expr, loss_expr_neg
 
+    def _compute_stage3_state_ecs_loss(
+        self,
+        x_ctrl: torch.Tensor,
+        *,
+        z_ctrl_mu: torch.Tensor | None = None,
+        ecs_enable: bool,
+        ecs_threshold: float,
+    ) -> torch.Tensor:
+        if not bool(ecs_enable):
+            return torch.zeros((), device=x_ctrl.device, dtype=x_ctrl.dtype)
+        if self.net is None:
+            raise ValueError("model_init must be called before training")
+        if self.net.gen.state_source == "compressor":
+            if self.net.gen.compressor is None:
+                raise RuntimeError("generator compressor is required for stage3 state ECS")
+            z_state = self.net.gen.compressor(x_ctrl)
+        else:
+            if z_ctrl_mu is None:
+                z_ctrl_mu = self.net.vae.encode_mu(x_ctrl)
+            z_state = z_ctrl_mu
+        if not torch.isfinite(z_state).all():
+            raise ValueError("non-finite stage3 z_state in ECS phase")
+        return _stage1_ecs_loss(z_state, threshold=ecs_threshold)
+
+    def _run_stage3_ecs_finetune(
+        self,
+        *,
+        loader: DataLoader,
+        val_loader: DataLoader | None,
+        emb_table: torch.Tensor,
+        phase_name: str,
+        epochs: int,
+        lr: float,
+        sched_gamma: float,
+        weight: float,
+        threshold: float,
+        patience: int,
+        min_delta: float,
+        amp: bool,
+        grad_accum_steps: int,
+        use_shift_head: bool,
+        gamma: float,
+        lambda_dir_expr: float,
+        deg_idx_dict: dict | None,
+        deg_weight: float,
+        lambda_expr_mse: float,
+        lambda_neg_expr: float,
+        neg_expr_penalty: str,
+        nonzero_idx_dict: dict,
+    ) -> list[dict]:
+        if self.net is None:
+            raise ValueError("model_init must be called before training")
+        if int(epochs) <= 0:
+            print("[stage3:ecs] inactive reason=non_positive_epochs")
+            return []
+        if float(weight) <= 0.0:
+            print("[stage3:ecs] inactive reason=non_positive_weight")
+            return []
+
+        for p in self.net.vae.parameters():
+            p.requires_grad = False
+        for p in self.net.shift.parameters():
+            p.requires_grad = False
+        for p in self.net.gen.parameters():
+            p.requires_grad = True
+        self.net.vae.eval()
+        self.net.shift.eval()
+        self.net.gen.train()
+
+        optimizer = torch.optim.Adam(self.net.gen.parameters(), lr=float(lr))
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=float(sched_gamma))
+        use_amp = amp and self.device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        stopper = _EarlyStopper(patience, min_delta)
+        best_state = None
+        logs: list[dict] = []
+
+        def _unpack_batch(batch):
+            if len(batch) == 7:
+                x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu, _, _ = batch
+                return x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu
+            if len(batch) == 4:
+                x_ctrl, x_true, idx_list, cond_str = batch
+                return x_ctrl, x_true, idx_list, cond_str, None
+            raise ValueError("unsupported stage3 ECS batch format")
+
+        def _predict(
+            x_ctrl: torch.Tensor,
+            cond_vec: torch.Tensor,
+            z_ctrl_mu: torch.Tensor | None,
+        ) -> torch.Tensor:
+            if use_shift_head:
+                out = self.net.forward_joint(x_ctrl, cond_vec, z_ctrl_mu=z_ctrl_mu)
+                return out["x_pred"]
+            return self.net.gen.forward_no_delta(x_ctrl, cond_vec)
+
+        print(
+            "[stage3:ecs] start finetune: "
+            f"phase={phase_name}, epochs={epochs}, lr={lr}, weight={weight}, threshold={threshold}"
+        )
+        for epoch in range(int(epochs)):
+            total_acc = 0.0
+            expr_acc = 0.0
+            neg_acc = 0.0
+            ecs_acc = 0.0
+            optimizer.zero_grad(set_to_none=True)
+            for step, batch in enumerate(
+                tqdm(loader, desc=f"stage3:ecs {epoch+1}/{epochs}", leave=False)
+            ):
+                x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu = _unpack_batch(batch)
+                x_ctrl = x_ctrl.to(self.device, non_blocking=True)
+                x_true = x_true.to(self.device, non_blocking=True)
+                if z_ctrl_mu is not None:
+                    z_ctrl_mu = z_ctrl_mu.to(self.device, non_blocking=True)
+                cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    x_pred = _predict(x_ctrl, cond_vec, z_ctrl_mu)
+                    loss_expr, loss_expr_neg = self._compute_expression_loss(
+                        x_pred=x_pred,
+                        x_true=x_true,
+                        x_ctrl=x_ctrl,
+                        cond_str=cond_str,
+                        nonzero_idx_dict=nonzero_idx_dict,
+                        gamma=gamma,
+                        lambda_dir_expr=lambda_dir_expr,
+                        deg_idx_dict=deg_idx_dict,
+                        deg_weight=deg_weight,
+                        lambda_expr_mse=lambda_expr_mse,
+                        lambda_neg_expr=lambda_neg_expr,
+                        neg_expr_penalty=neg_expr_penalty,
+                    )
+                    loss_ecs = self._compute_stage3_state_ecs_loss(
+                        x_ctrl,
+                        z_ctrl_mu=z_ctrl_mu,
+                        ecs_enable=True,
+                        ecs_threshold=threshold,
+                    )
+                    total_loss = loss_expr + float(weight) * loss_ecs
+                    if not torch.isfinite(total_loss):
+                        raise ValueError("non-finite stage3 ECS total loss")
+                    loss = total_loss / grad_accum_steps
+                scaler.scale(loss).backward()
+                if (step + 1) % grad_accum_steps == 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.net.gen.parameters(), 10.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+                total_acc += total_loss.item()
+                expr_acc += loss_expr.item()
+                neg_acc += loss_expr_neg.item()
+                ecs_acc += loss_ecs.item()
+
+            denom = max(len(loader), 1)
+            row = {
+                "loss": total_acc / denom,
+                "loss_expr": expr_acc / denom,
+                "loss_expr_neg": neg_acc / denom,
+                "loss_ecs": ecs_acc / denom,
+                "val_loss": None,
+                "val_loss_ecs": None,
+            }
+            monitor = row["loss"]
+            if val_loader is not None:
+                self.net.gen.eval()
+                val_total = 0.0
+                val_ecs_total = 0.0
+                with torch.no_grad():
+                    for batch in val_loader:
+                        x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu = _unpack_batch(batch)
+                        x_ctrl = x_ctrl.to(self.device, non_blocking=True)
+                        x_true = x_true.to(self.device, non_blocking=True)
+                        if z_ctrl_mu is not None:
+                            z_ctrl_mu = z_ctrl_mu.to(self.device, non_blocking=True)
+                        cond_vec = self._build_cond_vec_batch(emb_table, idx_list)
+                        with torch.cuda.amp.autocast(enabled=use_amp):
+                            x_pred = _predict(x_ctrl, cond_vec, z_ctrl_mu)
+                            loss_expr, _ = self._compute_expression_loss(
+                                x_pred=x_pred,
+                                x_true=x_true,
+                                x_ctrl=x_ctrl,
+                                cond_str=cond_str,
+                                nonzero_idx_dict=nonzero_idx_dict,
+                                gamma=gamma,
+                                lambda_dir_expr=lambda_dir_expr,
+                                deg_idx_dict=deg_idx_dict,
+                                deg_weight=deg_weight,
+                                lambda_expr_mse=lambda_expr_mse,
+                                lambda_neg_expr=lambda_neg_expr,
+                                neg_expr_penalty=neg_expr_penalty,
+                            )
+                            loss_ecs = self._compute_stage3_state_ecs_loss(
+                                x_ctrl,
+                                z_ctrl_mu=z_ctrl_mu,
+                                ecs_enable=True,
+                                ecs_threshold=threshold,
+                            )
+                            total_loss = loss_expr + float(weight) * loss_ecs
+                        val_total += total_loss.item()
+                        val_ecs_total += loss_ecs.item()
+                row["val_loss"] = val_total / max(len(val_loader), 1)
+                row["val_loss_ecs"] = val_ecs_total / max(len(val_loader), 1)
+                monitor = row["val_loss"]
+                self.net.gen.train()
+            logs.append(row)
+            scheduler.step()
+            improved, should_stop = stopper.update(monitor)
+            if improved:
+                best_state = {k: v.detach().cpu() for k, v in self.net.gen.state_dict().items()}
+            if should_stop:
+                print(f"[stage3:ecs] early stop at epoch {epoch+1}")
+                break
+
+        if best_state is not None:
+            self.net.gen.load_state_dict(best_state)
+        print("[stage3:ecs] done finetune")
+        return logs
+
     @staticmethod
     def _compute_latent_supervision_loss(
         shift_pred: torch.Tensor,
@@ -1806,6 +2024,14 @@ class TriShift:
         lambda_expr_mse: float = 0.0,
         lambda_neg_expr: float = 0.0,
         neg_expr_penalty: str = "mse",
+        stage3_ecs_enable: bool = False,
+        stage3_ecs_epochs: int = 10,
+        stage3_ecs_lr: float = 1e-4,
+        stage3_ecs_sched_gamma: float = 0.9,
+        stage3_ecs_weight: float = 10.0,
+        stage3_ecs_threshold: float = 0.8,
+        stage3_ecs_patience: int = 5,
+        stage3_ecs_min_delta: float = 1e-3,
         per_condition_ot: bool = False,
         balance_ot_by_group: bool = False,
         balance_ot_group_key: str = "cell_type",
@@ -1840,6 +2066,14 @@ class TriShift:
             deg_weight: Upweight factor for DE genes in expression loss.
             lambda_neg_expr: Non-negativity penalty weight on predicted expression.
             neg_expr_penalty: Negative penalty mode: mse or mae.
+            stage3_ecs_enable: Run a separate ECS fine-tune phase on Stage3 z_state.
+            stage3_ecs_epochs: Stage3 ECS fine-tune epochs.
+            stage3_ecs_lr: Stage3 ECS fine-tune learning rate.
+            stage3_ecs_sched_gamma: Stage3 ECS learning-rate decay.
+            stage3_ecs_weight: Stage3 ECS loss weight.
+            stage3_ecs_threshold: Stage3 ECS cosine similarity threshold.
+            stage3_ecs_patience: Stage3 ECS fine-tune early stopping patience.
+            stage3_ecs_min_delta: Stage3 ECS fine-tune early stopping minimum improvement.
             disable_loss_z_supervision: If true, do not supervise delta_z (no loss_z).
 
         Returns:
@@ -1856,6 +2090,17 @@ class TriShift:
             "[stage23] start joint training: "
             f"mode={mode}, k={k}, split_id={split_id}, epochs={epochs}, "
             f"lambda_neg_expr={lambda_neg_expr}, neg_expr_penalty={neg_expr_penalty}"
+        )
+        stage3_ecs_active = (
+            bool(stage3_ecs_enable)
+            and int(stage3_ecs_epochs) > 0
+            and float(stage3_ecs_weight) > 0.0
+        )
+        print(
+            "[stage3] ecs finetune: "
+            f"enable={bool(stage3_ecs_enable)}, active={stage3_ecs_active}, "
+            f"epochs={int(stage3_ecs_epochs)}, lr={float(stage3_ecs_lr)}, "
+            f"weight={float(stage3_ecs_weight)}, threshold={float(stage3_ecs_threshold)}"
         )
         use_shift_head = self._use_shift_head()
         if use_shift_head:
@@ -2111,7 +2356,6 @@ class TriShift:
                             lambda_neg_expr=lambda_neg_expr,
                             neg_expr_penalty=neg_expr_penalty,
                         )
-
                         if disable_loss_z_supervision:
                             val_total += loss_expr.item()
                         else:
@@ -2158,8 +2402,34 @@ class TriShift:
             self.net.gen.load_state_dict(best_state["gen"])
             if use_shift_head and "shift" in best_state:
                 self.net.shift.load_state_dict(best_state["shift"])
+        logs_stage3_ecs: list[dict] = []
+        if stage3_ecs_active:
+            logs_stage3_ecs = self._run_stage3_ecs_finetune(
+                loader=loader,
+                val_loader=val_loader,
+                emb_table=emb_table,
+                phase_name="joint",
+                epochs=int(stage3_ecs_epochs),
+                lr=float(stage3_ecs_lr),
+                sched_gamma=float(stage3_ecs_sched_gamma),
+                weight=float(stage3_ecs_weight),
+                threshold=float(stage3_ecs_threshold),
+                patience=int(stage3_ecs_patience),
+                min_delta=float(stage3_ecs_min_delta),
+                amp=amp,
+                grad_accum_steps=grad_accum_steps,
+                use_shift_head=use_shift_head,
+                gamma=gamma,
+                lambda_dir_expr=lambda_dir_expr,
+                deg_idx_dict=deg_idx_dict,
+                deg_weight=deg_weight,
+                lambda_expr_mse=lambda_expr_mse,
+                lambda_neg_expr=lambda_neg_expr,
+                neg_expr_penalty=neg_expr_penalty,
+                nonzero_idx_dict=nonzero_idx_dict,
+            )
         print("[stage23] done joint training")
-        return {"epochs": logs}
+        return {"epochs": logs, "stage3_ecs": logs_stage3_ecs}
 
     def train_stage23_sequential(
         self,
@@ -2193,6 +2463,14 @@ class TriShift:
         lambda_expr_mse: float = 0.0,
         lambda_neg_expr: float = 0.0,
         neg_expr_penalty: str = "mse",
+        stage3_ecs_enable: bool = False,
+        stage3_ecs_epochs: int = 10,
+        stage3_ecs_lr: float = 1e-4,
+        stage3_ecs_sched_gamma: float = 0.9,
+        stage3_ecs_weight: float = 10.0,
+        stage3_ecs_threshold: float = 0.8,
+        stage3_ecs_patience: int = 5,
+        stage3_ecs_min_delta: float = 1e-3,
         per_condition_ot: bool = False,
         balance_ot_by_group: bool = False,
         balance_ot_group_key: str = "cell_type",
@@ -2230,6 +2508,14 @@ class TriShift:
             deg_weight: Upweight factor for DE genes in expression loss.
             lambda_neg_expr: Non-negativity penalty weight on predicted expression.
             neg_expr_penalty: Negative penalty mode: mse or mae.
+            stage3_ecs_enable: Run a separate ECS fine-tune phase on Stage3 z_state.
+            stage3_ecs_epochs: Stage3 ECS fine-tune epochs.
+            stage3_ecs_lr: Stage3 ECS fine-tune learning rate.
+            stage3_ecs_sched_gamma: Stage3 ECS learning-rate decay.
+            stage3_ecs_weight: Stage3 ECS loss weight.
+            stage3_ecs_threshold: Stage3 ECS cosine similarity threshold.
+            stage3_ecs_patience: Stage3 ECS fine-tune early stopping patience.
+            stage3_ecs_min_delta: Stage3 ECS fine-tune early stopping minimum improvement.
             disable_loss_z_supervision: If true, skip stage2 delta supervision and
                 learn shift implicitly from stage3 expression loss.
 
@@ -2245,6 +2531,17 @@ class TriShift:
             "[stage23] start sequential training: "
             f"mode={mode}, k={k}, split_id={split_id}, lambda_neg_expr={lambda_neg_expr}, "
             f"neg_expr_penalty={neg_expr_penalty}"
+        )
+        stage3_ecs_active = (
+            bool(stage3_ecs_enable)
+            and int(stage3_ecs_epochs) > 0
+            and float(stage3_ecs_weight) > 0.0
+        )
+        print(
+            "[stage3] ecs finetune: "
+            f"enable={bool(stage3_ecs_enable)}, active={stage3_ecs_active}, "
+            f"epochs={int(stage3_ecs_epochs)}, lr={float(stage3_ecs_lr)}, "
+            f"weight={float(stage3_ecs_weight)}, threshold={float(stage3_ecs_threshold)}"
         )
         use_shift_head = self._use_shift_head()
         if use_shift_head:
@@ -2500,6 +2797,7 @@ class TriShift:
         stopper = _EarlyStopper(patience_stage3, min_delta_stage3)
         for epoch in range(epochs_stage3):
             epoch_loss = 0.0
+            epoch_loss_expr = 0.0
             epoch_loss_expr_neg = 0.0
             opt_gen.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu, _, _) in enumerate(
@@ -2540,6 +2838,7 @@ class TriShift:
                     scaler.update()
                     opt_gen.zero_grad(set_to_none=True)
                 epoch_loss += loss.item() * grad_accum_steps
+                epoch_loss_expr += loss_expr.item()
                 epoch_loss_expr_neg += loss_expr_neg.item()
             avg_loss = epoch_loss / max(len(loader), 1)
             val_loss = None
@@ -2583,6 +2882,7 @@ class TriShift:
             logs_stage3.append(
                 {
                     "loss": avg_loss,
+                    "loss_expr": epoch_loss_expr / max(len(loader), 1),
                     "loss_expr_neg": epoch_loss_expr_neg / max(len(loader), 1),
                     "val_loss": val_loss,
                 }
@@ -2605,8 +2905,34 @@ class TriShift:
             if use_shift_head and disable_loss_z_supervision and "shift" in best_state:
                 self.net.shift.load_state_dict(best_state["shift"])
 
+        logs_stage3_ecs: list[dict] = []
+        if stage3_ecs_active:
+            logs_stage3_ecs = self._run_stage3_ecs_finetune(
+                loader=loader,
+                val_loader=val_loader,
+                emb_table=emb_table,
+                phase_name="sequential",
+                epochs=int(stage3_ecs_epochs),
+                lr=float(stage3_ecs_lr),
+                sched_gamma=float(stage3_ecs_sched_gamma),
+                weight=float(stage3_ecs_weight),
+                threshold=float(stage3_ecs_threshold),
+                patience=int(stage3_ecs_patience),
+                min_delta=float(stage3_ecs_min_delta),
+                amp=amp,
+                grad_accum_steps=grad_accum_steps,
+                use_shift_head=use_shift_head,
+                gamma=gamma,
+                lambda_dir_expr=lambda_dir_expr,
+                deg_idx_dict=deg_idx_dict,
+                deg_weight=deg_weight,
+                lambda_expr_mse=lambda_expr_mse,
+                lambda_neg_expr=lambda_neg_expr,
+                neg_expr_penalty=neg_expr_penalty,
+                nonzero_idx_dict=nonzero_idx_dict,
+            )
         print("[stage23] done sequential training")
-        return {"stage2": logs_stage2, "stage3": logs_stage3}
+        return {"stage2": logs_stage2, "stage3": logs_stage3, "stage3_ecs": logs_stage3_ecs}
 
     def train_stage3_only(
         self,
@@ -2630,6 +2956,14 @@ class TriShift:
         lambda_expr_mse: float = 0.0,
         lambda_neg_expr: float = 0.0,
         neg_expr_penalty: str = "mse",
+        stage3_ecs_enable: bool = False,
+        stage3_ecs_epochs: int = 10,
+        stage3_ecs_lr: float = 1e-4,
+        stage3_ecs_sched_gamma: float = 0.9,
+        stage3_ecs_weight: float = 10.0,
+        stage3_ecs_threshold: float = 0.8,
+        stage3_ecs_patience: int = 5,
+        stage3_ecs_min_delta: float = 1e-3,
         shuffle: bool = True,
     ) -> dict:
         """Train generator only with random control pairing (stage3-only mode).
@@ -2654,6 +2988,14 @@ class TriShift:
             deg_weight: Upweight factor for DE genes in expression loss.
             lambda_neg_expr: Non-negativity penalty weight on predicted expression.
             neg_expr_penalty: Negative penalty mode: mse or mae.
+            stage3_ecs_enable: Run a separate ECS fine-tune phase on Stage3 z_state.
+            stage3_ecs_epochs: Stage3 ECS fine-tune epochs.
+            stage3_ecs_lr: Stage3 ECS fine-tune learning rate.
+            stage3_ecs_sched_gamma: Stage3 ECS learning-rate decay.
+            stage3_ecs_weight: Stage3 ECS loss weight.
+            stage3_ecs_threshold: Stage3 ECS cosine similarity threshold.
+            stage3_ecs_patience: Stage3 ECS fine-tune early stopping patience.
+            stage3_ecs_min_delta: Stage3 ECS fine-tune early stopping minimum improvement.
             shuffle: Shuffle control/pert pairing.
 
         Returns:
@@ -2667,6 +3009,17 @@ class TriShift:
         print(
             f"[stage3_only] start: split_id={split_id}, epochs={epochs}, "
             f"lambda_neg_expr={lambda_neg_expr}, neg_expr_penalty={neg_expr_penalty}"
+        )
+        stage3_ecs_active = (
+            bool(stage3_ecs_enable)
+            and int(stage3_ecs_epochs) > 0
+            and float(stage3_ecs_weight) > 0.0
+        )
+        print(
+            "[stage3] ecs finetune: "
+            f"enable={bool(stage3_ecs_enable)}, active={stage3_ecs_active}, "
+            f"epochs={int(stage3_ecs_epochs)}, lr={float(stage3_ecs_lr)}, "
+            f"weight={float(stage3_ecs_weight)}, threshold={float(stage3_ecs_threshold)}"
         )
 
         train_adata = split_dict["train"]
@@ -2713,9 +3066,12 @@ class TriShift:
 
         for p in self.net.shift.parameters():
             p.requires_grad = False
+        for p in self.net.vae.parameters():
+            p.requires_grad = False
         for p in self.net.gen.parameters():
             p.requires_grad = True
         self.net.shift.eval()
+        self.net.vae.eval()
         self.net.gen.train()
 
         opt_gen = torch.optim.Adam(self.net.gen.parameters(), lr=lr)
@@ -2735,6 +3091,7 @@ class TriShift:
         logs = []
         for epoch in range(epochs):
             epoch_loss = 0.0
+            epoch_loss_expr = 0.0
             epoch_loss_expr_neg = 0.0
             opt_gen.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str) in enumerate(
@@ -2765,7 +3122,8 @@ class TriShift:
                     scaler.step(opt_gen)
                     scaler.update()
                     opt_gen.zero_grad(set_to_none=True)
-                epoch_loss += loss_expr.item()
+                epoch_loss += loss.item() * grad_accum_steps
+                epoch_loss_expr += loss_expr.item()
                 epoch_loss_expr_neg += loss_expr_neg.item()
 
             avg_loss = epoch_loss / max(len(loader), 1)
@@ -2800,6 +3158,7 @@ class TriShift:
             logs.append(
                 {
                     "loss": avg_loss,
+                    "loss_expr": epoch_loss_expr / max(len(loader), 1),
                     "loss_expr_neg": epoch_loss_expr_neg / max(len(loader), 1),
                     "val_loss": val_loss,
                 }
@@ -2815,8 +3174,34 @@ class TriShift:
 
         if best_state is not None:
             self.net.gen.load_state_dict(best_state)
+        logs_stage3_ecs: list[dict] = []
+        if stage3_ecs_active:
+            logs_stage3_ecs = self._run_stage3_ecs_finetune(
+                loader=loader,
+                val_loader=val_loader,
+                emb_table=emb_table,
+                phase_name="stage3_only",
+                epochs=int(stage3_ecs_epochs),
+                lr=float(stage3_ecs_lr),
+                sched_gamma=float(stage3_ecs_sched_gamma),
+                weight=float(stage3_ecs_weight),
+                threshold=float(stage3_ecs_threshold),
+                patience=int(stage3_ecs_patience),
+                min_delta=float(stage3_ecs_min_delta),
+                amp=amp,
+                grad_accum_steps=grad_accum_steps,
+                use_shift_head=False,
+                gamma=gamma,
+                lambda_dir_expr=lambda_dir_expr,
+                deg_idx_dict=deg_idx_dict,
+                deg_weight=deg_weight,
+                lambda_expr_mse=lambda_expr_mse,
+                lambda_neg_expr=lambda_neg_expr,
+                neg_expr_penalty=neg_expr_penalty,
+                nonzero_idx_dict=nonzero_idx_dict,
+            )
         print("[stage3_only] done")
-        return {"epochs": logs}
+        return {"epochs": logs, "stage3_ecs": logs_stage3_ecs}
 
     def evaluate(
         self,
@@ -2881,7 +3266,18 @@ class TriShift:
 
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
         train_adata = split_dict.get("train", None)
-        if ctrl_source_eff == "target_domain_test_ctrl":
+        use_train_pert_reference = (
+            str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
+            and train_adata is not None
+        )
+        if use_train_pert_reference:
+            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
+            pert_reference = average_of_perturbation_centroids(
+                X=train_adata.X,
+                conditions=train_cond_arr,
+                ctrl_label=self.data.ctrl_label,
+            )
+        elif ctrl_source_eff == "target_domain_test_ctrl":
             pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
         elif train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
@@ -2998,6 +3394,7 @@ class TriShift:
         eval_ctrl_strategy: dict | None = None,
         eval_ctrl_source: str = "train_ctrl",
         eval_batch_size: int = 4096,
+        export_full_predictions: bool = False,
     ) -> dict:
         """Export per-condition predictions for downstream plotting.
 
@@ -3049,7 +3446,18 @@ class TriShift:
         else:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
         train_adata = split_dict.get("train", None)
-        if ctrl_source_eff == "target_domain_test_ctrl":
+        use_train_pert_reference = (
+            str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
+            and train_adata is not None
+        )
+        if use_train_pert_reference:
+            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
+            pert_reference = average_of_perturbation_centroids(
+                X=train_adata.X,
+                conditions=train_cond_arr,
+                ctrl_label=self.data.ctrl_label,
+            )
+        elif ctrl_source_eff == "target_domain_test_ctrl":
             pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
         elif train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
@@ -3127,26 +3535,35 @@ class TriShift:
                     include_distributional=True,
                 )
                 seed_base = self._stable_condition_seed(base_seed, split_id, str(cond))
-                sample_size = max(1, int(n_ensemble))
-                pred_export, pred_idx = self._sample_rows_for_export(
-                    x_pred,
-                    sample_size=sample_size,
-                    seed=seed_base + 11,
-                )
-                if int(ctrl_expr.shape[0]) == int(x_pred.shape[0]) and pred_idx.size > 0:
-                    ctrl_export = np.asarray(ctrl_expr[pred_idx], dtype=np.float32)
-                    ctrl_idx = pred_idx
+                if bool(export_full_predictions):
+                    sample_size = None
+                    pred_export = np.asarray(x_pred, dtype=np.float32)
+                    ctrl_export = np.asarray(ctrl_expr, dtype=np.float32)
+                    truth_export = np.asarray(true_expr, dtype=np.float32)
+                    pred_idx = np.arange(int(pred_export.shape[0]), dtype=int)
+                    ctrl_idx = np.arange(int(ctrl_export.shape[0]), dtype=int)
+                    truth_idx = np.arange(int(truth_export.shape[0]), dtype=int)
                 else:
-                    ctrl_export, ctrl_idx = self._sample_rows_for_export(
-                        ctrl_expr,
+                    sample_size = max(1, int(n_ensemble))
+                    pred_export, pred_idx = self._sample_rows_for_export(
+                        x_pred,
                         sample_size=sample_size,
-                        seed=seed_base + 17,
+                        seed=seed_base + 11,
                     )
-                truth_export, truth_idx = self._sample_rows_for_export(
-                    true_expr,
-                    sample_size=sample_size,
-                    seed=seed_base + 23,
-                )
+                    if int(ctrl_expr.shape[0]) == int(x_pred.shape[0]) and pred_idx.size > 0:
+                        ctrl_export = np.asarray(ctrl_expr[pred_idx], dtype=np.float32)
+                        ctrl_idx = pred_idx
+                    else:
+                        ctrl_export, ctrl_idx = self._sample_rows_for_export(
+                            ctrl_expr,
+                            sample_size=sample_size,
+                            seed=seed_base + 17,
+                        )
+                    truth_export, truth_idx = self._sample_rows_for_export(
+                        true_expr,
+                        sample_size=sample_size,
+                        seed=seed_base + 23,
+                    )
                 results[cond] = {
                     "Pred": pred_export[:, deg_idx] if deg_idx.size > 0 else pred_export[:, :0],
                     "Ctrl": ctrl_export[:, deg_idx] if deg_idx.size > 0 else ctrl_export[:, :0],
@@ -3158,8 +3575,10 @@ class TriShift:
                     "DE_name": deg_names,
                     "gene_name_full": gene_names,
                     "export_metadata": {
-                        "export_is_subset": True,
-                        "export_sample_size": int(sample_size),
+                        "export_is_subset": not bool(export_full_predictions),
+                        "export_sample_size": (
+                            None if sample_size is None else int(sample_size)
+                        ),
                         "metrics_computed_on_full": True,
                         "eval_ctrl_source": str(ctrl_source_eff),
                         "split_id": int(split_id),

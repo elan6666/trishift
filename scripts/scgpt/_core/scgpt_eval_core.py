@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy.stats import pearsonr
-from sklearn.metrics import mean_squared_error as mse
 try:
     from tqdm.auto import tqdm
 except Exception:
@@ -31,9 +30,10 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
-    compute_scpram_metrics_from_arrays,
+    compute_distributional_systema_metrics_from_arrays,
+    compute_mean_effect_metrics,
+    compute_scpram_metrics_bundle_from_arrays,
     pearson_delta_reference_metrics,
-    regression_r2_safe,
 )
 from trishift.TriShiftData import TriShiftData
 from scripts.common.split_utils import (
@@ -59,6 +59,14 @@ class ScgptDatasetConfig:
     max_seq_len: int = 1536
     dropout: float = 0.0
     use_fast_transformer: bool = True
+    split_policy: str = "condition"
+    domain_key: str = "cell_type"
+    domain_test_ratio: float = 0.2
+    val_domain_ratio: float = 0.1
+    perturbation_condition: str = ""
+    include_test_ctrl_in_train: bool = False
+    eval_ctrl_source: str = "train_ctrl"
+    condition_gene_map: dict[str, str] | None = None
 
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "eval" / "configs"
@@ -86,6 +94,23 @@ DATASET_CONFIG = {
         splits=[1, 2, 3, 4, 5],
         test_ratio=0.2,
         norman_split=True,
+    ),
+    "scgen_pbmc_celltype": ScgptDatasetConfig(
+        data_rel="data/scgen/perturb_processed.h5ad",
+        splits=[1, 2, 3],
+        test_ratio=0.2,
+        epochs=15,
+        batch_size=64,
+        eval_batch_size=64,
+        control_pool_size=0,
+        split_policy="celltype_seen_perturbation",
+        domain_key="cell_type",
+        domain_test_ratio=0.2,
+        val_domain_ratio=0.1,
+        perturbation_condition="stimulated",
+        include_test_ctrl_in_train=True,
+        eval_ctrl_source="target_domain_test_ctrl",
+        condition_gene_map={"stimulated": "IFNB1"},
     ),
 }
 
@@ -320,13 +345,136 @@ def _subset_by_conditions(adata: ad.AnnData, conditions: list[str]) -> ad.AnnDat
     return adata[mask].copy()
 
 
+def _split_conditions_for_holdout(
+    values: list[str],
+    *,
+    ratio: float,
+    seed: int,
+) -> tuple[list[str], list[str]]:
+    vals = np.asarray([str(x) for x in values], dtype=object)
+    rng = np.random.RandomState(int(seed))
+    rng.shuffle(vals)
+    n_test = round(float(ratio) * len(vals))
+    test_arr, train_arr = np.split(vals, [n_test])
+    return list(test_arr), list(train_arr)
+
+
+def _domain_values(adata: ad.AnnData, domain_key: str) -> list[str]:
+    if domain_key not in adata.obs.columns:
+        raise ValueError(f"adata.obs is missing required split domain column: {domain_key}")
+    return sorted(adata.obs[domain_key].astype(str).unique().tolist())
+
+
+def _non_ctrl_conditions(data: TriShiftData) -> list[str]:
+    return [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
+
+
+def _infer_single_perturbation_condition(data: TriShiftData, configured: str) -> str:
+    all_conds = _non_ctrl_conditions(data)
+    cond = str(configured or "").strip()
+    if cond:
+        if cond not in all_conds:
+            raise ValueError(
+                f"Configured perturbation condition {cond!r} is not present; "
+                f"available non-control conditions: {all_conds}"
+            )
+        return cond
+    if len(all_conds) != 1:
+        raise ValueError(
+            "celltype_seen_perturbation requires exactly one non-control condition "
+            f"or perturbation_condition; found {all_conds}"
+        )
+    return str(all_conds[0])
+
+
+def _split_celltype_seen_perturbation(
+    data: TriShiftData,
+    *,
+    cfg: ScgptDatasetConfig,
+    seed: int,
+) -> dict:
+    adata = data.adata_all
+    label_key = data.label_key
+    ctrl_label = data.ctrl_label
+    domain_key = str(cfg.domain_key)
+    pert_cond = _infer_single_perturbation_condition(data, str(cfg.perturbation_condition))
+
+    domains = _domain_values(adata, domain_key)
+    if len(domains) < 3:
+        raise ValueError(
+            f"celltype_seen_perturbation needs at least 3 {domain_key} values; found {domains}"
+        )
+    test_domains, remaining_domains = _split_conditions_for_holdout(
+        domains,
+        ratio=float(cfg.domain_test_ratio),
+        seed=int(seed),
+    )
+    if not test_domains:
+        test_domains = [domains[(int(seed) - 1) % len(domains)]]
+        remaining_domains = [d for d in domains if d not in set(test_domains)]
+
+    val_domains, train_domains = _split_conditions_for_holdout(
+        remaining_domains,
+        ratio=float(cfg.val_domain_ratio),
+        seed=int(seed),
+    )
+    if not val_domains:
+        val_domains = [remaining_domains[(int(seed) - 1) % len(remaining_domains)]]
+        train_domains = [d for d in remaining_domains if d not in set(val_domains)]
+    if not train_domains:
+        raise ValueError(
+            "celltype_seen_perturbation produced no train domains; "
+            f"domains={domains}, test={test_domains}, val={val_domains}"
+        )
+
+    cond_series = adata.obs[label_key].astype(str)
+    domain_series = adata.obs[domain_key].astype(str)
+    train_domain_set = {str(x) for x in train_domains}
+    val_domain_set = {str(x) for x in val_domains}
+    test_domain_set = {str(x) for x in test_domains}
+    allowed_conds = [ctrl_label, pert_cond]
+
+    train_mask = domain_series.isin(train_domain_set) & cond_series.isin(allowed_conds)
+    if bool(cfg.include_test_ctrl_in_train):
+        train_mask = train_mask | (
+            domain_series.isin(test_domain_set) & (cond_series == ctrl_label)
+        )
+    val_mask = domain_series.isin(val_domain_set) & cond_series.isin(allowed_conds)
+    test_mask = domain_series.isin(test_domain_set) & cond_series.isin(allowed_conds)
+
+    for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
+        if not np.any(mask.values):
+            raise ValueError(f"celltype_seen_perturbation produced empty {split_name} set")
+    if not np.any(test_mask.values & (cond_series.values == ctrl_label)):
+        raise ValueError("celltype_seen_perturbation produced no target-domain ctrl cells")
+    if not np.any(test_mask.values & (cond_series.values == pert_cond)):
+        raise ValueError("celltype_seen_perturbation produced no target-domain perturbed cells")
+
+    return {
+        "train": adata[train_mask.values],
+        "val": adata[val_mask.values],
+        "test": adata[test_mask.values],
+        "train_conds": [pert_cond],
+        "val_conds": [pert_cond],
+        "test_conds": [pert_cond],
+        "split_policy": "celltype_seen_perturbation",
+        "split_domain_key": str(domain_key),
+        "train_domain_values": [str(x) for x in train_domains],
+        "val_domain_values": [str(x) for x in val_domains],
+        "test_domain_values": [str(x) for x in test_domains],
+        "include_test_ctrl_in_train": bool(cfg.include_test_ctrl_in_train),
+    }
+
+
 def _build_split_dict(
     name: str,
     data: TriShiftData,
     split_id: int,
-    test_ratio: float,
+    cfg: ScgptDatasetConfig,
 ) -> tuple[dict, pd.DataFrame | None]:
     subgroup_df = None
+    if str(cfg.split_policy or "condition").strip() == "celltype_seen_perturbation":
+        return _split_celltype_seen_perturbation(data, cfg=cfg, seed=int(split_id)), None
     if name == "norman":
         subgroup_df = subgroup(
             list(data.adata_all.obs["condition"].astype(str).unique()),
@@ -340,15 +488,26 @@ def _build_split_dict(
             val_conds=val_conds,
         )
         return split_dict, subgroup_df
-    return data.split_by_condition(seed=int(split_id), test_ratio=float(test_ratio)), None
+    return data.split_by_condition(seed=int(split_id), test_ratio=float(cfg.test_ratio)), None
 
 
 def _condition_tokens_no_ctrl(condition: str) -> list[str]:
     return [tok for tok in str(condition).split("+") if tok and tok != "ctrl"]
 
 
-def _make_pert_flags(condition: str, gene_names: np.ndarray) -> np.ndarray:
-    perturbed = set(_condition_tokens_no_ctrl(condition))
+def _make_pert_flags(
+    condition: str,
+    gene_names: np.ndarray,
+    condition_gene_map: dict[str, str] | None = None,
+) -> np.ndarray:
+    cond = str(condition)
+    mapped = (condition_gene_map or {}).get(cond)
+    if mapped is None:
+        mapped = (condition_gene_map or {}).get(_utils.normalize_condition(cond))
+    if mapped is None:
+        perturbed = set(_condition_tokens_no_ctrl(cond))
+    else:
+        perturbed = {str(x).strip() for x in str(mapped).split("+") if str(x).strip()}
     return np.asarray([1 if str(g) in perturbed else 0 for g in gene_names], dtype=np.int64)
 
 
@@ -383,6 +542,7 @@ def _build_train_eval_graphs(
     gene_names: np.ndarray,
     data_cls,
     samples_per_cell: int = 1,
+    condition_gene_map: dict[str, str] | None = None,
 ) -> list:
     if ctrl_adata.n_obs == 0:
         raise ValueError("Control pool is empty for scGPT graph construction")
@@ -391,7 +551,7 @@ def _build_train_eval_graphs(
     for condition in sorted(set(split_adata.obs["condition"].astype(str).tolist())):
         if condition == "ctrl":
             continue
-        pert_flags = _make_pert_flags(condition, gene_names)
+        pert_flags = _make_pert_flags(condition, gene_names, condition_gene_map)
         target_rows = _dense_rows(split_adata[split_adata.obs["condition"] == condition])
         sample_size = int(max(samples_per_cell, 1))
         for target_row in target_rows:
@@ -416,13 +576,17 @@ def _build_prediction_graphs(
     condition: str,
     data_cls,
     num_samples: int,
+    condition_gene_map: dict[str, str] | None = None,
 ) -> tuple[list, np.ndarray]:
     if ctrl_adata.n_obs == 0:
         raise ValueError("Control pool is empty for scGPT prediction")
     ctrl_rows = _dense_rows(ctrl_adata)
-    sample_idx = np.random.randint(0, ctrl_rows.shape[0], size=int(max(num_samples, 1)))
+    if int(num_samples) <= 0:
+        sample_idx = np.arange(int(ctrl_rows.shape[0]), dtype=int)
+    else:
+        sample_idx = np.random.randint(0, ctrl_rows.shape[0], size=int(max(num_samples, 1)))
     sampled_ctrl = ctrl_rows[sample_idx]
-    pert_flags = _make_pert_flags(condition, gene_names)
+    pert_flags = _make_pert_flags(condition, gene_names, condition_gene_map)
     graphs = [
         _make_graph(
             data_cls=data_cls,
@@ -736,6 +900,7 @@ def _predict_condition(
         condition=condition,
         data_cls=data_cls,
         num_samples=int(cfg.control_pool_size),
+        condition_gene_map=cfg.condition_gene_map,
     )
     loader = dataloader_cls(graphs, batch_size=int(cfg.eval_batch_size), shuffle=False)
     pred_rows: list[np.ndarray] = []
@@ -754,6 +919,98 @@ def _predict_condition(
     return np.vstack(pred_rows), sampled_ctrl
 
 
+def _stable_condition_seed(base_seed: int, split_id: int, condition: str) -> int:
+    raw = f"{int(base_seed)}::{int(split_id)}::{condition}"
+    return int(sum((i + 1) * ord(ch) for i, ch in enumerate(raw)) % (2**32 - 1))
+
+
+def _array_summary(x: np.ndarray) -> dict:
+    arr = np.asarray(x, dtype=np.float32)
+    return {
+        "n_cells": int(arr.shape[0]) if arr.ndim == 2 else 0,
+        "mean": arr.mean(axis=0).astype(np.float32)
+        if arr.ndim == 2 and arr.shape[0] > 0
+        else np.asarray([], dtype=np.float32),
+        "var": arr.var(axis=0, ddof=1).astype(np.float32)
+        if arr.ndim == 2 and arr.shape[0] > 1
+        else (np.zeros(arr.shape[1], dtype=np.float32) if arr.ndim == 2 else np.asarray([], dtype=np.float32)),
+    }
+
+
+def _condition_metric_summary(
+    *,
+    X_true: np.ndarray,
+    X_pred: np.ndarray,
+    X_ctrl: np.ndarray,
+    degs: np.ndarray,
+    condition: str,
+    split_dict: dict,
+    split_id: int,
+    base_seed: int,
+    systema_reference: np.ndarray,
+    eval_ctrl_source: str,
+) -> tuple[dict, dict]:
+    metric_seed = _stable_condition_seed(base_seed, split_id, condition)
+    mean_metrics = compute_mean_effect_metrics(
+        X_true=X_true,
+        X_pred=X_pred,
+        X_ctrl=X_ctrl,
+        deg_idx=degs,
+    )
+    systema_metrics = pearson_delta_reference_metrics(
+        X_true=np.asarray(X_true, dtype=np.float32).mean(axis=0),
+        X_pred=np.asarray(X_pred, dtype=np.float32).mean(axis=0),
+        reference=systema_reference,
+        top20_de_idxs=degs,
+    )
+    scpram_bundle = compute_scpram_metrics_bundle_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        deg_idx=degs,
+        n_degs=100,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    dist_bundle = compute_distributional_systema_metrics_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        reference=systema_reference,
+        deg_idx=degs,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    metrics = {
+        **mean_metrics,
+        "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+        "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
+        **scpram_bundle["metrics"],
+        **dist_bundle["metrics"],
+    }
+    full_summary = {
+        "metrics": dict(metrics),
+        "true": _array_summary(X_true),
+        "pred": _array_summary(X_pred),
+        "ctrl": _array_summary(X_ctrl),
+        "scpram_repeats": scpram_bundle["repeats"],
+        "scpram_wasserstein_degs_by_gene": scpram_bundle["wasserstein_degs_by_gene"],
+        "scpram_degs_used": scpram_bundle["degs_used"],
+        "systema_distributional_repeats": dist_bundle["repeats"],
+        "systema_distributional_degs_used": dist_bundle["degs_used"],
+        "metric_seed": int(metric_seed),
+        "sample_ratio": 0.8,
+        "times": 100,
+        "split_policy": split_dict.get("split_policy", None),
+        "split_domain_key": split_dict.get("split_domain_key", None),
+        "train_domain_values": split_dict.get("train_domain_values", None),
+        "val_domain_values": split_dict.get("val_domain_values", None),
+        "test_domain_values": split_dict.get("test_domain_values", None),
+        "eval_ctrl_source": str(eval_ctrl_source),
+    }
+    return metrics, full_summary
+
+
 def _compute_metrics_and_export_payload(
     *,
     model,
@@ -761,6 +1018,8 @@ def _compute_metrics_and_export_payload(
     reference_adata: ad.AnnData,
     split_dict: dict,
     split_id: int,
+    dataset_name: str,
+    base_seed: int,
     gene_ids: np.ndarray,
     cfg: ScgptDatasetConfig,
     stack: dict,
@@ -776,20 +1035,37 @@ def _compute_metrics_and_export_payload(
     if not isinstance(top20_degs_final, dict):
         raise TypeError("Expected eval_adata.uns['top20_degs_final'] to be a mapping")
 
-    pert_reference = average_of_perturbation_centroids(
-        X=_utils.densify_X(reference_adata.X),
-        conditions=reference_adata.obs["condition"].astype(str).values,
-        ctrl_label="ctrl",
-    )
-    ctrl_adata = eval_adata[eval_adata.obs["condition"].astype(str) == "ctrl"]
+    use_celltype_policy = str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
+    train_ref = split_dict.get("train")
+    if use_celltype_policy and isinstance(train_ref, ad.AnnData):
+        pert_reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(train_ref.X),
+            conditions=train_ref.obs["condition"].astype(str).values,
+            ctrl_label="ctrl",
+        )
+    else:
+        pert_reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(reference_adata.X),
+            conditions=reference_adata.obs["condition"].astype(str).values,
+            ctrl_label="ctrl",
+        )
+    truth_adata = split_dict.get("test") if use_celltype_policy else eval_adata
+    if not isinstance(truth_adata, ad.AnnData):
+        truth_adata = eval_adata
+    if str(cfg.eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl":
+        ctrl_adata = truth_adata[truth_adata.obs["condition"].astype(str) == "ctrl"]
+        eval_ctrl_source = "target_domain_test_ctrl"
+    else:
+        ctrl_adata = eval_adata[eval_adata.obs["condition"].astype(str) == "ctrl"]
+        eval_ctrl_source = "train_ctrl"
     device = next(model.parameters()).device
 
     for condition in sorted(set(map(str, split_dict.get("test_conds", [])))):
-        cond_mask = eval_adata.obs["condition"].astype(str) == condition
+        cond_mask = truth_adata.obs["condition"].astype(str) == condition
         if not bool(cond_mask.any()):
             print(f"[scgpt] skip condition missing in eval adata: {condition}")
             continue
-        true = _utils.densify_X(eval_adata[cond_mask].X)
+        true = _utils.densify_X(truth_adata[cond_mask].X)
         degs = np.asarray(top20_degs_final.get(condition, []), dtype=int).reshape(-1)
         if degs.size == 0:
             print(f"[scgpt] skip condition without DEGs: {condition}")
@@ -808,42 +1084,26 @@ def _compute_metrics_and_export_payload(
         if pred.size == 0:
             print(f"[scgpt] skip condition without predictions: {condition}")
             continue
-        pred_vec = pred[:, degs].mean(axis=0)
-        ctrl_vec = ctrl_sampled[:, degs].mean(axis=0)
-        true_vec = true[:, degs].mean(axis=0)
-
-        mse_ctrl_val = float(mse(true_vec, ctrl_vec))
-        mse_pred_val = float(mse(true_vec, pred_vec))
-        nmse_val = float(mse_pred_val / mse_ctrl_val) if mse_ctrl_val > 0 else np.nan
-        pearson_val = float(pearsonr(true_vec - ctrl_vec, pred_vec - ctrl_vec)[0])
-        deg_mean_r2_val = regression_r2_safe(true_vec - ctrl_vec, pred_vec - ctrl_vec)
-        systema_metrics = pearson_delta_reference_metrics(
-            X_true=true.mean(axis=0),
-            X_pred=pred.mean(axis=0),
-            reference=pert_reference,
-            top20_de_idxs=degs,
-        )
-        scpram_metrics = compute_scpram_metrics_from_arrays(
+        metrics, full_summary = _condition_metric_summary(
             X_true=true,
             X_pred=pred,
-            deg_idx=degs,
-            n_degs=100,
-            sample_ratio=0.8,
-            times=100,
+            X_ctrl=ctrl_sampled,
+            degs=degs,
+            condition=condition,
+            split_dict=split_dict,
+            split_id=int(split_id),
+            base_seed=int(base_seed),
+            systema_reference=pert_reference,
+            eval_ctrl_source=eval_ctrl_source,
         )
         results.append(
             {
                 "condition": condition,
-                "mse_pred": mse_pred_val,
-                "mse_ctrl": mse_ctrl_val,
-                "nmse": nmse_val,
-                "pearson": pearson_val,
-                "deg_mean_r2": float(deg_mean_r2_val),
-                "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
-                "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
-                **scpram_metrics,
+                **metrics,
                 "split_id": int(split_id),
                 "n_ensemble": int(pred.shape[0]),
+                "n_eval_ctrl": int(ctrl_sampled.shape[0]),
+                "eval_ctrl_source": str(eval_ctrl_source),
             }
         )
         export_payload[condition] = {
@@ -856,6 +1116,22 @@ def _compute_metrics_and_export_payload(
             "DE_idx": degs,
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
             "gene_name_full": gene_names,
+            "export_metadata": {
+                "model": "scgpt",
+                "dataset": str(dataset_name),
+                "export_is_subset": False,
+                "export_sample_size": None,
+                "metrics_computed_on_full": True,
+                "eval_ctrl_source": str(eval_ctrl_source),
+                "split_id": int(split_id),
+                "split_policy": split_dict.get("split_policy"),
+                "split_domain_key": split_dict.get("split_domain_key"),
+                "train_domain_values": split_dict.get("train_domain_values"),
+                "val_domain_values": split_dict.get("val_domain_values"),
+                "test_domain_values": split_dict.get("test_domain_values"),
+                "condition_gene_map": cfg.condition_gene_map,
+            },
+            "full_summary": full_summary,
         }
 
     return pd.DataFrame(results), export_payload
@@ -891,6 +1167,16 @@ def run_scgpt_eval(
         max_seq_len=int(base_cfg.max_seq_len),
         dropout=float(base_cfg.dropout),
         use_fast_transformer=bool(base_cfg.use_fast_transformer),
+        split_policy=str(base_cfg.split_policy),
+        domain_key=str(base_cfg.domain_key),
+        domain_test_ratio=float(base_cfg.domain_test_ratio),
+        val_domain_ratio=float(base_cfg.val_domain_ratio),
+        perturbation_condition=str(base_cfg.perturbation_condition),
+        include_test_ctrl_in_train=bool(base_cfg.include_test_ctrl_in_train),
+        eval_ctrl_source=str(base_cfg.eval_ctrl_source),
+        condition_gene_map=(
+            dict(base_cfg.condition_gene_map) if base_cfg.condition_gene_map is not None else None
+        ),
     )
 
     data_path = _resolve_eval_data_path(name, cfg)
@@ -902,6 +1188,15 @@ def run_scgpt_eval(
         if "gene_name" in eval_adata.var.columns
         else eval_adata.var_names.astype(str).values
     )
+    if cfg.condition_gene_map:
+        gene_set = {str(x) for x in gene_names}
+        missing_map = {
+            cond: [gene for gene in str(mapped).split("+") if gene and gene not in gene_set]
+            for cond, mapped in cfg.condition_gene_map.items()
+        }
+        missing_map = {cond: genes for cond, genes in missing_map.items() if genes}
+        if missing_map:
+            raise ValueError(f"scGPT condition_gene_map contains genes absent from adata.var: {missing_map}")
 
     out_dir = ROOT / "artifacts" / "results" / "scgpt" / name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -911,18 +1206,20 @@ def run_scgpt_eval(
     for split in cfg.splits:
         print(f"[scgpt] dataset={name} split={split}")
         set_seeds(base_seed + int(split))
-        split_dict, subgroup_df = _build_split_dict(name, data, int(split), float(cfg.test_ratio))
+        split_dict, subgroup_df = _build_split_dict(name, data, int(split), cfg)
         train_graphs = _build_train_eval_graphs(
             split_adata=split_dict["train"],
             ctrl_adata=split_dict["train"][split_dict["train"].obs["condition"].astype(str) == "ctrl"],
             gene_names=gene_names,
             data_cls=stack["Data"],
+            condition_gene_map=cfg.condition_gene_map,
         )
         val_graphs = _build_train_eval_graphs(
             split_adata=split_dict["val"],
             ctrl_adata=split_dict["val"][split_dict["val"].obs["condition"].astype(str) == "ctrl"],
             gene_names=gene_names,
             data_cls=stack["Data"],
+            condition_gene_map=cfg.condition_gene_map,
         )
         if not train_graphs:
             raise ValueError(f"scGPT train split is empty for dataset={name} split={split}")
@@ -960,6 +1257,8 @@ def run_scgpt_eval(
             reference_adata=reference_adata,
             split_dict=split_dict,
             split_id=int(split),
+            dataset_name=str(name),
+            base_seed=int(base_seed),
             gene_ids=gene_ids,
             cfg=cfg,
             stack=stack,

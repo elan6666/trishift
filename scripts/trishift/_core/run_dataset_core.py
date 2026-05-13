@@ -512,9 +512,8 @@ def _logs_to_records(split_id: int, train_logs: dict) -> list[dict]:
                     rec = {"split_id": split_id, "stage": stage_name, "epoch": epoch}
                     rec.update(item)
                     records.append(rec)
-            continue
 
-        for sub_stage in ("stage2", "stage3"):
+        for sub_stage in ("stage2", "stage3", "stage3_ecs"):
             if sub_stage in payload and isinstance(payload[sub_stage], list):
                 for epoch, item in enumerate(payload[sub_stage], start=1):
                     if isinstance(item, dict):
@@ -850,6 +849,7 @@ def run_dataset_with_paths(
     eval_genept_train_candidate_mode = str(
         defaults.get("eval_genept_train_candidate_mode", "all_train_pert")
     )
+    export_full_predictions = bool(defaults.get("export_full_predictions", False))
     eval_batch_size = int(defaults.get("performance", {}).get("chunk_size", 4096))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}
@@ -1088,6 +1088,7 @@ def run_dataset_with_paths(
             "eval_compare_modes_executed": list(compare_modes_executed),
             "eval_candidate_modes_executed": list(candidate_modes_executed),
             "eval_ctrl_sample_size_source": "n_eval_ensemble",
+            "export_full_predictions": bool(export_full_predictions),
             "eval_batch_size": int(eval_batch_size),
             "reuse_ot_cache": bool(reuse_ot_cache),
             "reuse_z_mu_cache": bool(reuse_z_mu_cache),
@@ -1118,6 +1119,7 @@ def run_dataset_with_paths(
     stage1_beta = float(stage1_cfg.get("beta", 1.0))
     stage1_deg_weight = float(stage1_cfg.get("deg_weight", 1.0))
     stage1_ecs_cfg = dict(stage1_cfg.get("ecs", {}))
+    stage3_ecs_cfg = dict(stage3_cfg.get("ecs", {}))
 
     metrics_all_by_tag: dict[str, list[pd.DataFrame]] = {}
     split_ids_raw = run_cfg.get("split_ids", None)
@@ -1210,7 +1212,20 @@ def run_dataset_with_paths(
                 seed=split_id,
                 test_ratio=float(dataset_cfg.get("test_ratio", 0.2)),
             )
-        train_logs: dict = {"split_id": split_id, "train_mode": train_mode}
+        train_logs: dict = {
+            "split_id": split_id,
+            "train_mode": train_mode,
+            "stage3_ecs": {
+                "enable": bool(stage3_ecs_cfg.get("enable", False)),
+                "epochs": int(stage3_ecs_cfg.get("epochs", 10)),
+                "lr": float(stage3_ecs_cfg.get("lr", 1e-4)),
+                "sched_gamma": float(stage3_ecs_cfg.get("sched_gamma", 0.9)),
+                "weight": float(stage3_ecs_cfg.get("weight", 10.0)),
+                "threshold": float(stage3_ecs_cfg.get("threshold", 0.8)),
+                "patience": int(stage3_ecs_cfg.get("patience", 5)),
+                "min_delta": float(stage3_ecs_cfg.get("min_delta", 1e-3)),
+            },
+        }
 
         print("[run] init model")
         model = _init_model(
@@ -1333,6 +1348,14 @@ def run_dataset_with_paths(
                 lambda_expr_mse=loss.lambda_expr_mse,
                 lambda_neg_expr=loss.lambda_neg_expr,
                 neg_expr_penalty=loss.neg_expr_penalty,
+                stage3_ecs_enable=bool(stage3_ecs_cfg.get("enable", False)),
+                stage3_ecs_epochs=int(stage3_ecs_cfg.get("epochs", 10)),
+                stage3_ecs_lr=float(stage3_ecs_cfg.get("lr", 1e-4)),
+                stage3_ecs_sched_gamma=float(stage3_ecs_cfg.get("sched_gamma", 0.9)),
+                stage3_ecs_weight=float(stage3_ecs_cfg.get("weight", 10.0)),
+                stage3_ecs_threshold=float(stage3_ecs_cfg.get("threshold", 0.8)),
+                stage3_ecs_patience=int(stage3_ecs_cfg.get("patience", 5)),
+                stage3_ecs_min_delta=float(stage3_ecs_cfg.get("min_delta", 1e-3)),
             )
         elif train_mode == "sequential":
             train_logs["stage23_sequential"] = model.train_stage23_sequential(
@@ -1366,6 +1389,14 @@ def run_dataset_with_paths(
                 lambda_expr_mse=loss.lambda_expr_mse,
                 lambda_neg_expr=loss.lambda_neg_expr,
                 neg_expr_penalty=loss.neg_expr_penalty,
+                stage3_ecs_enable=bool(stage3_ecs_cfg.get("enable", False)),
+                stage3_ecs_epochs=int(stage3_ecs_cfg.get("epochs", 10)),
+                stage3_ecs_lr=float(stage3_ecs_cfg.get("lr", 1e-4)),
+                stage3_ecs_sched_gamma=float(stage3_ecs_cfg.get("sched_gamma", 0.9)),
+                stage3_ecs_weight=float(stage3_ecs_cfg.get("weight", 10.0)),
+                stage3_ecs_threshold=float(stage3_ecs_cfg.get("threshold", 0.8)),
+                stage3_ecs_patience=int(stage3_ecs_cfg.get("patience", 5)),
+                stage3_ecs_min_delta=float(stage3_ecs_cfg.get("min_delta", 1e-3)),
                 per_condition_ot=per_condition_ot,
                 balance_ot_by_group=balance_ot_by_group,
                 balance_ot_group_key=balance_ot_group_key,
@@ -1403,6 +1434,14 @@ def run_dataset_with_paths(
                 lambda_expr_mse=loss.lambda_expr_mse,
                 lambda_neg_expr=loss.lambda_neg_expr,
                 neg_expr_penalty=loss.neg_expr_penalty,
+                stage3_ecs_enable=bool(stage3_ecs_cfg.get("enable", False)),
+                stage3_ecs_epochs=int(stage3_ecs_cfg.get("epochs", 10)),
+                stage3_ecs_lr=float(stage3_ecs_cfg.get("lr", 1e-4)),
+                stage3_ecs_sched_gamma=float(stage3_ecs_cfg.get("sched_gamma", 0.9)),
+                stage3_ecs_weight=float(stage3_ecs_cfg.get("weight", 10.0)),
+                stage3_ecs_threshold=float(stage3_ecs_cfg.get("threshold", 0.8)),
+                stage3_ecs_patience=int(stage3_ecs_cfg.get("patience", 5)),
+                stage3_ecs_min_delta=float(stage3_ecs_cfg.get("min_delta", 1e-3)),
                 per_condition_ot=per_condition_ot,
                 balance_ot_by_group=balance_ot_by_group,
                 balance_ot_group_key=balance_ot_group_key,
@@ -1547,6 +1586,7 @@ def run_dataset_with_paths(
                                 eval_ctrl_strategy=eval_strategy,
                                 eval_ctrl_source=eval_ctrl_source,
                                 eval_batch_size=eval_batch_size,
+                                export_full_predictions=export_full_predictions,
                             )
                             metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
 
@@ -1642,6 +1682,7 @@ def run_dataset_with_paths(
                     out_path=str(out_default),
                     eval_ctrl_source=eval_ctrl_source,
                     eval_batch_size=eval_batch_size,
+                    export_full_predictions=export_full_predictions,
                 )
                 if eval_ctrl_pool_mode == "all":
                     with open(out_dir_path / f"trishift_{name}_{split_id}_random.pkl", "wb") as f:
