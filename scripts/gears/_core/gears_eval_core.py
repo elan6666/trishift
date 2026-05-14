@@ -322,19 +322,22 @@ def _upgrade_legacy_dataset_processed(pert_data, split_meta: GearsSplitMeta) -> 
         graphs = dataset_processed.get(cond)
         if not graphs:
             continue
-        sample_x = getattr(graphs[0], "x", None)
-        if sample_x is None or int(sample_x.ndim) != 2 or int(sample_x.shape[1]) != 1:
-            continue
-        pert_vec = torch.zeros((int(sample_x.shape[0]), 1), dtype=sample_x.dtype)
+        pert_idxs: list[int] = []
         for gene in str(cond).split("+"):
             gene = str(gene)
             if gene == "ctrl":
                 continue
             idx = gene_to_idx.get(gene)
-            if idx is not None and 0 <= idx < int(sample_x.shape[0]):
-                pert_vec[idx, 0] = 1
+            if idx is not None:
+                pert_idxs.append(int(idx))
+        if not pert_idxs:
+            pert_idxs = [-1]
         for graph in graphs:
-            graph.x = torch.cat([graph.x, pert_vec.to(graph.x.device)], dim=1)
+            if not hasattr(graph, "pert_idx"):
+                graph.pert_idx = pert_idxs
+            graph_x = getattr(graph, "x", None)
+            if graph_x is not None and int(getattr(graph_x, "ndim", 0)) == 2 and int(graph_x.shape[1]) > 1:
+                graph.x = graph_x[:, :1]
 
 
 def _require_gears_classes():
@@ -428,6 +431,7 @@ def _require_gears_classes():
             self.dataloader = pert_data.dataloader
             self.adata = pert_data.adata
             self.node_map = pert_data.node_map
+            self.node_map_pert = getattr(pert_data, "node_map_pert", {})
             self.data_path = pert_data.data_path
             self.dataset_name = pert_data.dataset_name
             self.split = pert_data.split
@@ -436,14 +440,29 @@ def _require_gears_classes():
             self.set2conditions = pert_data.set2conditions
             self.subgroup = pert_data.subgroup
             self.gene_list = pert_data.gene_names.values.tolist()
+            self.pert_list = pert_data.pert_names.tolist()
             self.num_genes = len(self.gene_list)
+            self.num_perts = len(self.pert_list)
+            self.default_pert_graph = getattr(pert_data, "default_pert_graph", None)
+            self.saved_pred = {}
+            self.saved_logvar_sum = {}
 
             cond_series = self.adata.obs["condition"].astype(str)
             ctrl_mask = (cond_series.to_numpy() == "ctrl")
             self.ctrl_expression = torch.tensor(np.mean(self.adata.X[ctrl_mask], axis=0)).reshape(-1).to(self.device)
             pert_full_id2pert = dict(self.adata.obs[["condition_name", "condition"]].values)
-            self.dict_filter = {pert_full_id2pert[i]: j for i, j in self.adata.uns["non_zeros_gene_idx"].items()}
+            self.dict_filter = {
+                pert_full_id2pert[i]: j
+                for i, j in self.adata.uns["non_zeros_gene_idx"].items()
+                if i in pert_full_id2pert
+            }
             self.ctrl_adata = self.adata[ctrl_mask]
+            gene_dict = {g: i for i, g in enumerate(self.gene_list)}
+            self.pert2gene = {
+                p: gene_dict[pert]
+                for p, pert in enumerate(self.pert_list)
+                if pert in self.gene_list
+            }
 
         gears_utils_mod.loss_fct = _safe_loss_fct
         gears_utils_mod.uncertainty_loss_fct = _safe_uncertainty_loss_fct

@@ -97,7 +97,7 @@ DATASET_CONFIG = {
     ),
     "scgen_pbmc_celltype": ScgptDatasetConfig(
         data_rel="data/scgen/perturb_processed.h5ad",
-        splits=[1, 2, 3],
+        splits=[1, 2, 3, 4, 5],
         test_ratio=0.2,
         epochs=15,
         batch_size=64,
@@ -310,6 +310,9 @@ def _resolve_pretrained_root() -> Path:
 
 
 def _require_scgpt_stack() -> dict:
+    external_scgpt_root = ROOT / "external" / "scGPT-main"
+    if external_scgpt_root.exists() and str(external_scgpt_root) not in sys.path:
+        sys.path.insert(0, str(external_scgpt_root))
     try:
         model_mod = importlib.import_module("scgpt.model")
         loss_mod = importlib.import_module("scgpt.loss")
@@ -1147,6 +1150,7 @@ def run_scgpt_eval(
     eval_batch_size: int | None = None,
     lr: float | None = None,
     early_stop: int | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
@@ -1154,7 +1158,7 @@ def run_scgpt_eval(
     base_cfg = DATASET_CONFIG[name]
     cfg = ScgptDatasetConfig(
         data_rel=base_cfg.data_rel,
-        splits=list(base_cfg.splits),
+        splits=list(split_ids) if split_ids is not None else list(base_cfg.splits),
         test_ratio=float(base_cfg.test_ratio),
         norman_split=bool(base_cfg.norman_split),
         lr=float(base_cfg.lr if lr is None else lr),
@@ -1290,6 +1294,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--early_stop", type=int, default=10)
     parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="smoke test: run only the first split for one epoch and skip pkl export",
+    )
+    parser.add_argument(
         "--no_export_notebook_pkl",
         action="store_true",
         help="disable notebook-compatible pickle export",
@@ -1305,6 +1314,9 @@ def main(argv: list[str] | None = None) -> None:
             base_seed=int(task_args.get("seed", 24)) if int(args.seed) == 24 else int(args.seed),
             export_notebook_pkl=(
                 False
+                if bool(args.fast)
+                else
+                False
                 if bool(args.no_export_notebook_pkl)
                 else bool(task_args.get("export_notebook_pkl", True))
             ),
@@ -1313,7 +1325,13 @@ def main(argv: list[str] | None = None) -> None:
                 if int(args.control_pool_size) == 300
                 else int(args.control_pool_size)
             ),
-            epochs=int(task_args.get("epochs", 15)) if int(args.epochs) == 15 else int(args.epochs),
+            epochs=(
+                1
+                if bool(args.fast)
+                else int(task_args.get("epochs", 15))
+                if int(args.epochs) == 15
+                else int(args.epochs)
+            ),
             batch_size=(
                 int(task_args.get("batch_size", 64))
                 if int(args.batch_size) == 64
@@ -1330,6 +1348,7 @@ def main(argv: list[str] | None = None) -> None:
                 if int(args.early_stop) == 10
                 else int(args.early_stop)
             ),
+            split_ids=[DATASET_CONFIG[prof["dataset"]].splits[0]] if bool(args.fast) else None,
         )
         return
 
@@ -1338,13 +1357,14 @@ def main(argv: list[str] | None = None) -> None:
     run_scgpt_eval(
         args.name,
         base_seed=int(args.seed),
-        export_notebook_pkl=not bool(args.no_export_notebook_pkl),
+        export_notebook_pkl=False if bool(args.fast) else not bool(args.no_export_notebook_pkl),
         control_pool_size=int(args.control_pool_size),
-        epochs=int(args.epochs),
+        epochs=1 if bool(args.fast) else int(args.epochs),
         batch_size=int(args.batch_size),
         eval_batch_size=int(args.eval_batch_size),
         lr=float(args.lr),
         early_stop=int(args.early_stop),
+        split_ids=[DATASET_CONFIG[args.name].splits[0]] if bool(args.fast) else None,
     )
 
 

@@ -17,6 +17,7 @@ def main() -> None:
     ap.add_argument("--eval_batch_size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--early_stop", type=int, default=10)
+    ap.add_argument("--fast", action="store_true", help="smoke test: split1, 1 epoch, no pkl export")
     ap.add_argument("--no_export_notebook_pkl", action="store_true")
     args = ap.parse_args()
 
@@ -26,14 +27,16 @@ def main() -> None:
         "dixit",
         base_seed=int(task.get("seed", 24)) if int(args.seed) == 24 else int(args.seed),
         export_notebook_pkl=(
-            False if bool(args.no_export_notebook_pkl) else bool(task.get("export_notebook_pkl", True))
+            False
+            if bool(args.fast) or bool(args.no_export_notebook_pkl)
+            else bool(task.get("export_notebook_pkl", True))
         ),
         control_pool_size=(
             int(task.get("control_pool_size", 300))
             if int(args.control_pool_size) == 300
             else int(args.control_pool_size)
         ),
-        epochs=int(task.get("epochs", 15)) if int(args.epochs) == 15 else int(args.epochs),
+        epochs=1 if bool(args.fast) else int(task.get("epochs", 15)) if int(args.epochs) == 15 else int(args.epochs),
         batch_size=int(task.get("batch_size", 64)) if int(args.batch_size) == 64 else int(args.batch_size),
         eval_batch_size=(
             int(task.get("eval_batch_size", 64))
@@ -42,6 +45,7 @@ def main() -> None:
         ),
         lr=float(task.get("lr", 1e-4)) if float(args.lr) == 1e-4 else float(args.lr),
         early_stop=int(task.get("early_stop", 10)) if int(args.early_stop) == 10 else int(args.early_stop),
+        split_ids=[1] if bool(args.fast) else None,
     )
 
 
