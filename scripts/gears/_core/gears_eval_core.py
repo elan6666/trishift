@@ -496,10 +496,13 @@ def _prepare_gears_unseen_ctrl_training_data(
     new_processed["ctrl"] = _ctrl_graphs_from_pool(ctrl_template, train_ctrl_X)
     pert_data.dataset_processed = new_processed
 
-    pert_data.adata = _combine_split_adatas(
+    adata_for_gears = _combine_split_adatas(
         eval_adata,
         [split_dict["train"], split_dict["val"], _no_ctrl(split_dict["test"])],
     )
+    if "condition_name" not in adata_for_gears.obs.columns:
+        adata_for_gears.obs["condition_name"] = adata_for_gears.obs["condition"].astype(str).values
+    pert_data.adata = adata_for_gears
 
 
 def _require_gears_classes():
