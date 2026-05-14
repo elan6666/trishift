@@ -501,7 +501,17 @@ def _prepare_gears_unseen_ctrl_training_data(
         [split_dict["train"], split_dict["val"], _no_ctrl(split_dict["test"])],
     )
     if "condition_name" not in adata_for_gears.obs.columns:
-        adata_for_gears.obs["condition_name"] = adata_for_gears.obs["condition"].astype(str).values
+        rank_keys = list((adata_for_gears.uns.get("rank_genes_groups_cov_all") or {}).keys())
+        cond_to_name: dict[str, str] = {}
+        for cond in sorted(set(adata_for_gears.obs["condition"].astype(str).tolist())):
+            if cond == "ctrl":
+                cond_to_name[cond] = next((k for k in rank_keys if str(k).endswith("_ctrl_1")), cond)
+                continue
+            marker = f"_{cond}_"
+            cond_to_name[cond] = next((str(k) for k in rank_keys if marker in str(k)), cond)
+        adata_for_gears.obs["condition_name"] = (
+            adata_for_gears.obs["condition"].astype(str).map(cond_to_name).astype(str).values
+        )
     pert_data.adata = adata_for_gears
 
 
