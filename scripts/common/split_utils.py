@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import numpy as np
 import pandas as pd
 
 
@@ -101,3 +102,185 @@ def split_by_dataset_policy(data, dataset_name: str, seed: int, test_ratio: floa
     if test_ratio is None:
         return data.split_by_condition(seed=int(seed))
     return data.split_by_condition(seed=int(seed), test_ratio=float(test_ratio))
+
+
+def _split_conditions_for_holdout(
+    values: list[str],
+    *,
+    ratio: float,
+    seed: int,
+) -> tuple[list[str], list[str]]:
+    vals = np.asarray([str(x) for x in values], dtype=object)
+    if vals.size == 0:
+        return [], []
+    rng = np.random.RandomState(int(seed))
+    rng.shuffle(vals)
+    n_test = int(round(float(ratio) * int(vals.size)))
+    if float(ratio) > 0.0 and int(vals.size) > 1 and n_test == 0:
+        n_test = 1
+    if n_test >= int(vals.size):
+        n_test = max(1, int(vals.size) - 1)
+    test_arr, train_arr = np.split(vals, [n_test])
+    return [str(x) for x in test_arr.tolist()], [str(x) for x in train_arr.tolist()]
+
+
+def _split_ctrl_indices_train_val_test(
+    *,
+    adata,
+    label_key: str,
+    ctrl_label: str,
+    seed: int,
+    test_ratio: float,
+    val_ratio: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    cond_series = adata.obs[label_key].astype(str)
+    ctrl_idx = np.where(cond_series.values == str(ctrl_label))[0]
+    if ctrl_idx.size < 3:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation requires at least 3 ctrl cells; "
+            f"found {ctrl_idx.size}"
+        )
+    rng = np.random.RandomState(int(seed) + 20011)
+    perm = rng.permutation(ctrl_idx)
+
+    n_test = int(round(float(test_ratio) * int(ctrl_idx.size)))
+    n_test = min(max(n_test, 1), int(ctrl_idx.size) - 2)
+    test_idx = perm[:n_test]
+    remaining = perm[n_test:]
+
+    n_val = int(round(float(val_ratio) * int(remaining.size)))
+    n_val = min(max(n_val, 1), int(remaining.size) - 1)
+    val_idx = remaining[:n_val]
+    train_idx = remaining[n_val:]
+    if train_idx.size == 0 or val_idx.size == 0 or test_idx.size == 0:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation produced an empty ctrl split: "
+            f"train={train_idx.size}, val={val_idx.size}, test={test_idx.size}"
+        )
+    return train_idx.astype(int), val_idx.astype(int), test_idx.astype(int)
+
+
+def _condition_split_for_dataset(
+    data,
+    dataset_name: str,
+    *,
+    seed: int,
+    test_ratio: float = 0.2,
+    val_ratio: float = 0.1,
+) -> tuple[list[str], list[str], list[str], pd.DataFrame | None]:
+    name = str(dataset_name).strip().lower()
+    ctrl_label = getattr(data, "ctrl_label", "ctrl")
+    if name == "norman":
+        label_key = getattr(data, "label_key", "condition")
+        adata_all = getattr(data, "adata_all")
+        subgroup_df = norman_subgroup(
+            list(adata_all.obs[label_key].astype(str).unique()),
+            seed=int(seed),
+        )
+        test_conds = [
+            str(x)
+            for x in subgroup_df[subgroup_df.group == "test"].index.astype(str).tolist()
+            if str(x) != ctrl_label
+        ]
+        val_conds = [
+            str(x)
+            for x in subgroup_df[subgroup_df.group == "val"].index.astype(str).tolist()
+            if str(x) != ctrl_label
+        ]
+        train_conds = [
+            str(x)
+            for x in subgroup_df[subgroup_df.group == "train"].index.astype(str).tolist()
+            if str(x) != ctrl_label
+        ]
+        return train_conds, val_conds, test_conds, subgroup_df
+
+    all_conds = [str(c) for c in getattr(data, "conditions_pert") if str(c) != ctrl_label]
+    test_conds, remaining_conds = _split_conditions_for_holdout(
+        all_conds,
+        ratio=float(test_ratio),
+        seed=int(seed),
+    )
+    val_conds, train_conds = _split_conditions_for_holdout(
+        remaining_conds,
+        ratio=float(val_ratio),
+        seed=int(seed),
+    )
+    return train_conds, val_conds, test_conds, None
+
+
+def split_unseen_ctrl_unseen_perturbation(
+    data,
+    dataset_name: str,
+    *,
+    seed: int,
+    test_ratio: float = 0.2,
+    pert_val_ratio: float = 0.1,
+    ctrl_test_ratio: float = 0.2,
+    ctrl_val_ratio: float = 0.1,
+) -> tuple[dict, pd.DataFrame | None]:
+    """Build one split with disjoint ctrl cells and unseen perturbation conditions.
+
+    The returned split is intended to be used by training and evaluation together:
+    Stage/training code sees train/val ctrl only, while evaluation uses test ctrl.
+    """
+    adata = getattr(data, "adata_all")
+    label_key = getattr(data, "label_key", "condition")
+    ctrl_label = getattr(data, "ctrl_label", "ctrl")
+
+    train_conds, val_conds, test_conds, subgroup_df = _condition_split_for_dataset(
+        data,
+        dataset_name,
+        seed=int(seed),
+        test_ratio=float(test_ratio),
+        val_ratio=float(pert_val_ratio),
+    )
+    if not train_conds or not val_conds or not test_conds:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation produced an empty perturbation split: "
+            f"train={len(train_conds)}, val={len(val_conds)}, test={len(test_conds)}"
+        )
+
+    train_ctrl_idx, val_ctrl_idx, test_ctrl_idx = _split_ctrl_indices_train_val_test(
+        adata=adata,
+        label_key=label_key,
+        ctrl_label=ctrl_label,
+        seed=int(seed),
+        test_ratio=float(ctrl_test_ratio),
+        val_ratio=float(ctrl_val_ratio),
+    )
+
+    cond_series = adata.obs[label_key].astype(str)
+    train_mask = cond_series.isin(train_conds).values
+    val_mask = cond_series.isin(val_conds).values
+    test_mask = cond_series.isin(test_conds).values
+
+    train_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    val_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    test_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    train_ctrl_mask[train_ctrl_idx] = True
+    val_ctrl_mask[val_ctrl_idx] = True
+    test_ctrl_mask[test_ctrl_idx] = True
+
+    train_mask = train_mask | train_ctrl_mask
+    val_mask = val_mask | val_ctrl_mask
+    test_mask = test_mask | test_ctrl_mask
+    for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
+        if not np.any(mask):
+            raise ValueError(f"unseen_ctrl_unseen_perturbation produced empty {split_name} set")
+
+    split_dict = {
+        "train": adata[train_mask],
+        "val": adata[val_mask],
+        "test": adata[test_mask],
+        "train_conds": [str(c) for c in train_conds],
+        "val_conds": [str(c) for c in val_conds],
+        "test_conds": [str(c) for c in test_conds],
+        "split_policy": "unseen_ctrl_unseen_perturbation",
+        "ctrl_split_policy": "train_val_test",
+        "ctrl_test_ratio": float(ctrl_test_ratio),
+        "ctrl_val_ratio": float(ctrl_val_ratio),
+        "train_ctrl_n": int(train_ctrl_idx.size),
+        "val_ctrl_n": int(val_ctrl_idx.size),
+        "test_ctrl_n": int(test_ctrl_idx.size),
+    }
+    return split_dict, subgroup_df

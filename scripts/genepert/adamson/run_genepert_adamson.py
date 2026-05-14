@@ -12,6 +12,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="GenePert dataset entry: adamson")
     ap.add_argument("--seed", type=int, default=24)
     ap.add_argument("--no_export_notebook_pkl", action="store_true")
+    ap.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
+    )
     args = ap.parse_args()
 
     cfg = load_yaml_file(Path(__file__).with_name("config.yaml"))
@@ -26,6 +31,7 @@ def main() -> None:
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
         alpha_grid=task.get("alpha_grid"),
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

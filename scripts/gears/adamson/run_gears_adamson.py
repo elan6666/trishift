@@ -14,6 +14,11 @@ def main() -> None:
     ap.add_argument("--profile", default="", help="optional GEARS profile override")
     ap.add_argument("--seed", type=int, default=24)
     ap.add_argument("--no_export_notebook_pkl", action="store_true")
+    ap.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
+    )
     args = ap.parse_args()
 
     profile = str(args.profile).strip()
@@ -21,6 +26,8 @@ def main() -> None:
         argv = ["--profile", profile, "--seed", str(int(args.seed))]
         if bool(args.no_export_notebook_pkl):
             argv.append("--no_export_notebook_pkl")
+        if bool(args.unseen_ctrl_eval):
+            argv.append("--unseen_ctrl_eval")
         gears_core_main(argv)
         return
 
@@ -35,6 +42,7 @@ def main() -> None:
         "adamson",
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

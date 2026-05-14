@@ -39,6 +39,7 @@ from trishift.TriShiftData import TriShiftData
 from scripts.common.split_utils import (
     condition_sort as _shared_condition_sort,
     norman_subgroup as _shared_norman_subgroup,
+    split_unseen_ctrl_unseen_perturbation,
 )
 from scripts.common.yaml_utils import load_yaml_file
 
@@ -348,6 +349,19 @@ def _subset_by_conditions(adata: ad.AnnData, conditions: list[str]) -> ad.AnnDat
     return adata[mask].copy()
 
 
+def _combine_split_adatas(base_adata: ad.AnnData, splits: list[ad.AnnData]) -> ad.AnnData:
+    obs_names: list[str] = []
+    seen: set[str] = set()
+    for split in splits:
+        for obs_name in split.obs_names.astype(str).tolist():
+            if obs_name not in seen:
+                seen.add(obs_name)
+                obs_names.append(obs_name)
+    if not obs_names:
+        raise ValueError("cannot combine empty split adatas")
+    return base_adata[obs_names].copy()
+
+
 def _split_conditions_for_holdout(
     values: list[str],
     *,
@@ -476,6 +490,13 @@ def _build_split_dict(
     cfg: ScgptDatasetConfig,
 ) -> tuple[dict, pd.DataFrame | None]:
     subgroup_df = None
+    if str(cfg.split_policy or "condition").strip() == "unseen_ctrl_unseen_perturbation":
+        return split_unseen_ctrl_unseen_perturbation(
+            data,
+            name,
+            seed=int(split_id),
+            test_ratio=float(cfg.test_ratio),
+        )
     if str(cfg.split_policy or "condition").strip() == "celltype_seen_perturbation":
         return _split_celltype_seen_perturbation(data, cfg=cfg, seed=int(split_id)), None
     if name == "norman":
@@ -1039,6 +1060,7 @@ def _compute_metrics_and_export_payload(
         raise TypeError("Expected eval_adata.uns['top20_degs_final'] to be a mapping")
 
     use_celltype_policy = str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
+    use_target_ctrl = str(cfg.eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl"
     train_ref = split_dict.get("train")
     if use_celltype_policy and isinstance(train_ref, ad.AnnData):
         pert_reference = average_of_perturbation_centroids(
@@ -1046,16 +1068,24 @@ def _compute_metrics_and_export_payload(
             conditions=train_ref.obs["condition"].astype(str).values,
             ctrl_label="ctrl",
         )
+    elif use_target_ctrl:
+        test_ref = split_dict.get("test")
+        if not isinstance(test_ref, ad.AnnData):
+            raise ValueError("target_domain_test_ctrl requires split_dict['test']")
+        test_ctrl = test_ref[test_ref.obs["condition"].astype(str) == "ctrl"]
+        if test_ctrl.n_obs == 0:
+            raise ValueError("target_domain_test_ctrl found no ctrl cells in split_dict['test']")
+        pert_reference = _utils.densify_X(test_ctrl.X).mean(axis=0).astype(np.float32)
     else:
         pert_reference = average_of_perturbation_centroids(
             X=_utils.densify_X(reference_adata.X),
             conditions=reference_adata.obs["condition"].astype(str).values,
             ctrl_label="ctrl",
         )
-    truth_adata = split_dict.get("test") if use_celltype_policy else eval_adata
+    truth_adata = split_dict.get("test") if (use_celltype_policy or use_target_ctrl) else eval_adata
     if not isinstance(truth_adata, ad.AnnData):
         truth_adata = eval_adata
-    if str(cfg.eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl":
+    if use_target_ctrl:
         ctrl_adata = truth_adata[truth_adata.obs["condition"].astype(str) == "ctrl"]
         eval_ctrl_source = "target_domain_test_ctrl"
     else:
@@ -1151,6 +1181,7 @@ def run_scgpt_eval(
     lr: float | None = None,
     early_stop: int | None = None,
     split_ids: list[int] | tuple[int, ...] | None = None,
+    unseen_ctrl_eval: bool = False,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
@@ -1166,18 +1197,30 @@ def run_scgpt_eval(
         eval_batch_size=int(base_cfg.eval_batch_size if eval_batch_size is None else eval_batch_size),
         epochs=int(base_cfg.epochs if epochs is None else epochs),
         early_stop=int(base_cfg.early_stop if early_stop is None else early_stop),
-        control_pool_size=int(base_cfg.control_pool_size if control_pool_size is None else control_pool_size),
+        control_pool_size=(
+            0
+            if bool(unseen_ctrl_eval)
+            else int(base_cfg.control_pool_size if control_pool_size is None else control_pool_size)
+        ),
         include_zero_gene=str(base_cfg.include_zero_gene),
         max_seq_len=int(base_cfg.max_seq_len),
         dropout=float(base_cfg.dropout),
         use_fast_transformer=bool(base_cfg.use_fast_transformer),
-        split_policy=str(base_cfg.split_policy),
+        split_policy=(
+            "unseen_ctrl_unseen_perturbation"
+            if bool(unseen_ctrl_eval)
+            else str(base_cfg.split_policy)
+        ),
         domain_key=str(base_cfg.domain_key),
         domain_test_ratio=float(base_cfg.domain_test_ratio),
         val_domain_ratio=float(base_cfg.val_domain_ratio),
         perturbation_condition=str(base_cfg.perturbation_condition),
         include_test_ctrl_in_train=bool(base_cfg.include_test_ctrl_in_train),
-        eval_ctrl_source=str(base_cfg.eval_ctrl_source),
+        eval_ctrl_source=(
+            "target_domain_test_ctrl"
+            if bool(unseen_ctrl_eval)
+            else str(base_cfg.eval_ctrl_source)
+        ),
         condition_gene_map=(
             dict(base_cfg.condition_gene_map) if base_cfg.condition_gene_map is not None else None
         ),
@@ -1204,6 +1247,7 @@ def run_scgpt_eval(
 
     out_dir = ROOT / "artifacts" / "results" / "scgpt" / name
     out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "_unseen_ctrl" if bool(unseen_ctrl_eval) else ""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     metrics_all = []
@@ -1254,7 +1298,13 @@ def run_scgpt_eval(
         )
 
         train_val_conds = list(split_dict["train_conds"]) + list(split_dict["val_conds"])
-        reference_adata = _subset_by_conditions(eval_adata, train_val_conds)
+        if bool(unseen_ctrl_eval):
+            reference_adata = _combine_split_adatas(
+                eval_adata,
+                [split_dict["train"], split_dict["val"]],
+            )
+        else:
+            reference_adata = _subset_by_conditions(eval_adata, train_val_conds)
         metrics_df, export_payload = _compute_metrics_and_export_payload(
             model=model,
             eval_adata=eval_adata,
@@ -1271,15 +1321,17 @@ def run_scgpt_eval(
         metrics_all.append(metrics_df)
 
         if export_notebook_pkl:
-            out_pkl = out_dir / f"scgpt_{name}_{split}.pkl"
+            out_pkl = out_dir / f"scgpt_{name}_{split}{suffix}.pkl"
             with out_pkl.open("wb") as f:
                 pickle.dump(export_payload, f)
             print(f"[scgpt] saved notebook payload: {out_pkl}")
 
     metrics_df_all = pd.concat(metrics_all, ignore_index=True)
-    metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
-    _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
-    print(f"[scgpt] saved metrics: {out_dir / 'metrics.csv'}")
+    metrics_path = out_dir / f"metrics{suffix}.csv"
+    mean_path = out_dir / f"mean_pearson{suffix}.txt"
+    metrics_df_all.to_csv(metrics_path, index=False)
+    _write_mean_metrics(mean_path, metrics_df_all)
+    print(f"[scgpt] saved metrics: {metrics_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1302,6 +1354,11 @@ def main(argv: list[str] | None = None) -> None:
         "--no_export_notebook_pkl",
         action="store_true",
         help="disable notebook-compatible pickle export",
+    )
+    parser.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
     )
     args = parser.parse_args(argv)
 
@@ -1349,6 +1406,7 @@ def main(argv: list[str] | None = None) -> None:
                 else int(args.early_stop)
             ),
             split_ids=[DATASET_CONFIG[prof["dataset"]].splits[0]] if bool(args.fast) else None,
+            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
 
@@ -1365,6 +1423,7 @@ def main(argv: list[str] | None = None) -> None:
         lr=float(args.lr),
         early_stop=int(args.early_stop),
         split_ids=[DATASET_CONFIG[args.name].splits[0]] if bool(args.fast) else None,
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

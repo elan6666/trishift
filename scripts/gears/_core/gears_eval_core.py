@@ -34,6 +34,7 @@ from trishift.TriShiftData import TriShiftData
 from scripts.common.split_utils import (
     condition_sort as _shared_condition_sort,
     norman_subgroup as _shared_norman_subgroup,
+    split_unseen_ctrl_unseen_perturbation,
 )
 from scripts.common.yaml_utils import load_yaml_file
 
@@ -283,6 +284,55 @@ def _build_shared_split_meta(
     )
 
 
+def _build_shared_split_meta_from_split_dict(
+    eval_adata: ad.AnnData,
+    split_dict: dict,
+    *,
+    available_raw_conditions: list[str] | None = None,
+    subgroup_df: pd.DataFrame | None = None,
+) -> GearsSplitMeta:
+    eval_raw_conditions = [str(x) for x in eval_adata.obs["condition"].astype(str).unique().tolist()]
+    raw_condition_pool = [str(x) for x in (available_raw_conditions or eval_raw_conditions)]
+    raw_by_canonical: dict[str, list[str]] = {}
+    for cond in raw_condition_pool:
+        raw_by_canonical.setdefault(condition_sort(cond), []).append(str(cond))
+
+    def _filter_conds(key: str) -> list[str]:
+        return [
+            condition_sort(str(c))
+            for c in list(split_dict.get(key, []))
+            if condition_sort(str(c)) != "ctrl" and condition_sort(str(c)) in raw_by_canonical
+        ]
+
+    train_conds = _filter_conds("train_conds")
+    val_conds = _filter_conds("val_conds")
+    test_conds = _filter_conds("test_conds")
+
+    subgroup_map: dict[str, str] = {}
+    if subgroup_df is not None and "subgroup" in subgroup_df.columns:
+        subgroup_map = {
+            condition_sort(str(idx)): str(row["subgroup"])
+            for idx, row in subgroup_df.iterrows()
+            if condition_sort(str(idx)) != "ctrl"
+        }
+
+    def _flatten_raw(split_conds: list[str]) -> list[str]:
+        out: list[str] = []
+        for cond in split_conds:
+            out.extend(raw_by_canonical.get(cond, []))
+        return list(dict.fromkeys(out))
+
+    return GearsSplitMeta(
+        train_conds=train_conds,
+        val_conds=val_conds,
+        test_conds=test_conds,
+        train_conds_raw=_flatten_raw(train_conds),
+        val_conds_raw=_flatten_raw(val_conds),
+        test_conds_raw=_flatten_raw(test_conds),
+        subgroup_map={k: v for k, v in subgroup_map.items() if k in raw_by_canonical},
+    )
+
+
 def _apply_shared_split_to_pert_data(
     pert_data,
     split_meta: GearsSplitMeta,
@@ -338,6 +388,118 @@ def _upgrade_legacy_dataset_processed(pert_data, split_meta: GearsSplitMeta) -> 
             graph_x = getattr(graph, "x", None)
             if graph_x is not None and int(getattr(graph_x, "ndim", 0)) == 2 and int(graph_x.shape[1]) > 1:
                 graph.x = graph_x[:, :1]
+
+
+def _combine_split_adatas(base_adata: ad.AnnData, splits: list[ad.AnnData]) -> ad.AnnData:
+    obs_names: list[str] = []
+    seen: set[str] = set()
+    base_names = set(base_adata.obs_names.astype(str).tolist())
+    for split in splits:
+        for obs_name in split.obs_names.astype(str).tolist():
+            if obs_name not in seen and obs_name in base_names:
+                seen.add(obs_name)
+                obs_names.append(obs_name)
+    expected = sum(int(split.n_obs) for split in splits)
+    if len(obs_names) != expected:
+        raise ValueError(
+            "GEARS unseen-control split obs names do not align with the loaded adata: "
+            f"matched={len(obs_names)}, expected={expected}"
+        )
+    return base_adata[obs_names].copy()
+
+
+def _no_ctrl(adata: ad.AnnData) -> ad.AnnData:
+    cond = adata.obs["condition"].astype(str).map(condition_sort)
+    return adata[cond.values != "ctrl"].copy()
+
+
+def _ctrl_matrix(split_adata: ad.AnnData) -> np.ndarray:
+    cond = split_adata.obs["condition"].astype(str).map(condition_sort)
+    ctrl = split_adata[cond.values == "ctrl"]
+    if ctrl.n_obs == 0:
+        raise ValueError("GEARS unseen-control split has no ctrl cells")
+    return np.asarray(_utils.densify_X(ctrl.X), dtype=np.float32)
+
+
+def _clone_graph_with_input(graph, x_vec: np.ndarray, y_vec: np.ndarray | None = None):
+    out = graph.clone() if hasattr(graph, "clone") else pickle.loads(pickle.dumps(graph))
+    x_dtype = getattr(getattr(out, "x", None), "dtype", torch.float32)
+    out.x = torch.as_tensor(np.asarray(x_vec, dtype=np.float32).reshape(-1, 1), dtype=x_dtype)
+    if y_vec is not None and hasattr(out, "y"):
+        y_dtype = getattr(out.y, "dtype", torch.float32)
+        out.y = torch.as_tensor(np.asarray(y_vec, dtype=np.float32).reshape(1, -1), dtype=y_dtype)
+    return out
+
+
+def _resample_graph_inputs(graphs: list, ctrl_X: np.ndarray, *, seed: int) -> list:
+    if not graphs:
+        return []
+    rng = np.random.RandomState(int(seed))
+    picks = rng.randint(0, int(ctrl_X.shape[0]), size=len(graphs))
+    return [_clone_graph_with_input(graph, ctrl_X[int(pick)]) for graph, pick in zip(graphs, picks)]
+
+
+def _ctrl_graphs_from_pool(template_graph, ctrl_X: np.ndarray) -> list:
+    out = []
+    for row in ctrl_X:
+        graph = _clone_graph_with_input(template_graph, row, y_vec=row)
+        graph.pert = "ctrl"
+        graph.pert_idx = [-1]
+        out.append(graph)
+    return out
+
+
+def _prepare_gears_unseen_ctrl_training_data(
+    pert_data,
+    eval_adata: ad.AnnData,
+    split_dict: dict,
+    split_meta: GearsSplitMeta,
+    *,
+    seed: int,
+) -> None:
+    dataset_processed = getattr(pert_data, "dataset_processed", None)
+    if not isinstance(dataset_processed, dict):
+        raise TypeError("Expected GEARS pert_data.dataset_processed to be a mapping")
+
+    train_ctrl_X = _ctrl_matrix(split_dict["train"])
+    val_ctrl_X = _ctrl_matrix(split_dict["val"])
+    test_ctrl_X = _ctrl_matrix(split_dict["test"])
+    new_processed: dict[str, list] = {}
+
+    for offset, (conds, ctrl_X) in enumerate(
+        (
+            (split_meta.train_conds_raw, train_ctrl_X),
+            (split_meta.val_conds_raw, val_ctrl_X),
+            (split_meta.test_conds_raw, test_ctrl_X),
+        )
+    ):
+        for cond in conds:
+            graphs = list(dataset_processed.get(cond, []))
+            if not graphs:
+                raise ValueError(f"GEARS processed graphs missing for condition: {cond}")
+            new_processed[cond] = _resample_graph_inputs(
+                graphs,
+                ctrl_X,
+                seed=int(seed) + 1009 * (offset + 1),
+            )
+
+    ctrl_template = None
+    if dataset_processed.get("ctrl"):
+        ctrl_template = list(dataset_processed["ctrl"])[0]
+    else:
+        for graphs in dataset_processed.values():
+            if graphs:
+                ctrl_template = graphs[0]
+                break
+    if ctrl_template is None:
+        raise ValueError("GEARS processed graphs are empty; cannot build ctrl graphs")
+    new_processed["ctrl"] = _ctrl_graphs_from_pool(ctrl_template, train_ctrl_X)
+    pert_data.dataset_processed = new_processed
+
+    pert_data.adata = _combine_split_adatas(
+        eval_adata,
+        [split_dict["train"], split_dict["val"], _no_ctrl(split_dict["test"])],
+    )
 
 
 def _require_gears_classes():
@@ -554,6 +716,54 @@ def _predict_single_condition(gears_model, genes: list[str]) -> np.ndarray:
     return _coerce_prediction_matrix(pred)
 
 
+def _predict_single_condition_from_ctrl(
+    gears_model,
+    genes: list[str],
+    ctrl_adata: ad.AnnData,
+    *,
+    batch_size: int = 300,
+) -> np.ndarray:
+    if ctrl_adata.n_obs == 0:
+        raise ValueError("GEARS unseen-control prediction received no ctrl cells")
+    from torch_geometric.data import Data, DataLoader
+
+    device = getattr(gears_model, "device", "cuda" if torch.cuda.is_available() else "cpu")
+    pert_list = np.asarray(getattr(gears_model, "pert_list", []), dtype=str)
+    pert_idx = []
+    for gene in genes:
+        hits = np.where(pert_list == str(gene))[0]
+        if hits.size == 0:
+            raise ValueError(f"{gene} is not in the GEARS perturbation graph")
+        pert_idx.append(int(hits[0]))
+
+    ctrl_X = np.asarray(_utils.densify_X(ctrl_adata.X), dtype=np.float32)
+    graphs = [
+        Data(
+            x=torch.as_tensor(row.reshape(-1, 1), dtype=torch.float32),
+            pert_idx=pert_idx,
+            pert=genes,
+        )
+        for row in ctrl_X
+    ]
+    loader = DataLoader(graphs, int(batch_size), shuffle=False)
+    model = getattr(gears_model, "best_model", None)
+    if model is None:
+        raise ValueError("GEARS model has no best_model; train before predicting")
+    model = model.to(device)
+    model.eval()
+    pieces: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch in loader:
+            batch.to(device)
+            out = model(batch)
+            if isinstance(out, tuple):
+                out = out[0]
+            pieces.append(out.detach().cpu().numpy().astype(np.float32, copy=False))
+    if not pieces:
+        raise ValueError("GEARS unseen-control prediction produced no batches")
+    return np.vstack(pieces)
+
+
 def _dataset_topgene_prefix(dataset_name: str) -> str:
     if dataset_name == "adamson":
         return "K562(?)_"
@@ -564,7 +774,13 @@ def _dataset_topgene_prefix(dataset_name: str) -> str:
     raise ValueError(f"Unsupported GEARS dataset for topgene prefix: {dataset_name}")
 
 
-def _build_prediction_bundle(gears_model, dataset_name: str, split_meta: GearsSplitMeta) -> list[dict]:
+def _build_prediction_bundle(
+    gears_model,
+    dataset_name: str,
+    split_meta: GearsSplitMeta,
+    *,
+    prediction_ctrl_adata: ad.AnnData | None = None,
+) -> list[dict]:
     bundle = []
     seen: set[str] = set()
     prefix = _dataset_topgene_prefix(dataset_name)
@@ -576,7 +792,14 @@ def _build_prediction_bundle(gears_model, dataset_name: str, split_meta: GearsSp
         genes = [token for token in cond_key.split("+") if token != "ctrl"]
         if not genes:
             continue
-        pred = _predict_single_condition(gears_model, genes)
+        if prediction_ctrl_adata is None:
+            pred = _predict_single_condition(gears_model, genes)
+        else:
+            pred = _predict_single_condition_from_ctrl(
+                gears_model,
+                genes,
+                prediction_ctrl_adata,
+            )
         bundle.append(
             {
                 "condition": cond_key,
@@ -606,24 +829,36 @@ def _compute_metrics_and_export_payload(
     dataset_name: str,
     split_id: int,
     split_meta: GearsSplitMeta,
+    eval_ctrl_source: str = "train_ctrl",
 ) -> tuple[pd.DataFrame, dict]:
     results = []
     export_payload = {}
     eval_conds = eval_adata.obs["condition"].astype(str).map(condition_sort).values
     ref_adata = _infer_reference_adata(eval_adata, split_meta)
-    pert_reference = average_of_perturbation_centroids(
-        X=_utils.densify_X(ref_adata.X),
-        conditions=ref_adata.obs["condition"].astype(str).map(condition_sort).values,
-        ctrl_label="ctrl",
-    )
+    use_test_ctrl = str(eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl"
 
     if "gene_name" in eval_adata.var.columns:
         gene_names = eval_adata.var["gene_name"].astype(str).values
     else:
         gene_names = eval_adata.var_names.astype(str).values
 
-    ctrl = _utils.densify_X(eval_adata[eval_adata.obs["condition"] == "ctrl"].X)
-    prediction_bundle = _build_prediction_bundle(gears_model, dataset_name, split_meta)
+    ctrl_mask = eval_adata.obs["condition"].astype(str).map(condition_sort).values == "ctrl"
+    ctrl_adata = eval_adata[ctrl_mask]
+    ctrl = _utils.densify_X(ctrl_adata.X)
+    if use_test_ctrl:
+        pert_reference = ctrl.mean(axis=0).astype(np.float32)
+    else:
+        pert_reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(ref_adata.X),
+            conditions=ref_adata.obs["condition"].astype(str).map(condition_sort).values,
+            ctrl_label="ctrl",
+        )
+    prediction_bundle = _build_prediction_bundle(
+        gears_model,
+        dataset_name,
+        split_meta,
+        prediction_ctrl_adata=ctrl_adata if use_test_ctrl else None,
+    )
     node_map = getattr(gears_model, "node_map", {})
     if not isinstance(node_map, dict):
         raise TypeError("Expected gears_model.node_map to be a mapping")
@@ -680,6 +915,7 @@ def _compute_metrics_and_export_payload(
                 **scpram_metrics,
                 "split_id": int(split_id),
                 "n_ensemble": 1,
+                "eval_ctrl_source": "target_domain_test_ctrl" if use_test_ctrl else "train_ctrl",
             }
         )
 
@@ -703,6 +939,7 @@ def run_gears_eval(
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
     split_ids: list[int] | tuple[int, ...] | None = None,
+    unseen_ctrl_eval: bool = False,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
@@ -717,6 +954,8 @@ def run_gears_eval(
 
     out_dir = ROOT / "artifacts" / "results" / "gears" / name
     out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "_unseen_ctrl" if bool(unseen_ctrl_eval) else ""
+    eval_ctrl_source = "target_domain_test_ctrl" if bool(unseen_ctrl_eval) else "train_ctrl"
 
     metrics_all = []
     for split in splits_eff:
@@ -725,14 +964,39 @@ def run_gears_eval(
         eval_adata = _prepare_eval_adata(eval_data_path)
         pert_data = PertData(str(gears_data_root))
         pert_data.load(data_name=cfg.gears_data_name)
-        split_meta = _build_shared_split_meta(
-            eval_adata,
-            dataset_name=name,
-            cfg=cfg,
-            split_id=int(split),
-            available_raw_conditions=list(getattr(pert_data, "dataset_processed", {}).keys()),
-        )
         subgroup_df = None
+        if bool(unseen_ctrl_eval):
+            split_data = TriShiftData(eval_adata, pd.DataFrame(index=["ctrl"]))
+            split_dict, subgroup_df = split_unseen_ctrl_unseen_perturbation(
+                split_data,
+                name,
+                seed=int(split),
+                test_ratio=float(cfg.test_ratio),
+            )
+            split_meta = _build_shared_split_meta_from_split_dict(
+                eval_adata,
+                split_dict,
+                available_raw_conditions=list(getattr(pert_data, "dataset_processed", {}).keys()),
+                subgroup_df=subgroup_df,
+            )
+            _prepare_gears_unseen_ctrl_training_data(
+                pert_data,
+                eval_adata,
+                split_dict,
+                split_meta,
+                seed=int(split),
+            )
+            eval_adata_for_metrics = split_dict["test"]
+        else:
+            split_meta = _build_shared_split_meta(
+                eval_adata,
+                dataset_name=name,
+                cfg=cfg,
+                split_id=int(split),
+                available_raw_conditions=list(getattr(pert_data, "dataset_processed", {}).keys()),
+            )
+            eval_adata_for_metrics = eval_adata
+
         if split_meta.subgroup_map:
             subgroup_df = pd.DataFrame({"subgroup": split_meta.subgroup_map})
 
@@ -757,24 +1021,27 @@ def run_gears_eval(
 
         metrics_df, export_payload = _compute_metrics_and_export_payload(
             gears_model=gears_model,
-            eval_adata=eval_adata,
+            eval_adata=eval_adata_for_metrics,
             dataset_name=name,
             split_id=int(split),
             split_meta=split_meta,
+            eval_ctrl_source=eval_ctrl_source,
         )
         metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
         metrics_all.append(metrics_df)
 
         if export_notebook_pkl:
-            out_pkl = out_dir / f"gears_{name}_{split}.pkl"
+            out_pkl = out_dir / f"gears_{name}_{split}{suffix}.pkl"
             with out_pkl.open("wb") as f:
                 pickle.dump(export_payload, f)
             print(f"[gears] saved notebook payload: {out_pkl}")
 
     metrics_df_all = pd.concat(metrics_all, ignore_index=True)
-    metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
-    _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
-    print(f"[gears] saved metrics: {out_dir / 'metrics.csv'}")
+    metrics_path = out_dir / f"metrics{suffix}.csv"
+    mean_path = out_dir / f"mean_pearson{suffix}.txt"
+    metrics_df_all.to_csv(metrics_path, index=False)
+    _write_mean_metrics(mean_path, metrics_df_all)
+    print(f"[gears] saved metrics: {metrics_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -786,6 +1053,11 @@ def main(argv: list[str] | None = None) -> None:
         "--no_export_notebook_pkl",
         action="store_true",
         help="disable notebook-compatible pickle export",
+    )
+    parser.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
     )
     args = parser.parse_args(argv)
     profile = str(args.profile).strip()
@@ -800,6 +1072,7 @@ def main(argv: list[str] | None = None) -> None:
             prof["dataset"],
             base_seed=seed,
             export_notebook_pkl=export_notebook_pkl,
+            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
     if not str(args.name).strip():
@@ -808,6 +1081,7 @@ def main(argv: list[str] | None = None) -> None:
         args.name,
         base_seed=args.seed,
         export_notebook_pkl=not args.no_export_notebook_pkl,
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

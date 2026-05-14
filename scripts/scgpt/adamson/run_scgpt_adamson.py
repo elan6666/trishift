@@ -18,6 +18,11 @@ def main() -> None:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--early_stop", type=int, default=10)
     ap.add_argument("--no_export_notebook_pkl", action="store_true")
+    ap.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
+    )
     args = ap.parse_args()
 
     cfg = load_yaml_file(Path(__file__).with_name("config.yaml"))
@@ -42,9 +47,9 @@ def main() -> None:
         ),
         lr=float(task.get("lr", 1e-4)) if float(args.lr) == 1e-4 else float(args.lr),
         early_stop=int(task.get("early_stop", 10)) if int(args.early_stop) == 10 else int(args.early_stop),
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 
 if __name__ == "__main__":
     main()
-

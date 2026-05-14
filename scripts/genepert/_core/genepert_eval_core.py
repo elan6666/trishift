@@ -35,6 +35,7 @@ from trishift.TriShiftData import TriShiftData
 from scripts.common.split_utils import (
     condition_sort as _shared_condition_sort,
     norman_subgroup as _shared_norman_subgroup,
+    split_unseen_ctrl_unseen_perturbation,
 )
 from scripts.common.yaml_utils import load_yaml_file
 
@@ -373,6 +374,19 @@ def _combine_splits(adata: ad.AnnData, conds: list[str]) -> ad.AnnData:
     return adata[mask].copy()
 
 
+def _combine_split_adatas(base_adata: ad.AnnData, splits: list[ad.AnnData]) -> ad.AnnData:
+    obs_names: list[str] = []
+    seen: set[str] = set()
+    for split in splits:
+        for obs_name in split.obs_names.astype(str).tolist():
+            if obs_name not in seen:
+                seen.add(obs_name)
+                obs_names.append(obs_name)
+    if not obs_names:
+        raise ValueError("cannot combine empty split adatas")
+    return base_adata[obs_names].copy()
+
+
 def _ctrl_mean_from_adata(adata: ad.AnnData) -> np.ndarray:
     ctrl_mask = adata.obs["condition"].astype(str).eq("ctrl").values
     if not bool(ctrl_mask.any()):
@@ -402,19 +416,24 @@ def _compute_metrics_and_export_payload(
     dataset_name: str,
     split_id: int,
     result: dict,
+    eval_ctrl_source: str = "train_ctrl",
 ) -> tuple[pd.DataFrame, dict]:
     results = []
     export_payload = {}
     eval_conds = eval_adata.obs["condition"].astype(str).values
-    ctrl_mean = _utils.densify_X(reference_adata[reference_adata.obs["condition"] == "ctrl"].X).mean(
-        axis=0,
-        keepdims=True,
-    )
-    pert_reference = average_of_perturbation_centroids(
-        X=_utils.densify_X(reference_adata.X),
-        conditions=reference_adata.obs["condition"].astype(str).values,
-        ctrl_label="ctrl",
-    )
+    use_test_ctrl = str(eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl"
+    ctrl_source_adata = eval_adata if use_test_ctrl else reference_adata
+    ctrl_mean = _utils.densify_X(
+        ctrl_source_adata[ctrl_source_adata.obs["condition"] == "ctrl"].X
+    ).mean(axis=0, keepdims=True)
+    if use_test_ctrl:
+        pert_reference = np.asarray(ctrl_mean, dtype=np.float32).reshape(-1)
+    else:
+        pert_reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(reference_adata.X),
+            conditions=reference_adata.obs["condition"].astype(str).values,
+            ctrl_label="ctrl",
+        )
     if "gene_name" in eval_adata.var.columns:
         gene_names = eval_adata.var["gene_name"].astype(str).values
     else:
@@ -485,6 +504,7 @@ def _compute_metrics_and_export_payload(
                 **scpram_metrics,
                 "split_id": int(split_id),
                 "n_ensemble": int(pred.shape[0]),
+                "eval_ctrl_source": "target_domain_test_ctrl" if use_test_ctrl else "train_ctrl",
             }
         )
         export_payload[raw_cond] = {
@@ -508,6 +528,7 @@ def run_genepert_eval(
     export_notebook_pkl: bool = True,
     alpha_grid: list[float] | None = None,
     split_ids: list[int] | tuple[int, ...] | None = None,
+    unseen_ctrl_eval: bool = False,
 ) -> None:
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
@@ -523,6 +544,8 @@ def run_genepert_eval(
 
     out_dir = ROOT / "artifacts" / "results" / "genepert" / name
     out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "_unseen_ctrl" if bool(unseen_ctrl_eval) else ""
+    eval_ctrl_source = "target_domain_test_ctrl" if bool(unseen_ctrl_eval) else "train_ctrl"
 
     adata = _prepare_eval_adata(data_path)
     embeddings_raw = _load_embedding_dict(emb_path)
@@ -540,7 +563,14 @@ def run_genepert_eval(
         set_seeds(base_seed + int(split))
 
         subgroup_df = None
-        if cfg.norman_split:
+        if bool(unseen_ctrl_eval):
+            split_dict, subgroup_df = split_unseen_ctrl_unseen_perturbation(
+                data,
+                name,
+                seed=int(split),
+                test_ratio=float(cfg.test_ratio),
+            )
+        elif cfg.norman_split:
             subgroup_df = subgroup(
                 list(filtered_adata.obs["condition"].astype(str).unique()),
                 seed=int(split),
@@ -583,7 +613,13 @@ def run_genepert_eval(
         print(f"[genepert] dataset={name} split={split} selected_alpha={best_alpha}")
 
         train_val_conds = split_dict["train_conds"] + split_dict["val_conds"]
-        train_val_adata = _combine_splits(filtered_adata, train_val_conds)
+        if bool(unseen_ctrl_eval):
+            train_val_adata = _combine_split_adatas(
+                filtered_adata,
+                [split_dict["train"], split_dict["val"]],
+            )
+        else:
+            train_val_adata = _combine_splits(filtered_adata, train_val_conds)
         train_val_no_ctrl = _subset_no_ctrl(train_val_adata)
         experiment.mean_expression = _ctrl_mean_from_adata(train_val_adata)
         final_result = experiment.run_experiment_with_adata(
@@ -593,24 +629,27 @@ def run_genepert_eval(
             knn_params=[],
         )
         metrics_df, export_payload = _compute_metrics_and_export_payload(
-            eval_adata=filtered_adata,
+            eval_adata=split_dict["test"] if bool(unseen_ctrl_eval) else filtered_adata,
             reference_adata=train_val_adata,
             dataset_name=name,
             split_id=int(split),
             result=final_result,
+            eval_ctrl_source=eval_ctrl_source,
         )
         metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
         metrics_all.append(metrics_df)
         if export_notebook_pkl:
-            out_pkl = out_dir / f"genepert_{name}_{split}.pkl"
+            out_pkl = out_dir / f"genepert_{name}_{split}{suffix}.pkl"
             with out_pkl.open("wb") as handle:
                 pickle.dump(export_payload, handle)
             print(f"[genepert] saved notebook payload: {out_pkl}")
 
     metrics_df_all = pd.concat(metrics_all, ignore_index=True)
-    metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
-    _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
-    print(f"[genepert] saved metrics: {out_dir / 'metrics.csv'}")
+    metrics_path = out_dir / f"metrics{suffix}.csv"
+    mean_path = out_dir / f"mean_pearson{suffix}.txt"
+    metrics_df_all.to_csv(metrics_path, index=False)
+    _write_mean_metrics(mean_path, metrics_df_all)
+    print(f"[genepert] saved metrics: {metrics_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -622,6 +661,11 @@ def main(argv: list[str] | None = None) -> None:
         "--no_export_notebook_pkl",
         action="store_true",
         help="disable notebook-compatible pickle export",
+    )
+    parser.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
     )
     args = parser.parse_args(argv)
 
@@ -639,6 +683,7 @@ def main(argv: list[str] | None = None) -> None:
             base_seed=seed,
             export_notebook_pkl=export_notebook_pkl,
             alpha_grid=alpha_grid,
+            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
 
@@ -649,4 +694,5 @@ def main(argv: list[str] | None = None) -> None:
         name,
         base_seed=int(args.seed),
         export_notebook_pkl=not bool(args.no_export_notebook_pkl),
+        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
