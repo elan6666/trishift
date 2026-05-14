@@ -528,10 +528,12 @@ def _require_gears_classes():
             perts_arr = np.asarray(perts)
             unique_perts = list(dict.fromkeys(perts_arr.tolist()))
             losses = pred.new_tensor(0.0)
+            all_gene_idx = np.arange(pred.shape[1])
+            dict_filter = dict_filter or {}
             for pert in unique_perts:
                 idx = np.where(perts_arr == pert)[0]
                 if pert != "ctrl":
-                    retain_idx = dict_filter[pert]
+                    retain_idx = dict_filter.get(pert, all_gene_idx)
                     pred_p = pred[idx][:, retain_idx]
                     y_p = y[idx][:, retain_idx]
                     logvar_p = logvar[idx][:, retain_idx]
@@ -559,10 +561,12 @@ def _require_gears_classes():
             perts_arr = np.asarray(perts)
             unique_perts = list(dict.fromkeys(perts_arr.tolist()))
             losses = pred.new_tensor(0.0)
+            all_gene_idx = np.arange(pred.shape[1])
+            dict_filter = dict_filter or {}
             for pert in unique_perts:
                 idx = np.where(perts_arr == pert)[0]
                 if pert != "ctrl":
-                    retain_idx = dict_filter[pert]
+                    retain_idx = dict_filter.get(pert, all_gene_idx)
                     pred_p = pred[idx][:, retain_idx]
                     y_p = y[idx][:, retain_idx]
                 else:
