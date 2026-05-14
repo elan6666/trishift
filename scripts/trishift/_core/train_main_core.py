@@ -9,7 +9,10 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.common.time_utils import ts_local
 from scripts.common.yaml_utils import dump_yaml, load_yaml_file, merged_dict
-from scripts.trishift._core.run_dataset_core import run_dataset_with_paths
+from scripts.trishift._core.run_dataset_core import (
+    run_dataset_unseen_ctrl_eval_with_paths,
+    run_dataset_with_paths,
+)
 
 
 PROFILE_DIR = Path(__file__).resolve().parents[1] / "train" / "configs"
@@ -106,11 +109,50 @@ def run_from_dataset_config(
     )
 
 
+def run_unseen_ctrl_eval_from_dataset_config(
+    config_path: str | Path,
+    *,
+    fast: bool = False,
+    out_dir: str | None = None,
+) -> None:
+    path = Path(config_path).resolve()
+    obj = load_yaml_file(path)
+    unknown = sorted(set(obj.keys()) - PROFILE_ALLOWED_KEYS)
+    if unknown:
+        raise ValueError(f"Unknown keys in dataset config {path.name}: {unknown}")
+    dataset = str(obj.get("dataset", "")).strip()
+    if not dataset:
+        raise ValueError(f"dataset is required in {path}")
+    base = obj.get("base") or {}
+    if not isinstance(base, dict):
+        raise TypeError(f"base must be a mapping: {path}")
+    prof = {
+        "dataset": dataset,
+        "base_defaults": str(base.get("defaults", "configs/defaults.yaml")),
+        "base_paths": str(base.get("paths", "configs/paths.yaml")),
+        "defaults_overrides": obj.get("defaults_overrides") or {},
+        "paths_overrides": obj.get("paths_overrides") or {},
+    }
+    defaults_path, paths_path = _materialize_profile_yaml(dataset, prof)
+    run_dataset_unseen_ctrl_eval_with_paths(
+        name=dataset,
+        fast=bool(fast),
+        defaults_path=str(defaults_path),
+        paths_path=str(paths_path),
+        out_dir=out_dir,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="TriShift official training entry (profile or legacy mode)")
     ap.add_argument("--profile", default="", help="dataset profile name under scripts/trishift/train/configs")
     ap.add_argument("--name", default="", help="legacy dataset name (compat mode)")
     ap.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
+    ap.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
+    )
     ap.add_argument("--defaults", default="configs/defaults.yaml", help="legacy defaults yaml path")
     ap.add_argument("--paths", default="configs/paths.yaml", help="legacy paths yaml path")
     ap.add_argument("--out_dir", default="", help="output directory override")
@@ -119,20 +161,40 @@ def main(argv: list[str] | None = None) -> None:
     out_dir = args.out_dir.strip() or None
     profile = str(args.profile).strip()
     if profile:
-        run_profile(profile, fast=bool(args.fast), out_dir=out_dir)
+        if bool(args.unseen_ctrl_eval):
+            prof = _load_profile(profile)
+            defaults_path, paths_path = _materialize_profile_yaml(profile, prof)
+            run_dataset_unseen_ctrl_eval_with_paths(
+                name=prof["dataset"],
+                fast=bool(args.fast),
+                defaults_path=str(defaults_path),
+                paths_path=str(paths_path),
+                out_dir=out_dir,
+            )
+        else:
+            run_profile(profile, fast=bool(args.fast), out_dir=out_dir)
         return
 
     name = str(args.name).strip()
     if not name:
         raise ValueError("Either --profile or --name must be provided")
 
-    run_dataset_with_paths(
-        name=name,
-        fast=bool(args.fast),
-        defaults_path=str(args.defaults),
-        paths_path=str(args.paths),
-        out_dir=out_dir,
-    )
+    if bool(args.unseen_ctrl_eval):
+        run_dataset_unseen_ctrl_eval_with_paths(
+            name=name,
+            fast=bool(args.fast),
+            defaults_path=str(args.defaults),
+            paths_path=str(args.paths),
+            out_dir=out_dir,
+        )
+    else:
+        run_dataset_with_paths(
+            name=name,
+            fast=bool(args.fast),
+            defaults_path=str(args.defaults),
+            paths_path=str(args.paths),
+            out_dir=out_dir,
+        )
 
 
 if __name__ == "__main__":

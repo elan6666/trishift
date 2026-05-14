@@ -3383,6 +3383,27 @@ class TriShift:
         print(f"[eval] done: n_results={len(results)}")
         return pd.DataFrame(results)
 
+    def evaluate_unseen_ctrl(
+        self,
+        split_dict: dict,
+        emb_table: torch.Tensor,
+        split_id: int,
+        n_ensemble: int = 300,
+        base_seed: int = 24,
+        eval_batch_size: int = 4096,
+    ) -> pd.DataFrame:
+        """Evaluate unseen perturbations using only held-out ctrl cells from test split."""
+        return self.evaluate(
+            split_dict=split_dict,
+            emb_table=emb_table,
+            split_id=split_id,
+            n_ensemble=n_ensemble,
+            base_seed=base_seed,
+            eval_ctrl_strategy=None,
+            eval_ctrl_source="target_domain_test_ctrl",
+            eval_batch_size=eval_batch_size,
+        )
+
     def export_predictions(
         self,
         split_dict: dict,
@@ -3615,3 +3636,28 @@ class TriShift:
             print(f"[export] saved: {out_path}")
         print(f"[export] done: n_results={len(results)}")
         return results
+
+    def export_predictions_unseen_ctrl(
+        self,
+        split_dict: dict,
+        emb_table: torch.Tensor,
+        split_id: int,
+        n_ensemble: int = 300,
+        base_seed: int = 24,
+        out_path: str | None = None,
+        eval_batch_size: int = 4096,
+        export_full_predictions: bool = False,
+    ) -> dict:
+        """Export predictions from the held-out ctrl evaluation path."""
+        return self.export_predictions(
+            split_dict=split_dict,
+            emb_table=emb_table,
+            split_id=split_id,
+            n_ensemble=n_ensemble,
+            base_seed=base_seed,
+            out_path=out_path,
+            eval_ctrl_strategy=None,
+            eval_ctrl_source="target_domain_test_ctrl",
+            eval_batch_size=eval_batch_size,
+            export_full_predictions=export_full_predictions,
+        )

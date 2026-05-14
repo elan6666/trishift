@@ -664,6 +664,168 @@ def _split_celltype_seen_perturbation(
     }
 
 
+def _split_ctrl_indices_train_val_test(
+    *,
+    adata,
+    label_key: str,
+    ctrl_label: str,
+    seed: int,
+    test_ratio: float,
+    val_ratio: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Partition ctrl cells into disjoint train/val/test index arrays."""
+    cond_series = adata.obs[label_key].astype(str)
+    ctrl_idx = np.where(cond_series.values == str(ctrl_label))[0]
+    if ctrl_idx.size < 3:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation requires at least 3 ctrl cells; "
+            f"found {ctrl_idx.size}"
+        )
+    rng = np.random.RandomState(int(seed) + 20011)
+    perm = rng.permutation(ctrl_idx)
+
+    n_test = int(round(float(test_ratio) * int(ctrl_idx.size)))
+    n_test = min(max(n_test, 1), int(ctrl_idx.size) - 2)
+    test_idx = perm[:n_test]
+    remaining = perm[n_test:]
+
+    n_val = int(round(float(val_ratio) * int(remaining.size)))
+    n_val = min(max(n_val, 1), int(remaining.size) - 1)
+    val_idx = remaining[:n_val]
+    train_idx = remaining[n_val:]
+    if train_idx.size == 0 or val_idx.size == 0 or test_idx.size == 0:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation produced an empty ctrl split: "
+            f"train={train_idx.size}, val={val_idx.size}, test={test_idx.size}"
+        )
+    return train_idx.astype(int), val_idx.astype(int), test_idx.astype(int)
+
+
+def _split_perturbation_conditions_train_val_test(
+    data: TriShiftData,
+    *,
+    seed: int,
+    test_ratio: float,
+    val_ratio: float,
+    test_conds: list[str] | None = None,
+    val_conds: list[str] | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Return train/val/test perturbation conditions using the existing holdout semantics."""
+    all_conds = [str(c) for c in data.conditions_pert if str(c) != data.ctrl_label]
+    if not all_conds:
+        raise ValueError("no perturbation conditions available for split")
+
+    if test_conds is None:
+        test_conds_out, remaining_conds = _split_conditions_for_holdout(
+            all_conds,
+            ratio=float(test_ratio),
+            seed=int(seed),
+        )
+    else:
+        test_set = {str(c) for c in test_conds}
+        test_conds_out = [str(c) for c in test_conds if str(c) in set(all_conds)]
+        missing = sorted(test_set - set(all_conds))
+        if missing:
+            raise ValueError(f"test_conds not present in dataset: {missing[:5]}")
+        remaining_conds = [c for c in all_conds if c not in set(test_conds_out)]
+
+    if val_conds is None:
+        val_conds_out, train_conds_out = _split_conditions_for_holdout(
+            remaining_conds,
+            ratio=float(val_ratio),
+            seed=int(seed),
+        )
+    else:
+        val_set = {str(c) for c in val_conds}
+        remaining_set = set(remaining_conds)
+        val_conds_out = [str(c) for c in val_conds if str(c) in remaining_set]
+        missing = sorted(val_set - remaining_set)
+        if missing:
+            raise ValueError(f"val_conds not present in train/val pool: {missing[:5]}")
+        train_conds_out = [c for c in remaining_conds if c not in set(val_conds_out)]
+
+    if not train_conds_out or not val_conds_out or not test_conds_out:
+        raise ValueError(
+            "unseen_ctrl_unseen_perturbation produced an empty perturbation split: "
+            f"train={len(train_conds_out)}, val={len(val_conds_out)}, "
+            f"test={len(test_conds_out)}"
+        )
+    return train_conds_out, val_conds_out, test_conds_out
+
+
+def _split_unseen_ctrl_unseen_perturbation(
+    data: TriShiftData,
+    *,
+    seed: int,
+    test_ratio: float,
+    val_ratio: float,
+    ctrl_test_ratio: float = 0.2,
+    ctrl_val_ratio: float | None = None,
+    test_conds: list[str] | None = None,
+    val_conds: list[str] | None = None,
+) -> dict:
+    """Build disjoint ctrl and unseen-perturbation splits for held-out ctrl evaluation."""
+    adata = data.adata_all
+    label_key = data.label_key
+    ctrl_label = data.ctrl_label
+    ctrl_val_ratio_eff = float(val_ratio if ctrl_val_ratio is None else ctrl_val_ratio)
+
+    train_ctrl_idx, val_ctrl_idx, test_ctrl_idx = _split_ctrl_indices_train_val_test(
+        adata=adata,
+        label_key=label_key,
+        ctrl_label=ctrl_label,
+        seed=int(seed),
+        test_ratio=float(ctrl_test_ratio),
+        val_ratio=float(ctrl_val_ratio_eff),
+    )
+    train_conds, val_conds_out, test_conds_out = (
+        _split_perturbation_conditions_train_val_test(
+            data,
+            seed=int(seed),
+            test_ratio=float(test_ratio),
+            val_ratio=float(val_ratio),
+            test_conds=test_conds,
+            val_conds=val_conds,
+        )
+    )
+
+    cond_series = adata.obs[label_key].astype(str)
+    train_mask = cond_series.isin(train_conds).values
+    val_mask = cond_series.isin(val_conds_out).values
+    test_mask = cond_series.isin(test_conds_out).values
+
+    train_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    val_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    test_ctrl_mask = np.zeros(adata.n_obs, dtype=bool)
+    train_ctrl_mask[train_ctrl_idx] = True
+    val_ctrl_mask[val_ctrl_idx] = True
+    test_ctrl_mask[test_ctrl_idx] = True
+
+    train_mask = train_mask | train_ctrl_mask
+    val_mask = val_mask | val_ctrl_mask
+    test_mask = test_mask | test_ctrl_mask
+
+    for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
+        if not np.any(mask):
+            raise ValueError(f"unseen_ctrl_unseen_perturbation produced empty {split_name} set")
+
+    return {
+        "train": adata[train_mask],
+        "val": adata[val_mask],
+        "test": adata[test_mask],
+        "train_conds": [str(c) for c in train_conds],
+        "val_conds": [str(c) for c in val_conds_out],
+        "test_conds": [str(c) for c in test_conds_out],
+        "split_policy": "unseen_ctrl_unseen_perturbation",
+        "ctrl_split_policy": "train_val_test",
+        "ctrl_test_ratio": float(ctrl_test_ratio),
+        "ctrl_val_ratio": float(ctrl_val_ratio_eff),
+        "train_ctrl_n": int(train_ctrl_idx.size),
+        "val_ctrl_n": int(val_ctrl_idx.size),
+        "test_ctrl_n": int(test_ctrl_idx.size),
+    }
+
+
 def _split_by_dataset_config_policy(
     data: TriShiftData,
     *,
@@ -738,6 +900,30 @@ def run_dataset(name: str, fast: bool = False) -> None:
     return run_dataset_with_paths(name=name, fast=fast)
 
 
+def run_dataset_unseen_ctrl_eval(name: str, fast: bool = False) -> None:
+    """Run TriShift with held-out ctrl cells and evaluate on test-split ctrl cells."""
+    return run_dataset_unseen_ctrl_eval_with_paths(name=name, fast=fast)
+
+
+def run_dataset_unseen_ctrl_eval_with_paths(
+    *,
+    name: str,
+    fast: bool = False,
+    defaults_path: str = "configs/defaults.yaml",
+    paths_path: str = "configs/paths.yaml",
+    out_dir: str | None = None,
+) -> None:
+    """Run the held-out ctrl evaluation variant with explicit config paths."""
+    return run_dataset_with_paths(
+        name=name,
+        fast=fast,
+        defaults_path=defaults_path,
+        paths_path=paths_path,
+        out_dir=out_dir,
+        eval_variant="unseen_ctrl",
+    )
+
+
 def run_dataset_with_paths(
     *,
     name: str,
@@ -745,6 +931,7 @@ def run_dataset_with_paths(
     defaults_path: str = "configs/defaults.yaml",
     paths_path: str = "configs/paths.yaml",
     out_dir: str | None = None,
+    eval_variant: str = "default",
 ) -> None:
     """Run pipeline with explicit config paths and output directory.
 
@@ -753,6 +940,10 @@ def run_dataset_with_paths(
     """
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset name: {name}")
+    eval_variant = str(eval_variant or "default").strip()
+    if eval_variant not in {"default", "unseen_ctrl"}:
+        raise ValueError("eval_variant must be one of: default, unseen_ctrl")
+    is_unseen_ctrl_eval = eval_variant == "unseen_ctrl"
 
     dataset_cfg = DATASET_CONFIG[name]
     print("[run] load configs")
@@ -849,6 +1040,16 @@ def run_dataset_with_paths(
     eval_genept_train_candidate_mode = str(
         defaults.get("eval_genept_train_candidate_mode", "all_train_pert")
     )
+    unseen_ctrl_cfg = defaults.get("unseen_ctrl_eval", {})
+    if unseen_ctrl_cfg is None:
+        unseen_ctrl_cfg = {}
+    if not isinstance(unseen_ctrl_cfg, dict):
+        raise TypeError("unseen_ctrl_eval must be a mapping when provided")
+    unseen_ctrl_test_ratio = float(unseen_ctrl_cfg.get("ctrl_test_ratio", 0.2))
+    unseen_ctrl_val_ratio = float(unseen_ctrl_cfg.get("ctrl_val_ratio", 0.1))
+    unseen_ctrl_pert_val_ratio = float(unseen_ctrl_cfg.get("pert_val_ratio", 0.1))
+    if is_unseen_ctrl_eval:
+        eval_ctrl_source = "target_domain_test_ctrl"
     export_full_predictions = bool(defaults.get("export_full_predictions", False))
     eval_batch_size = int(defaults.get("performance", {}).get("chunk_size", 4096))
     train_mode = defaults.get("train_mode", "joint")
@@ -874,6 +1075,12 @@ def run_dataset_with_paths(
             + ", ".join(removed_seq_keys)
         )
     stage1_use_train_split = bool(ablation_cfg.get("stage1_use_train_split", False))
+    if is_unseen_ctrl_eval and not stage1_use_train_split:
+        print(
+            "[config] unseen_ctrl_eval requires ablation.stage1_use_train_split=true; "
+            "overriding for split-consistent Stage1/Stage23 training"
+        )
+        stage1_use_train_split = True
     valid_matching_modes = {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}
     if mode not in valid_matching_modes:
         raise ValueError(
@@ -892,6 +1099,14 @@ def run_dataset_with_paths(
             f"Unsupported eval_ctrl_source={eval_ctrl_source}. "
             f"Supported: {sorted(valid_eval_ctrl_sources)}"
         )
+    if is_unseen_ctrl_eval:
+        for ratio_name, ratio_value in (
+            ("unseen_ctrl_eval.ctrl_test_ratio", unseen_ctrl_test_ratio),
+            ("unseen_ctrl_eval.ctrl_val_ratio", unseen_ctrl_val_ratio),
+            ("unseen_ctrl_eval.pert_val_ratio", unseen_ctrl_pert_val_ratio),
+        ):
+            if not (0.0 < float(ratio_value) < 1.0):
+                raise ValueError(f"{ratio_name} must be between 0 and 1")
     valid_eval_distances = {"cosine", "l2", "both"}
     if eval_genept_distance not in valid_eval_distances:
         raise ValueError(
@@ -992,6 +1207,8 @@ def run_dataset_with_paths(
     cache_dir.mkdir(parents=True, exist_ok=True)
     out_dir_path = Path(out_dir) if out_dir is not None else (Path("artifacts") / "results" / name)
     out_dir_path.mkdir(parents=True, exist_ok=True)
+    eval_tag = "unseen_ctrl" if is_unseen_ctrl_eval else ""
+    eval_suffix = f"_{eval_tag}" if eval_tag else ""
     if mode == "scpram_ot":
         msg = (
             f"[run] matching_mode=scpram_ot (EMD hard-match semantics; "
@@ -1005,7 +1222,7 @@ def run_dataset_with_paths(
     print(f"[run] predict_shift={predict_shift_effective}")
     if not predict_shift_effective:
         print("[run] shift-disabled mode enabled: stage23 uses generator forward_no_delta")
-    if eval_ctrl_pool_mode == "nearest_genept_ot_pool":
+    if (not is_unseen_ctrl_eval) and eval_ctrl_pool_mode == "nearest_genept_ot_pool":
         print(
             "[run] eval_ctrl_pool_mode=nearest_genept_ot_pool "
             f"(sample_size=n_eval_ensemble={n_eval_ensemble}, distance={eval_genept_distance}, "
@@ -1018,7 +1235,7 @@ def run_dataset_with_paths(
                 "aggregate_cond + per_gene_nearest_cond, and candidate mode will expand "
                 "to all configured modes"
             )
-    elif eval_ctrl_pool_mode == "all":
+    elif (not is_unseen_ctrl_eval) and eval_ctrl_pool_mode == "all":
         print(
             "[run] eval_ctrl_pool_mode=all "
             "(run both random_train_ctrl and nearest_genept_ot_pool); "
@@ -1032,6 +1249,12 @@ def run_dataset_with_paths(
             "[run] eval_ctrl_source=target_domain_test_ctrl "
             "(cell-level target-domain controls; ignores nearest/random ctrl sampling)"
         )
+    if is_unseen_ctrl_eval:
+        print(
+            "[run] eval_variant=unseen_ctrl "
+            f"(ctrl train/val/test split; ctrl_test_ratio={unseen_ctrl_test_ratio}, "
+            f"ctrl_val_ratio={unseen_ctrl_val_ratio})"
+        )
     if balance_ot_by_group:
         print(
             "[run] OT group balancing enabled: "
@@ -1041,8 +1264,8 @@ def run_dataset_with_paths(
     # Snapshot the exact configs used for this run for reproducibility.
     # Keep names stable for downstream scripts.
     try:
-        _dump_yaml(out_dir_path / "defaults_used.yaml", defaults)
-        _dump_yaml(out_dir_path / "paths_used.yaml", cfg)
+        _dump_yaml(out_dir_path / f"defaults_used{eval_suffix}.yaml", defaults)
+        _dump_yaml(out_dir_path / f"paths_used{eval_suffix}.yaml", cfg)
     except Exception as exc:
         print(f"[run] warning: failed to write config snapshots ({exc})")
 
@@ -1066,6 +1289,7 @@ def run_dataset_with_paths(
             "paths_path": str(paths_path),
             "out_dir": str(out_dir_path),
             "fast": bool(fast),
+            "eval_variant": str(eval_variant),
             "split_policy": dataset_cfg.get("split_policy", None),
             "seed": int(base_seed),
             "train_mode": str(train_mode),
@@ -1078,6 +1302,9 @@ def run_dataset_with_paths(
             "eval_ctrl_pool_mode": str(eval_ctrl_pool_mode),
             "eval_ctrl_source": str(eval_ctrl_source),
             "eval_ctrl_modes_executed": (
+                ["unseen_ctrl"]
+                if is_unseen_ctrl_eval
+                else
                 ["random_train_ctrl", "nearest_genept_ot_pool"]
                 if str(eval_ctrl_pool_mode) == "all"
                 else [str(eval_ctrl_pool_mode)]
@@ -1095,7 +1322,16 @@ def run_dataset_with_paths(
             "balance_ot_by_group": bool(balance_ot_by_group),
             "balance_ot_group_key": str(balance_ot_group_key),
         }
-        meta_path = out_dir_path / "run_meta.json"
+        if is_unseen_ctrl_eval:
+            meta.update(
+                {
+                    "split_policy": "unseen_ctrl_unseen_perturbation",
+                    "unseen_ctrl_test_ratio": float(unseen_ctrl_test_ratio),
+                    "unseen_ctrl_val_ratio": float(unseen_ctrl_val_ratio),
+                    "unseen_ctrl_pert_val_ratio": float(unseen_ctrl_pert_val_ratio),
+                }
+            )
+        meta_path = out_dir_path / f"run_meta{eval_suffix}.json"
         if meta_path.exists():
             try:
                 existing = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -1157,11 +1393,14 @@ def run_dataset_with_paths(
         split_ids = split_ids[:1]
         n_splits = len(split_ids)
         n_eval_ensemble = min(n_eval_ensemble, 20)
-    eval_modes_to_run = (
-        ["random_train_ctrl", "nearest_genept_ot_pool"]
-        if eval_ctrl_pool_mode == "all"
-        else [eval_ctrl_pool_mode]
-    )
+    if is_unseen_ctrl_eval:
+        eval_modes_to_run = ["unseen_ctrl"]
+    else:
+        eval_modes_to_run = (
+            ["random_train_ctrl", "nearest_genept_ot_pool"]
+            if eval_ctrl_pool_mode == "all"
+            else [eval_ctrl_pool_mode]
+        )
     stage1_cache_sig = _make_stage1_cache_signature(
         stage1_train_cfg=stage1_cfg,
         stage1_model_cfg=stage1_model_cfg,
@@ -1175,43 +1414,87 @@ def run_dataset_with_paths(
         base_seed=base_seed,
         perf=perf,
     )
+    if is_unseen_ctrl_eval:
+        variant_payload = json.dumps(
+            {
+                "base_stage1_sig": stage1_cache_sig,
+                "eval_variant": eval_variant,
+                "ctrl_test_ratio": float(unseen_ctrl_test_ratio),
+                "ctrl_val_ratio": float(unseen_ctrl_val_ratio),
+                "pert_val_ratio": float(unseen_ctrl_pert_val_ratio),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        stage1_cache_sig = hashlib.sha1(variant_payload.encode("utf-8")).hexdigest()
     z_mu_cache_dir = Path("artifacts") / "cache" / "z_mu"
     z_mu_cache_dir.mkdir(parents=True, exist_ok=True)
     for split_idx, split_id in enumerate(split_ids, start=1):
         print(f"[run] split {split_idx}/{n_splits} (split_id={split_id})")
         set_seeds(base_seed)
         subgroup_df = None
-        custom_split = _split_by_dataset_config_policy(
-            data,
-            dataset_cfg=dataset_cfg,
-            seed=split_id,
-        )
-        if custom_split is not None:
-            split_dict = custom_split
-            print(
-                "[split] policy="
-                f"{split_dict.get('split_policy')} domain_key={split_dict.get('split_domain_key')} "
-                f"train_domains={split_dict.get('train_domain_values')} "
-                f"test_domains={split_dict.get('test_domain_values')} "
-                f"train_conds={len(split_dict.get('train_conds', []))} "
-                f"val_conds={len(split_dict.get('val_conds', []))} "
-                f"test_conds={len(split_dict.get('test_conds', []))}"
-            )
-        elif name == "norman":
-            subgroup_df = _norman_subgroup(
-                list(adata.obs["condition"].astype(str).unique()),
-                seed=split_id,
-            )
-            test_conds = list(subgroup_df[subgroup_df.group == "test"].index)
-            val_conds = list(subgroup_df[subgroup_df.group == "val"].index)
-            split_dict = data.split_by_condition(
-                seed=split_id, test_conds=test_conds, val_conds=val_conds
-            )
-        else:
-            split_dict = data.split_by_condition(
+        if is_unseen_ctrl_eval:
+            test_conds = None
+            val_conds = None
+            if name == "norman":
+                subgroup_df = _norman_subgroup(
+                    list(adata.obs["condition"].astype(str).unique()),
+                    seed=split_id,
+                )
+                test_conds = list(subgroup_df[subgroup_df.group == "test"].index)
+                val_conds = list(subgroup_df[subgroup_df.group == "val"].index)
+            split_dict = _split_unseen_ctrl_unseen_perturbation(
+                data,
                 seed=split_id,
                 test_ratio=float(dataset_cfg.get("test_ratio", 0.2)),
+                val_ratio=float(unseen_ctrl_pert_val_ratio),
+                ctrl_test_ratio=float(unseen_ctrl_test_ratio),
+                ctrl_val_ratio=float(unseen_ctrl_val_ratio),
+                test_conds=test_conds,
+                val_conds=val_conds,
             )
+            print(
+                "[split] policy=unseen_ctrl_unseen_perturbation "
+                f"train_conds={len(split_dict.get('train_conds', []))} "
+                f"val_conds={len(split_dict.get('val_conds', []))} "
+                f"test_conds={len(split_dict.get('test_conds', []))} "
+                f"ctrl_n(train/val/test)="
+                f"{split_dict.get('train_ctrl_n')}/"
+                f"{split_dict.get('val_ctrl_n')}/"
+                f"{split_dict.get('test_ctrl_n')}"
+            )
+        else:
+            custom_split = _split_by_dataset_config_policy(
+                data,
+                dataset_cfg=dataset_cfg,
+                seed=split_id,
+            )
+            if custom_split is not None:
+                split_dict = custom_split
+                print(
+                    "[split] policy="
+                    f"{split_dict.get('split_policy')} domain_key={split_dict.get('split_domain_key')} "
+                    f"train_domains={split_dict.get('train_domain_values')} "
+                    f"test_domains={split_dict.get('test_domain_values')} "
+                    f"train_conds={len(split_dict.get('train_conds', []))} "
+                    f"val_conds={len(split_dict.get('val_conds', []))} "
+                    f"test_conds={len(split_dict.get('test_conds', []))}"
+                )
+            elif name == "norman":
+                subgroup_df = _norman_subgroup(
+                    list(adata.obs["condition"].astype(str).unique()),
+                    seed=split_id,
+                )
+                test_conds = list(subgroup_df[subgroup_df.group == "test"].index)
+                val_conds = list(subgroup_df[subgroup_df.group == "val"].index)
+                split_dict = data.split_by_condition(
+                    seed=split_id, test_conds=test_conds, val_conds=val_conds
+                )
+            else:
+                split_dict = data.split_by_condition(
+                    seed=split_id,
+                    test_ratio=float(dataset_cfg.get("test_ratio", 0.2)),
+                )
         train_logs: dict = {
             "split_id": split_id,
             "train_mode": train_mode,
@@ -1312,12 +1595,13 @@ def run_dataset_with_paths(
 
         topk_cache_key = (
             f"name={name}|mode={mode}|k={k}|split_id={split_id}|"
+            f"eval_variant={eval_variant}|"
             f"stage1_sig={stage1_cache_sig}|per_condition_ot={bool(per_condition_ot)}|"
             f"balance_ot_by_group={bool(balance_ot_by_group)}|"
             f"balance_ot_group_key={str(balance_ot_group_key)}"
         )
         cache_path = cache_dir / (
-            f"{name}_split{split_id}_{mode}_k{k}_s1{stage1_cache_sig[:12]}.npz"
+            f"{name}_split{split_id}{eval_suffix}_{mode}_k{k}_s1{stage1_cache_sig[:12]}.npz"
         )
 
         print(f"[run] stage23 mode={train_mode}")
@@ -1450,17 +1734,41 @@ def run_dataset_with_paths(
                 topk_cache_key=topk_cache_key,
             )
 
-        train_log_pkl = out_dir_path / f"train_logs_split{split_id}.pkl"
+        train_log_pkl = out_dir_path / f"train_logs_split{split_id}{eval_suffix}.pkl"
         with open(train_log_pkl, "wb") as f:
             pickle.dump(train_logs, f)
         train_records = _logs_to_records(split_id, train_logs)
         if train_records:
             pd.DataFrame(train_records).to_csv(
-                out_dir_path / f"train_loss_split{split_id}.csv", index=False
+                out_dir_path / f"train_loss_split{split_id}{eval_suffix}.csv", index=False
             )
 
         print("[run] evaluate")
         for eval_mode in eval_modes_to_run:
+            if eval_mode == "unseen_ctrl":
+                metrics_df = model.evaluate_unseen_ctrl(
+                    split_dict=split_dict,
+                    emb_table=emb_table,
+                    split_id=split_id,
+                    n_ensemble=n_eval_ensemble,
+                    base_seed=base_seed,
+                    eval_batch_size=eval_batch_size,
+                )
+                metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
+                out_unseen_ctrl = out_dir_path / f"trishift_{name}_{split_id}_unseen_ctrl.pkl"
+                model.export_predictions_unseen_ctrl(
+                    split_dict=split_dict,
+                    emb_table=emb_table,
+                    split_id=split_id,
+                    n_ensemble=n_eval_ensemble,
+                    base_seed=base_seed,
+                    out_path=str(out_unseen_ctrl),
+                    eval_batch_size=eval_batch_size,
+                    export_full_predictions=export_full_predictions,
+                )
+                metrics_all_by_tag.setdefault("unseen_ctrl", []).append(metrics_df)
+                continue
+
             if eval_mode == "nearest_genept_ot_pool":
                 train_split = split_dict.get("train")
                 if train_split is None:
@@ -1586,7 +1894,6 @@ def run_dataset_with_paths(
                                 eval_ctrl_strategy=eval_strategy,
                                 eval_ctrl_source=eval_ctrl_source,
                                 eval_batch_size=eval_batch_size,
-                                export_full_predictions=export_full_predictions,
                             )
                             metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
 
@@ -1692,7 +1999,11 @@ def run_dataset_with_paths(
                     metrics_all_by_tag.setdefault("main", []).append(metrics_df)
 
     if metrics_all_by_tag:
-        if eval_ctrl_pool_mode == "all":
+        if is_unseen_ctrl_eval:
+            metrics_df_all = pd.concat(metrics_all_by_tag.get("unseen_ctrl", []), ignore_index=True)
+            metrics_df_all.to_csv(out_dir_path / "metrics_unseen_ctrl.csv", index=False)
+            _write_mean_metrics(out_dir_path / "mean_pearson_unseen_ctrl.txt", metrics_df_all)
+        elif eval_ctrl_pool_mode == "all":
             for tag, frames in metrics_all_by_tag.items():
                 metrics_df_all = pd.concat(frames, ignore_index=True)
                 metrics_df_all.to_csv(out_dir_path / f"metrics_{tag}.csv", index=False)
@@ -1751,13 +2062,21 @@ def run_dataset_with_paths(
             metrics_df_all = pd.concat(metrics_all_by_tag[main_tag], ignore_index=True)
             metrics_df_all.to_csv(out_dir_path / "metrics.csv", index=False)
             _write_mean_metrics(out_dir_path / "mean_pearson.txt", metrics_df_all)
-    print(f"[run] saved metrics: {out_dir_path / 'metrics.csv'}")
+    if is_unseen_ctrl_eval:
+        print(f"[run] saved metrics: {out_dir_path / 'metrics_unseen_ctrl.csv'}")
+    else:
+        print(f"[run] saved metrics: {out_dir_path / 'metrics.csv'}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run TriShift on a dataset")
     parser.add_argument("--name", required=True, help="dataset name")
     parser.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
+    parser.add_argument(
+        "--unseen_ctrl_eval",
+        action="store_true",
+        help="run held-out ctrl/unseen perturbation evaluation without overwriting default metrics",
+    )
     parser.add_argument(
         "--defaults",
         default="configs/defaults.yaml",
@@ -1781,6 +2100,7 @@ def main() -> None:
         defaults_path=str(args.defaults),
         paths_path=str(args.paths),
         out_dir=out_dir,
+        eval_variant="unseen_ctrl" if bool(args.unseen_ctrl_eval) else "default",
     )
 
 
