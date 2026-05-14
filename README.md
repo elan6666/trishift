@@ -191,6 +191,24 @@ conda activate trishift-baselines
 
 `environment_baselines.yml` covers the common stack used by `GEARS` and shared evaluation tools. `GEARS` still requires a Torch/PyG installation matched to your local CUDA runtime; follow the comments in that file for the final install step.
 
+### External baseline source trees
+
+Baseline repositories are not tracked directly because `external/` is a local, ignored workspace for third-party source trees, generated caches, and large intermediate files. To populate the external baselines and apply the tracked TriShift compatibility overlays, run:
+
+```bash
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
+```
+
+If you already downloaded the baseline repositories, copy from that folder instead:
+
+```bash
+python scripts/setup/bootstrap_external_baselines.py --source-root /path/to/downloads --force
+```
+
+The script places sources under `external/` and applies tracked overlays from `patches/external_overlays`. The current overlays include scGPT flash-attention compatibility files.
+
+This bootstrap step prepares source trees only. You still need the matching conda/pip environment for each baseline before running its training script.
+
 ### Data download and preprocessing
 
 Gene embeddings are external local artifacts and are not shipped with this repository. Download the required embedding files and place them under:

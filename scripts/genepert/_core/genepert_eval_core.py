@@ -211,13 +211,23 @@ def subgroup(pert_list: list[str], seed: int) -> pd.DataFrame:
 
 
 def _require_genepert_class():
+    external_candidates = [
+        ROOT / "external" / "GenePert-main",
+        ROOT / "external" / "GenePert-main" / "GenePert-main",
+    ]
+    for candidate in external_candidates:
+        if candidate.exists():
+            candidate_str = str(candidate)
+            if candidate_str not in sys.path:
+                sys.path.insert(0, candidate_str)
     try:
         mod = importlib.import_module("GenePertExperiment")
     except ImportError as exc:
         raise ImportError(
             "GenePert is not importable from the current Python environment. "
-            "Install the GenePert package/module so `import GenePertExperiment` works from "
-            "site-packages without relying on the repository's external/ directory."
+            "Install the GenePert package/module or run "
+            "`python scripts/setup/bootstrap_external_baselines.py --only genepert "
+            "--source-root <downloads>` so `external/GenePert-main` is available."
         ) from exc
     return getattr(mod, "GenePertExperiment")
 
