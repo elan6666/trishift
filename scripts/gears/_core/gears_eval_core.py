@@ -363,7 +363,9 @@ def _upgrade_legacy_dataset_processed(pert_data, split_meta: GearsSplitMeta) -> 
                 gene_names_src = adata.var["gene_name"].astype(str).tolist()
             else:
                 gene_names_src = adata.var_names.astype(str).tolist()
-    gene_names = np.asarray(gene_names_src or [], dtype=str)
+    if gene_names_src is None:
+        gene_names_src = []
+    gene_names = np.asarray(gene_names_src, dtype=str)
     if gene_names.size == 0:
         return
     gene_to_idx = {str(g): int(i) for i, g in enumerate(gene_names.tolist())}
@@ -500,18 +502,18 @@ def _prepare_gears_unseen_ctrl_training_data(
         eval_adata,
         [split_dict["train"], split_dict["val"], _no_ctrl(split_dict["test"])],
     )
-    if "condition_name" not in adata_for_gears.obs.columns:
-        rank_keys = list((adata_for_gears.uns.get("rank_genes_groups_cov_all") or {}).keys())
-        cond_to_name: dict[str, str] = {}
-        for cond in sorted(set(adata_for_gears.obs["condition"].astype(str).tolist())):
-            if cond == "ctrl":
-                cond_to_name[cond] = next((k for k in rank_keys if str(k).endswith("_ctrl_1")), cond)
-                continue
-            marker = f"_{cond}_"
-            cond_to_name[cond] = next((str(k) for k in rank_keys if marker in str(k)), cond)
-        adata_for_gears.obs["condition_name"] = (
-            adata_for_gears.obs["condition"].astype(str).map(cond_to_name).astype(str).values
-        )
+    rank_groups = adata_for_gears.uns.get("rank_genes_groups_cov_all") or {}
+    rank_keys = [str(k) for k in rank_groups.keys()]
+    cond_to_name: dict[str, str] = {}
+    for cond in sorted(set(adata_for_gears.obs["condition"].astype(str).tolist())):
+        if cond == "ctrl":
+            cond_to_name[cond] = next((k for k in rank_keys if k.endswith("_ctrl_1")), cond)
+            continue
+        marker = f"_{cond}_"
+        cond_to_name[cond] = next((k for k in rank_keys if marker in k), cond)
+    adata_for_gears.obs["condition_name"] = (
+        adata_for_gears.obs["condition"].astype(str).map(cond_to_name).astype(str).values
+    )
     pert_data.adata = adata_for_gears
 
 
@@ -531,6 +533,7 @@ def _require_gears_classes():
             gears_mod = importlib.import_module("gears")
             gears_utils_mod = importlib.import_module("gears.utils")
             gears_gears_mod = importlib.import_module("gears.gears")
+            gears_inference_mod = importlib.import_module("gears.inference")
         finally:
             sys.path = old_sys_path
         def _safe_uncertainty_loss_fct(pred, logvar, y, perts, reg=0.1, ctrl=None, direction_lambda=1e-3, dict_filter=None):
@@ -647,6 +650,13 @@ def _require_gears_classes():
         gears_utils_mod.uncertainty_loss_fct = _safe_uncertainty_loss_fct
         gears_gears_mod.loss_fct = _safe_loss_fct
         gears_gears_mod.uncertainty_loss_fct = _safe_uncertainty_loss_fct
+        # GEARS runs extra paper-specific diagnostics after test evaluation.
+        # The shared wrapper computes metrics below; these diagnostics are
+        # brittle for canonicalized combo perturbation names in Norman.
+        gears_gears_mod.deeper_analysis = lambda adata, test_res: {}
+        gears_gears_mod.non_dropout_analysis = lambda adata, test_res: {}
+        gears_inference_mod.deeper_analysis = lambda adata, test_res: {}
+        gears_inference_mod.non_dropout_analysis = lambda adata, test_res: {}
         GEARS = getattr(gears_mod, "GEARS")
         GEARS.__init__ = _safe_gears_init
         gears_gears_mod.GEARS.__init__ = _safe_gears_init
