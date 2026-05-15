@@ -123,6 +123,12 @@ def run_profile(profile: str) -> None:
 
 
 def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
+    scpram_legacy_aliases = {
+        "r2_all_mean_mean": "scpram_r2_all_mean_mean",
+        "r2_all_var_mean": "scpram_r2_all_var_mean",
+        "r2_degs_mean_mean": "scpram_r2_degs_mean_mean",
+        "r2_degs_var_mean": "scpram_r2_degs_var_mean",
+    }
     preferred_order = [
         "pearson",
         "nmse",
@@ -131,11 +137,18 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "deg_mean_r2",
         "systema_corr_20de_allpert",
         "systema_corr_deg_r2",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
     ]
-    exclude_keys = {"split_id", "n_ensemble"}
+    exclude_keys = {"split_id", "n_ensemble", "n_eval_ctrl"}
+    exclude_keys.update(
+        alias
+        for alias, canonical in scpram_legacy_aliases.items()
+        if canonical in numeric_means.index
+    )
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend([k for k in numeric_means.index if k not in exclude_keys and k not in keys])
     return keys
@@ -857,11 +870,12 @@ def _compute_metrics_and_export_payload(
     split_id: int,
     split_meta: GearsSplitMeta,
     eval_ctrl_source: str = "train_ctrl",
+    reference_adata: ad.AnnData | None = None,
 ) -> tuple[pd.DataFrame, dict]:
     results = []
     export_payload = {}
     eval_conds = eval_adata.obs["condition"].astype(str).map(condition_sort).values
-    ref_adata = _infer_reference_adata(eval_adata, split_meta)
+    ref_adata = reference_adata if reference_adata is not None else _infer_reference_adata(eval_adata, split_meta)
     use_test_ctrl = str(eval_ctrl_source or "train_ctrl").strip() == "target_domain_test_ctrl"
 
     if "gene_name" in eval_adata.var.columns:
@@ -872,14 +886,11 @@ def _compute_metrics_and_export_payload(
     ctrl_mask = eval_adata.obs["condition"].astype(str).map(condition_sort).values == "ctrl"
     ctrl_adata = eval_adata[ctrl_mask]
     ctrl = _utils.densify_X(ctrl_adata.X)
-    if use_test_ctrl:
-        pert_reference = ctrl.mean(axis=0).astype(np.float32)
-    else:
-        pert_reference = average_of_perturbation_centroids(
-            X=_utils.densify_X(ref_adata.X),
-            conditions=ref_adata.obs["condition"].astype(str).map(condition_sort).values,
-            ctrl_label="ctrl",
-        )
+    pert_reference = average_of_perturbation_centroids(
+        X=_utils.densify_X(ref_adata.X),
+        conditions=ref_adata.obs["condition"].astype(str).map(condition_sort).values,
+        ctrl_label="ctrl",
+    )
     prediction_bundle = _build_prediction_bundle(
         gears_model,
         dataset_name,
@@ -1014,6 +1025,11 @@ def run_gears_eval(
                 seed=int(split),
             )
             eval_adata_for_metrics = split_dict["test"]
+            reference_adata_for_metrics = ad.concat(
+                [split_dict["train"], split_dict["val"]],
+                join="outer",
+                merge="same",
+            )
         else:
             split_meta = _build_shared_split_meta(
                 eval_adata,
@@ -1023,6 +1039,7 @@ def run_gears_eval(
                 available_raw_conditions=list(getattr(pert_data, "dataset_processed", {}).keys()),
             )
             eval_adata_for_metrics = eval_adata
+            reference_adata_for_metrics = None
 
         if split_meta.subgroup_map:
             subgroup_df = pd.DataFrame({"subgroup": split_meta.subgroup_map})
@@ -1053,6 +1070,7 @@ def run_gears_eval(
             split_id=int(split),
             split_meta=split_meta,
             eval_ctrl_source=eval_ctrl_source,
+            reference_adata=reference_adata_for_metrics,
         )
         metrics_df = _attach_subgroup_column(metrics_df, subgroup_df)
         metrics_all.append(metrics_df)

@@ -156,6 +156,12 @@ def run_profile(profile: str) -> None:
 
 
 def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
+    scpram_legacy_aliases = {
+        "r2_all_mean_mean": "scpram_r2_all_mean_mean",
+        "r2_all_var_mean": "scpram_r2_all_var_mean",
+        "r2_degs_mean_mean": "scpram_r2_degs_mean_mean",
+        "r2_degs_var_mean": "scpram_r2_degs_var_mean",
+    }
     preferred_order = [
         "pearson",
         "nmse",
@@ -164,11 +170,18 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "deg_mean_r2",
         "systema_corr_20de_allpert",
         "systema_corr_deg_r2",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
     ]
-    exclude_keys = {"split_id", "n_ensemble"}
+    exclude_keys = {"split_id", "n_ensemble", "n_eval_ctrl"}
+    exclude_keys.update(
+        alias
+        for alias, canonical in scpram_legacy_aliases.items()
+        if canonical in numeric_means.index
+    )
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend([k for k in numeric_means.index if k not in exclude_keys and k not in keys])
     return keys
@@ -1068,14 +1081,6 @@ def _compute_metrics_and_export_payload(
             conditions=train_ref.obs["condition"].astype(str).values,
             ctrl_label="ctrl",
         )
-    elif use_target_ctrl:
-        test_ref = split_dict.get("test")
-        if not isinstance(test_ref, ad.AnnData):
-            raise ValueError("target_domain_test_ctrl requires split_dict['test']")
-        test_ctrl = test_ref[test_ref.obs["condition"].astype(str) == "ctrl"]
-        if test_ctrl.n_obs == 0:
-            raise ValueError("target_domain_test_ctrl found no ctrl cells in split_dict['test']")
-        pert_reference = _utils.densify_X(test_ctrl.X).mean(axis=0).astype(np.float32)
     else:
         pert_reference = average_of_perturbation_centroids(
             X=_utils.densify_X(reference_adata.X),
@@ -1087,6 +1092,8 @@ def _compute_metrics_and_export_payload(
         truth_adata = eval_adata
     if use_target_ctrl:
         ctrl_adata = truth_adata[truth_adata.obs["condition"].astype(str) == "ctrl"]
+        if ctrl_adata.n_obs == 0:
+            raise ValueError("target_domain_test_ctrl found no ctrl cells in split_dict['test']")
         eval_ctrl_source = "target_domain_test_ctrl"
     else:
         ctrl_adata = eval_adata[eval_adata.obs["condition"].astype(str) == "ctrl"]

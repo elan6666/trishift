@@ -173,6 +173,12 @@ def _extract_schedule(cfg: dict) -> StageSchedule:
 
 
 def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
+    scpram_legacy_aliases = {
+        "r2_all_mean_mean": "scpram_r2_all_mean_mean",
+        "r2_all_var_mean": "scpram_r2_all_var_mean",
+        "r2_degs_mean_mean": "scpram_r2_degs_mean_mean",
+        "r2_degs_var_mean": "scpram_r2_degs_var_mean",
+    }
     preferred_order = [
         "pearson",
         "nmse",
@@ -183,11 +189,18 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "systema_corr_deg_r2",
         "systema_corr_20de_allpert_dist",
         "systema_corr_deg_r2_dist",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
     ]
-    exclude_keys = {"split_id", "n_ensemble"}
+    exclude_keys = {"split_id", "n_ensemble", "n_eval_ctrl"}
+    exclude_keys.update(
+        alias
+        for alias, canonical in scpram_legacy_aliases.items()
+        if canonical in numeric_means.index
+    )
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend(
         [

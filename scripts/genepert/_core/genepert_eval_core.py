@@ -118,6 +118,12 @@ def run_profile(profile: str) -> None:
 
 
 def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
+    scpram_legacy_aliases = {
+        "r2_all_mean_mean": "scpram_r2_all_mean_mean",
+        "r2_all_var_mean": "scpram_r2_all_var_mean",
+        "r2_degs_mean_mean": "scpram_r2_degs_mean_mean",
+        "r2_degs_var_mean": "scpram_r2_degs_var_mean",
+    }
     preferred_order = [
         "pearson",
         "nmse",
@@ -126,11 +132,18 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "deg_mean_r2",
         "systema_corr_20de_allpert",
         "systema_corr_deg_r2",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
     ]
-    exclude_keys = {"split_id", "n_ensemble"}
+    exclude_keys = {"split_id", "n_ensemble", "n_eval_ctrl"}
+    exclude_keys.update(
+        alias
+        for alias, canonical in scpram_legacy_aliases.items()
+        if canonical in numeric_means.index
+    )
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend([k for k in numeric_means.index if k not in exclude_keys and k not in keys])
     return keys
@@ -436,14 +449,11 @@ def _compute_metrics_and_export_payload(
     ctrl_mean = _utils.densify_X(
         ctrl_source_adata[ctrl_source_adata.obs["condition"] == "ctrl"].X
     ).mean(axis=0, keepdims=True)
-    if use_test_ctrl:
-        pert_reference = np.asarray(ctrl_mean, dtype=np.float32).reshape(-1)
-    else:
-        pert_reference = average_of_perturbation_centroids(
-            X=_utils.densify_X(reference_adata.X),
-            conditions=reference_adata.obs["condition"].astype(str).values,
-            ctrl_label="ctrl",
-        )
+    pert_reference = average_of_perturbation_centroids(
+        X=_utils.densify_X(reference_adata.X),
+        conditions=reference_adata.obs["condition"].astype(str).values,
+        ctrl_label="ctrl",
+    )
     if "gene_name" in eval_adata.var.columns:
         gene_names = eval_adata.var["gene_name"].astype(str).values
     else:

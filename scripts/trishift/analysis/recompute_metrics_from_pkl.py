@@ -32,6 +32,12 @@ def _safe_pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
+    scpram_legacy_aliases = {
+        "r2_all_mean_mean": "scpram_r2_all_mean_mean",
+        "r2_all_var_mean": "scpram_r2_all_var_mean",
+        "r2_degs_mean_mean": "scpram_r2_degs_mean_mean",
+        "r2_degs_var_mean": "scpram_r2_degs_var_mean",
+    }
     preferred_order = [
         "pearson",
         "nmse",
@@ -42,11 +48,18 @@ def _resolve_mean_metric_keys(numeric_means: pd.Series) -> list[str]:
         "systema_corr_deg_r2",
         "systema_corr_20de_allpert_dist",
         "systema_corr_deg_r2_dist",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
         "scpram_r2_degs_mean_mean",
         "scpram_r2_degs_var_mean",
         "scpram_wasserstein_degs_sum",
     ]
-    exclude_keys = {"split_id", "n_ensemble"}
+    exclude_keys = {"split_id", "n_ensemble", "n_eval_ctrl"}
+    exclude_keys.update(
+        alias
+        for alias, canonical in scpram_legacy_aliases.items()
+        if canonical in numeric_means.index
+    )
     keys = [k for k in preferred_order if k in numeric_means.index and k not in exclude_keys]
     keys.extend([k for k in numeric_means.index if k not in exclude_keys and k not in keys])
     return keys
@@ -170,8 +183,16 @@ def _compute_rows_from_pkl(
             continue
 
         pred_mean = pred.mean(axis=0)
-        ctrl_mean = ctrl.mean(axis=0)
         true_mean = truth.mean(axis=0)
+        ctrl_mean = ctrl.mean(axis=0)
+        metric_ctrl_mean = obj.get("metric_ctrl_mean", None)
+        if metric_ctrl_mean is not None:
+            metric_ctrl_arr = np.asarray(metric_ctrl_mean, dtype=np.float32).reshape(-1)
+            deg_idx = np.asarray(obj.get("DE_idx", []), dtype=int).reshape(-1)
+            if deg_idx.size == pred.shape[1] and deg_idx.size > 0 and metric_ctrl_arr.size > int(deg_idx.max()):
+                ctrl_mean = metric_ctrl_arr[deg_idx]
+            elif metric_ctrl_arr.size == pred.shape[1]:
+                ctrl_mean = metric_ctrl_arr
         mse_pred = float(np.mean((true_mean - pred_mean) ** 2))
         mse_ctrl = float(np.mean((true_mean - ctrl_mean) ** 2))
         nmse = float(mse_pred / mse_ctrl) if mse_ctrl > 0 else float("nan")

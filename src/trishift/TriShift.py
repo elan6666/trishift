@@ -515,13 +515,15 @@ class TriShift:
         base_seed: int,
         eval_ctrl_source: str,
         systema_reference: np.ndarray,
+        metric_ctrl_expr: np.ndarray | None = None,
         include_distributional: bool = True,
     ) -> tuple[dict, dict]:
         metric_seed = self._stable_condition_seed(base_seed, split_id, cond)
+        ctrl_for_mean_metrics = ctrl_expr if metric_ctrl_expr is None else metric_ctrl_expr
         mean_metrics = compute_mean_effect_metrics(
             X_true=true_expr,
             X_pred=pred_expr,
-            X_ctrl=ctrl_expr,
+            X_ctrl=ctrl_for_mean_metrics,
             deg_idx=deg_idx,
         )
         systema_metrics = pearson_delta_reference_metrics(
@@ -582,6 +584,7 @@ class TriShift:
             "true": self._array_summary(true_expr),
             "pred": self._array_summary(pred_expr),
             "ctrl": self._array_summary(ctrl_expr),
+            "metric_ctrl": self._array_summary(ctrl_for_mean_metrics),
             "scpram_repeats": scpram_repeats,
             "scpram_wasserstein_degs_by_gene": scpram_wasserstein,
             "scpram_degs_used": scpram_degs_used,
@@ -3266,20 +3269,7 @@ class TriShift:
 
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
         train_adata = split_dict.get("train", None)
-        use_train_pert_reference = (
-            str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
-            and train_adata is not None
-        )
-        if use_train_pert_reference:
-            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
-            pert_reference = average_of_perturbation_centroids(
-                X=train_adata.X,
-                conditions=train_cond_arr,
-                ctrl_label=self.data.ctrl_label,
-            )
-        elif ctrl_source_eff == "target_domain_test_ctrl":
-            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
-        elif train_adata is not None:
+        if train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
             pert_reference = average_of_perturbation_centroids(
                 X=train_adata.X,
@@ -3359,6 +3349,11 @@ class TriShift:
                 base_seed=base_seed,
                 eval_ctrl_source=ctrl_source_eff,
                 systema_reference=pert_reference,
+                metric_ctrl_expr=(
+                    None
+                    if ctrl_source_eff == "target_domain_test_ctrl"
+                    else np.asarray(ctrl_mean_all, dtype=np.float32)
+                ),
                 include_distributional=(ctrl_source_eff == "target_domain_test_ctrl"),
             )
             if not np.isfinite(float(metrics.get("nmse", np.nan))) or not np.isfinite(
@@ -3467,20 +3462,7 @@ class TriShift:
         else:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
         train_adata = split_dict.get("train", None)
-        use_train_pert_reference = (
-            str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation"
-            and train_adata is not None
-        )
-        if use_train_pert_reference:
-            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
-            pert_reference = average_of_perturbation_centroids(
-                X=train_adata.X,
-                conditions=train_cond_arr,
-                ctrl_label=self.data.ctrl_label,
-            )
-        elif ctrl_source_eff == "target_domain_test_ctrl":
-            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
-        elif train_adata is not None:
+        if train_adata is not None:
             train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
             pert_reference = average_of_perturbation_centroids(
                 X=train_adata.X,
@@ -3628,6 +3610,16 @@ class TriShift:
                 "DE_idx": deg_idx,
                 "DE_name": deg_names,
                 "gene_name_full": gene_names,
+                "metric_ctrl_mean": np.asarray(ctrl_mean_all, dtype=np.float32),
+                "export_metadata": {
+                    "metrics_computed_on_full": False,
+                    "eval_ctrl_source": str(ctrl_source_eff),
+                    "metric_ctrl_reference": "full_eval_ctrl_pool_mean",
+                    "split_id": int(split_id),
+                    "n_pred_full": int(x_pred.shape[0]),
+                    "n_ctrl_full": int(ctrl_expr.shape[0]),
+                    "n_truth_full": int(true_expr.shape[0]),
+                },
             }
 
         if out_path:
