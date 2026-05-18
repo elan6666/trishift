@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.common.yaml_utils import load_yaml_file
 from scripts.gears._core.gears_eval_core import main as gears_core_main
-from scripts.gears._core.gears_eval_core import run_gears_eval
+from scripts.gears._core.gears_eval_core import run_gears_eval, run_gears_unseen_ctrl_eval
 
 
 def main() -> None:
@@ -38,12 +38,12 @@ def main() -> None:
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
-    run_gears_eval(
+    runner = run_gears_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_gears_eval
+    runner(
         "dixit",
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
         split_ids=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

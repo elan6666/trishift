@@ -542,14 +542,18 @@ def _compute_metrics_and_export_payload(
     return pd.DataFrame(results), export_payload
 
 
-def run_genepert_eval(
+def _run_genepert_eval_variant(
     name: str,
+    *,
+    eval_variant: str,
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
     alpha_grid: list[float] | None = None,
     split_ids: list[int] | tuple[int, ...] | None = None,
-    unseen_ctrl_eval: bool = False,
 ) -> None:
+    if eval_variant not in {"default", "unseen_ctrl"}:
+        raise ValueError("eval_variant must be one of: default, unseen_ctrl")
+    unseen_ctrl_eval = eval_variant == "unseen_ctrl"
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     cfg = DATASET_CONFIG[name]
@@ -672,6 +676,40 @@ def run_genepert_eval(
     print(f"[genepert] saved metrics: {metrics_path}")
 
 
+def run_genepert_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    alpha_grid: list[float] | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_genepert_eval_variant(
+        name,
+        eval_variant="default",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        alpha_grid=alpha_grid,
+        split_ids=split_ids,
+    )
+
+
+def run_genepert_unseen_ctrl_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    alpha_grid: list[float] | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_genepert_eval_variant(
+        name,
+        eval_variant="unseen_ctrl",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        alpha_grid=alpha_grid,
+        split_ids=split_ids,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run GenePert eval with TriShift metrics")
     parser.add_argument("--profile", default="", help="dataset profile under scripts/genepert/eval/configs")
@@ -698,21 +736,21 @@ def main(argv: list[str] | None = None) -> None:
         if bool(args.no_export_notebook_pkl):
             export_notebook_pkl = False
         alpha_grid = _coerce_alpha_grid(task_args.get("alpha_grid"))
-        run_genepert_eval(
+        runner = run_genepert_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_genepert_eval
+        runner(
             prof["dataset"],
             base_seed=seed,
             export_notebook_pkl=export_notebook_pkl,
             alpha_grid=alpha_grid,
-            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
 
     name = str(args.name).strip()
     if not name:
         raise SystemExit("Provide --profile or --name")
-    run_genepert_eval(
+    runner = run_genepert_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_genepert_eval
+    runner(
         name,
         base_seed=int(args.seed),
         export_notebook_pkl=not bool(args.no_export_notebook_pkl),
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )

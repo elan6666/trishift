@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.common.yaml_utils import load_yaml_file
-from scripts.scgpt._core.scgpt_eval_core import run_scgpt_eval
+from scripts.scgpt._core.scgpt_eval_core import run_scgpt_eval, run_scgpt_unseen_ctrl_eval
 
 
 def main() -> None:
@@ -27,7 +27,8 @@ def main() -> None:
 
     cfg = load_yaml_file(Path(__file__).with_name("config.yaml"))
     task = cfg.get("task_args") or {}
-    run_scgpt_eval(
+    runner = run_scgpt_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_scgpt_eval
+    runner(
         "adamson",
         base_seed=int(task.get("seed", 24)) if int(args.seed) == 24 else int(args.seed),
         export_notebook_pkl=(
@@ -47,7 +48,6 @@ def main() -> None:
         ),
         lr=float(task.get("lr", 1e-4)) if float(args.lr) == 1e-4 else float(args.lr),
         early_stop=int(task.get("early_stop", 10)) if int(args.early_stop) == 10 else int(args.early_stop),
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

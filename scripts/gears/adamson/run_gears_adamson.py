@@ -38,11 +38,11 @@ def main() -> None:
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
-    gears_core.run_gears_eval(
+    runner = gears_core.run_gears_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else gears_core.run_gears_eval
+    runner(
         "adamson",
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

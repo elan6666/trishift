@@ -972,13 +972,17 @@ def _compute_metrics_and_export_payload(
     return pd.DataFrame(results), export_payload
 
 
-def run_gears_eval(
+def _run_gears_eval_variant(
     name: str,
+    *,
+    eval_variant: str,
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
     split_ids: list[int] | tuple[int, ...] | None = None,
-    unseen_ctrl_eval: bool = False,
 ) -> None:
+    if eval_variant not in {"default", "unseen_ctrl"}:
+        raise ValueError("eval_variant must be one of: default, unseen_ctrl")
+    unseen_ctrl_eval = eval_variant == "unseen_ctrl"
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     cfg = DATASET_CONFIG[name]
@@ -1089,6 +1093,36 @@ def run_gears_eval(
     print(f"[gears] saved metrics: {metrics_path}")
 
 
+def run_gears_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_gears_eval_variant(
+        name,
+        eval_variant="default",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        split_ids=split_ids,
+    )
+
+
+def run_gears_unseen_ctrl_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_gears_eval_variant(
+        name,
+        eval_variant="unseen_ctrl",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        split_ids=split_ids,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run GEARS eval with TriShift metrics")
     parser.add_argument("--profile", default="", help="dataset profile under scripts/gears/eval/configs")
@@ -1113,20 +1147,20 @@ def main(argv: list[str] | None = None) -> None:
         export_notebook_pkl = bool(task_args.get("export_notebook_pkl", True))
         if bool(args.no_export_notebook_pkl):
             export_notebook_pkl = False
-        run_gears_eval(
+        runner = run_gears_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_gears_eval
+        runner(
             prof["dataset"],
             base_seed=seed,
             export_notebook_pkl=export_notebook_pkl,
-            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
     if not str(args.name).strip():
         raise ValueError("Either --profile or --name must be provided")
-    run_gears_eval(
+    runner = run_gears_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_gears_eval
+    runner(
         args.name,
         base_seed=args.seed,
         export_notebook_pkl=not args.no_export_notebook_pkl,
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

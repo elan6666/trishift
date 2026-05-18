@@ -5,7 +5,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.common.yaml_utils import load_yaml_file
-from scripts.genepert._core.genepert_eval_core import run_genepert_eval
+from scripts.genepert._core.genepert_eval_core import run_genepert_eval, run_genepert_unseen_ctrl_eval
 
 
 def main() -> None:
@@ -26,12 +26,12 @@ def main() -> None:
     if bool(args.no_export_notebook_pkl):
         export_notebook_pkl = False
 
-    run_genepert_eval(
+    runner = run_genepert_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_genepert_eval
+    runner(
         "adamson",
         base_seed=seed,
         export_notebook_pkl=export_notebook_pkl,
         alpha_grid=task.get("alpha_grid"),
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 

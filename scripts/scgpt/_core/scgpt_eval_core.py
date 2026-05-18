@@ -1177,8 +1177,10 @@ def _compute_metrics_and_export_payload(
     return pd.DataFrame(results), export_payload
 
 
-def run_scgpt_eval(
+def _run_scgpt_eval_variant(
     name: str,
+    *,
+    eval_variant: str,
     base_seed: int = 24,
     export_notebook_pkl: bool = True,
     control_pool_size: int | None = None,
@@ -1188,8 +1190,10 @@ def run_scgpt_eval(
     lr: float | None = None,
     early_stop: int | None = None,
     split_ids: list[int] | tuple[int, ...] | None = None,
-    unseen_ctrl_eval: bool = False,
 ) -> None:
+    if eval_variant not in {"default", "unseen_ctrl"}:
+        raise ValueError("eval_variant must be one of: default, unseen_ctrl")
+    unseen_ctrl_eval = eval_variant == "unseen_ctrl"
     if name not in DATASET_CONFIG:
         raise ValueError(f"Unknown dataset: {name}")
     stack = _require_scgpt_stack()
@@ -1341,6 +1345,60 @@ def run_scgpt_eval(
     print(f"[scgpt] saved metrics: {metrics_path}")
 
 
+def run_scgpt_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    control_pool_size: int | None = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
+    eval_batch_size: int | None = None,
+    lr: float | None = None,
+    early_stop: int | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_scgpt_eval_variant(
+        name,
+        eval_variant="default",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        control_pool_size=control_pool_size,
+        epochs=epochs,
+        batch_size=batch_size,
+        eval_batch_size=eval_batch_size,
+        lr=lr,
+        early_stop=early_stop,
+        split_ids=split_ids,
+    )
+
+
+def run_scgpt_unseen_ctrl_eval(
+    name: str,
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    control_pool_size: int | None = None,
+    epochs: int | None = None,
+    batch_size: int | None = None,
+    eval_batch_size: int | None = None,
+    lr: float | None = None,
+    early_stop: int | None = None,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+) -> None:
+    return _run_scgpt_eval_variant(
+        name,
+        eval_variant="unseen_ctrl",
+        base_seed=base_seed,
+        export_notebook_pkl=export_notebook_pkl,
+        control_pool_size=control_pool_size,
+        epochs=epochs,
+        batch_size=batch_size,
+        eval_batch_size=eval_batch_size,
+        lr=lr,
+        early_stop=early_stop,
+        split_ids=split_ids,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run scGPT eval with TriShift metrics")
     parser.add_argument("--profile", default="", help="dataset profile under scripts/scgpt/eval/configs")
@@ -1373,7 +1431,8 @@ def main(argv: list[str] | None = None) -> None:
     if profile:
         prof = _load_profile(profile)
         task_args = prof["task_args"]
-        run_scgpt_eval(
+        runner = run_scgpt_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_scgpt_eval
+        runner(
             prof["dataset"],
             base_seed=int(task_args.get("seed", 24)) if int(args.seed) == 24 else int(args.seed),
             export_notebook_pkl=(
@@ -1413,13 +1472,13 @@ def main(argv: list[str] | None = None) -> None:
                 else int(args.early_stop)
             ),
             split_ids=[DATASET_CONFIG[prof["dataset"]].splits[0]] if bool(args.fast) else None,
-            unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
         )
         return
 
     if not str(args.name).strip():
         raise ValueError("Either --profile or --name must be provided")
-    run_scgpt_eval(
+    runner = run_scgpt_unseen_ctrl_eval if bool(args.unseen_ctrl_eval) else run_scgpt_eval
+    runner(
         args.name,
         base_seed=int(args.seed),
         export_notebook_pkl=False if bool(args.fast) else not bool(args.no_export_notebook_pkl),
@@ -1430,7 +1489,6 @@ def main(argv: list[str] | None = None) -> None:
         lr=float(args.lr),
         early_stop=int(args.early_stop),
         split_ids=[DATASET_CONFIG[args.name].splits[0]] if bool(args.fast) else None,
-        unseen_ctrl_eval=bool(args.unseen_ctrl_eval),
     )
 
 
