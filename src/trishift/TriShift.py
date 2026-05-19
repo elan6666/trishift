@@ -453,6 +453,36 @@ class TriShift:
             return ctrl_adata, ctrl_adata.X, source
         raise ValueError("eval_ctrl_source must be one of: train_ctrl, target_domain_test_ctrl")
 
+    def _systema_reference_from_train_val(self, split_dict: dict, fallback_ctrl_mean: np.ndarray) -> np.ndarray:
+        """Build Systema reference from train+val perturbation centroids."""
+        ref_splits = [
+            split_dict.get("train"),
+            split_dict.get("val"),
+        ]
+        xs = []
+        conds = []
+        for split in ref_splits:
+            if split is None or getattr(split, "n_obs", 0) <= 0:
+                continue
+            xs.append(split.X)
+            conds.append(split.obs[self.data.label_key].astype(str).values)
+        if not xs:
+            return np.asarray(fallback_ctrl_mean, dtype=np.float32).reshape(-1)
+        if len(xs) == 1:
+            ref_x = xs[0]
+            ref_cond = conds[0]
+        elif any(sp.issparse(x) for x in xs):
+            ref_x = sp.vstack(xs, format="csr")
+            ref_cond = np.concatenate(conds, axis=0)
+        else:
+            ref_x = np.concatenate([np.asarray(x) for x in xs], axis=0)
+            ref_cond = np.concatenate(conds, axis=0)
+        return average_of_perturbation_centroids(
+            X=ref_x,
+            conditions=ref_cond,
+            ctrl_label=self.data.ctrl_label,
+        )
+
     @staticmethod
     def _array_summary(x: np.ndarray) -> dict:
         arr = np.asarray(x, dtype=np.float32)
@@ -3268,16 +3298,10 @@ class TriShift:
             target_ctrl_expr = self._select_dense(X_ctrl, np.arange(int(X_ctrl.shape[0])))
 
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})
-        train_adata = split_dict.get("train", None)
-        if train_adata is not None:
-            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
-            pert_reference = average_of_perturbation_centroids(
-                X=train_adata.X,
-                conditions=train_cond_arr,
-                ctrl_label=self.data.ctrl_label,
-            )
-        else:
-            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
+        pert_reference = self._systema_reference_from_train_val(
+            split_dict,
+            fallback_ctrl_mean=ctrl_mean_all,
+        )
 
         for cond in conds:
             cond_mask_all = cond_series_all == cond
@@ -3461,16 +3485,10 @@ class TriShift:
             ctrl_mean_all = np.asarray(X_ctrl.mean(axis=0), dtype=np.float32).reshape(1, -1)
         else:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
-        train_adata = split_dict.get("train", None)
-        if train_adata is not None:
-            train_cond_arr = train_adata.obs[self.data.label_key].astype(str).values
-            pert_reference = average_of_perturbation_centroids(
-                X=train_adata.X,
-                conditions=train_cond_arr,
-                ctrl_label=self.data.ctrl_label,
-            )
-        else:
-            pert_reference = np.asarray(ctrl_mean_all, dtype=np.float32).reshape(-1)
+        pert_reference = self._systema_reference_from_train_val(
+            split_dict,
+            fallback_ctrl_mean=ctrl_mean_all,
+        )
 
         gene_names = self._get_gene_names()
         degs_non_dropout = self.data.adata_all.uns.get("top20_degs_non_dropout", {})

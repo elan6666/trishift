@@ -853,11 +853,14 @@ def _build_prediction_bundle(
 
 
 def _infer_reference_adata(eval_adata: ad.AnnData, split_meta: GearsSplitMeta) -> ad.AnnData:
-    train_conds = set(condition_sort(x) for x in split_meta.train_conds)
-    if not train_conds:
+    reference_conds = {
+        condition_sort(x)
+        for x in list(split_meta.train_conds) + list(split_meta.val_conds)
+    }
+    if not reference_conds:
         return eval_adata
     eval_conds = eval_adata.obs["condition"].astype(str).map(condition_sort)
-    mask = eval_conds.isin(train_conds | {"ctrl"}).values
+    mask = eval_conds.isin(reference_conds | {"ctrl"}).values
     if not bool(mask.any()):
         return eval_adata
     return eval_adata[mask].copy()
