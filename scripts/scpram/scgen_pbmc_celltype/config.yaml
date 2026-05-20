@@ -1,0 +1,10 @@
+dataset: scgen_pbmc_celltype
+task_args:
+  seed: 24
+  export_notebook_pkl: true
+  # Split ids are defined in scripts/scpram/_core/scpram_eval_core.py: 1..5.
+  epochs: 100
+  batch_size: 128
+  lr: 0.0005
+  latent_dim: 100
+  hidden_dim: 1000

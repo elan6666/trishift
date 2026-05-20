@@ -111,6 +111,13 @@ The TriShift entrypoint is:
 python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
 ```
 
+External baseline entrypoints for the same scGen PBMC split are:
+
+```bash
+python scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py
+python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
+```
+
 This experiment holds out cell types, not perturbations: the only perturbation is `stimulated`, so the model trains on `stimulated` responses in seen cell types and evaluates on held-out cell types using their target-domain control cells.
 To switch the prior, edit `defaults_overrides.emb_key` in:
 
@@ -122,6 +129,12 @@ Supported keys are:
 - `emb_scgen_ifnb1_zenodo_prott5`
 - `emb_scgen_ifnb1_esm2_15b`
 - `emb_scgen_ifnb1_genept`
+
+BioLORD uses the same four external IFNB1 prior keys through `task_args.prior_key` in:
+
+- `scripts/biolord/scgen_pbmc_celltype/config.yaml`
+
+BioLORD also supports `biolord_self_attribute`, which uses a generated scalar attribute (`ctrl=0`, `stimulated=1`) instead of an external prior.
 
 ## For Reproducibility
 
@@ -158,6 +171,8 @@ For the scGen PBMC case study:
 ```bash
 python scripts/data/prepare_scgen_pbmc.py
 python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
+python scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py
+python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
 ```
 
 3. Paper-figure regeneration
@@ -196,7 +211,7 @@ conda activate trishift-baselines
 Baseline repositories are not tracked directly because `external/` is a local, ignored workspace for third-party source trees, generated caches, and large intermediate files. To populate the external baselines and apply the tracked TriShift compatibility overlays, run:
 
 ```bash
-python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert,scpram
 ```
 
 If you already downloaded the baseline repositories, copy from that folder instead:
@@ -208,6 +223,7 @@ python scripts/setup/bootstrap_external_baselines.py --source-root /path/to/down
 The script places sources under `external/` and applies tracked overlays from `patches/external_overlays`. The current overlays include scGPT flash-attention compatibility files.
 
 This bootstrap step prepares source trees only. You still need the matching conda/pip environment for each baseline before running its training script.
+For the scGen PBMC baselines, `scripts/scpram/...` imports `external/scPRAM-main/scpram`, and `scripts/biolord/...` imports the installed BioLORD package while reading the local scGen `.h5ad` and IFNB1 prior files prepared by `scripts/data/prepare_scgen_pbmc.py`.
 
 ### Data download and preprocessing
 
@@ -243,6 +259,27 @@ This keeps the repository consistent across:
 - GEARS, which reads from `src/data/Data_GEARS`
 - TriShift and Systema-style evaluation, which read from `src/data/<dataset>`
 
+For the scGen PBMC case, place the scGen-preprocessed Kang PBMC file at:
+
+- `src/data/scgen/train_kang_scgen.h5ad`
+
+Then run:
+
+```bash
+python scripts/data/prepare_scgen_pbmc.py
+```
+
+The script writes `src/data/scgen/perturb_processed.h5ad` and, unless `--skip_priors` is used, writes the four IFNB1 prior pickle files under `src/data/scgen/priors`. The protein prior extraction expects:
+
+- `src/data/protein_embeddings/uniprot_prott5_human_per_protein.h5`
+- `src/data/protein_embeddings/zenodo_prott5_human_reduced_embeddings_file.h5`
+- `src/data/protein_embeddings/hf_esm2_15b_human_mouse_embeddings.npy`
+- `src/data/protein_embeddings/hf_esm2_15b_human_mouse_metadata.csv.gz`
+
+The GenePT prior extraction expects:
+
+- `src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle`
+
 ### Training and evaluation entrypoints
 
 Recommended dataset entrypoints are organized by model and dataset under `scripts/<model>/<dataset>`.
@@ -273,6 +310,8 @@ Additional baselines:
 
 - `scripts/genepert/<dataset>/run_genepert_*.py`
 - `scripts/scgpt/<dataset>/run_scgpt_*.py`
+- `scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py`
+- `scripts/biolord/<dataset>/run_biolord_*.py`
 - `scripts/systema/<dataset>/run_systema_*.py`
 
 Shared training core:

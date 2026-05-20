@@ -25,7 +25,9 @@ sys.path.insert(0, str(SRC_ROOT))
 from trishift import _utils
 from trishift._external_metrics import (
     average_of_perturbation_centroids,
+    compute_distributional_systema_metrics_from_arrays,
     compute_mean_effect_metrics,
+    compute_scpram_metrics_bundle_from_arrays,
     pearson_delta_reference_metrics,
 )
 from trishift.TriShiftData import TriShiftData
@@ -34,6 +36,7 @@ from scripts.common.split_utils import (
     split_unseen_ctrl_unseen_perturbation,
 )
 from scripts.common.yaml_utils import load_yaml_file
+from scripts.trishift._core.run_dataset_core import _split_celltype_seen_perturbation
 
 
 @dataclass(frozen=True)
@@ -924,6 +927,377 @@ def _metric_and_payload_for_conditions(
             },
         }
     return pd.DataFrame(results), export_payload
+
+
+SCGEN_BIOLORD_SELF_ATTRIBUTE_KEY = "biolord_self_attribute"
+SCGEN_BIOLORD_PRIOR_KEYS = {
+    "emb_scgen_ifnb1_uniprot_prott5",
+    "emb_scgen_ifnb1_zenodo_prott5",
+    "emb_scgen_ifnb1_esm2_15b",
+    "emb_scgen_ifnb1_genept",
+    SCGEN_BIOLORD_SELF_ATTRIBUTE_KEY,
+}
+
+
+def _array_summary(x: np.ndarray) -> dict:
+    arr = np.asarray(x, dtype=np.float32)
+    return {
+        "n_cells": int(arr.shape[0]) if arr.ndim == 2 else 0,
+        "mean": arr.mean(axis=0).astype(np.float32)
+        if arr.ndim == 2 and arr.shape[0] > 0
+        else np.asarray([], dtype=np.float32),
+        "var": arr.var(axis=0, ddof=1).astype(np.float32)
+        if arr.ndim == 2 and arr.shape[0] > 1
+        else (np.zeros(arr.shape[1], dtype=np.float32) if arr.ndim == 2 else np.asarray([], dtype=np.float32)),
+    }
+
+
+def _stable_condition_seed(base_seed: int, split_id: int, condition: str) -> int:
+    raw = f"{int(base_seed)}::{int(split_id)}::{condition}"
+    return int(sum((i + 1) * ord(ch) for i, ch in enumerate(raw)) % (2**32 - 1))
+
+
+def _scgen_metric_summary(
+    *,
+    X_true: np.ndarray,
+    X_pred: np.ndarray,
+    X_ctrl: np.ndarray,
+    degs: np.ndarray,
+    condition: str,
+    split_dict: dict,
+    split_id: int,
+    base_seed: int,
+    systema_reference: np.ndarray,
+) -> tuple[dict, dict]:
+    metric_seed = _stable_condition_seed(base_seed, split_id, condition)
+    mean_metrics = compute_mean_effect_metrics(
+        X_true=X_true,
+        X_pred=X_pred,
+        X_ctrl=X_ctrl,
+        deg_idx=degs,
+    )
+    systema_metrics = pearson_delta_reference_metrics(
+        X_true=np.asarray(X_true, dtype=np.float32).mean(axis=0),
+        X_pred=np.asarray(X_pred, dtype=np.float32).mean(axis=0),
+        reference=systema_reference,
+        top20_de_idxs=degs,
+    )
+    scpram_bundle = compute_scpram_metrics_bundle_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        deg_idx=degs,
+        n_degs=100,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    dist_bundle = compute_distributional_systema_metrics_from_arrays(
+        X_true=X_true,
+        X_pred=X_pred,
+        reference=systema_reference,
+        deg_idx=degs,
+        sample_ratio=0.8,
+        times=100,
+        seed=metric_seed,
+    )
+    metrics = {
+        **mean_metrics,
+        "systema_corr_20de_allpert": float(systema_metrics["corr_20de_allpert"]),
+        "systema_corr_deg_r2": float(systema_metrics["corr_deg_r2"]),
+        **scpram_bundle["metrics"],
+        **dist_bundle["metrics"],
+    }
+    full_summary = {
+        "metrics": dict(metrics),
+        "true": _array_summary(X_true),
+        "pred": _array_summary(X_pred),
+        "ctrl": _array_summary(X_ctrl),
+        "scpram_repeats": scpram_bundle["repeats"],
+        "scpram_wasserstein_degs_by_gene": scpram_bundle["wasserstein_degs_by_gene"],
+        "scpram_degs_used": scpram_bundle["degs_used"],
+        "systema_distributional_repeats": dist_bundle["repeats"],
+        "systema_distributional_degs_used": dist_bundle["degs_used"],
+        "metric_seed": int(metric_seed),
+        "sample_ratio": 0.8,
+        "times": 100,
+        "split_policy": split_dict.get("split_policy"),
+        "split_domain_key": split_dict.get("split_domain_key"),
+        "train_domain_values": split_dict.get("train_domain_values"),
+        "val_domain_values": split_dict.get("val_domain_values"),
+        "test_domain_values": split_dict.get("test_domain_values"),
+        "eval_ctrl_source": "target_domain_test_ctrl",
+    }
+    return metrics, full_summary
+
+
+def _resolve_scgen_prior_path(prior_key: str) -> Path:
+    paths_cfg = ROOT / "configs" / "paths.yaml"
+    obj = load_yaml_file(paths_cfg) if paths_cfg.exists() else {}
+    rel = (obj.get("embeddings") or {}).get(str(prior_key))
+    if not rel:
+        raise KeyError(f"Unknown scGen BioLORD prior key: {prior_key}")
+    p = Path(str(rel))
+    return p if p.is_absolute() else (ROOT / p).resolve()
+
+
+def _load_scgen_biolord_attribute_vector(prior_key: str, condition: str) -> tuple[np.ndarray, str]:
+    key = str(prior_key).strip()
+    if key == SCGEN_BIOLORD_SELF_ATTRIBUTE_KEY:
+        return np.asarray([1.0], dtype=np.float32), "self_generated_binary_condition"
+    if key not in SCGEN_BIOLORD_PRIOR_KEYS:
+        raise ValueError(f"Unsupported BioLORD scGen prior key={key!r}; choices={sorted(SCGEN_BIOLORD_PRIOR_KEYS)}")
+    path = _resolve_scgen_prior_path(key)
+    with path.open("rb") as handle:
+        obj = pickle.load(handle)
+    if str(condition) not in obj:
+        raise KeyError(f"{path} does not contain condition key {condition!r}")
+    vec = np.asarray(obj[str(condition)], dtype=np.float32).reshape(-1)
+    if vec.size == 0 or not np.all(np.isfinite(vec)):
+        raise ValueError(f"Invalid BioLORD scGen prior vector in {path}")
+    return vec, str(path)
+
+
+def _attach_scgen_biolord_attribute(
+    adata: ad.AnnData,
+    *,
+    prior_key: str,
+    attribute_key: str,
+    condition: str,
+) -> tuple[ad.AnnData, str]:
+    out = _normalize_condition_obs(adata)
+    out.obs = out.obs.copy()
+    out.obs["perts_name"] = out.obs["condition"].astype(str).map(condition_sort).values
+    vec, source = _load_scgen_biolord_attribute_vector(prior_key, condition)
+    attr = np.zeros((out.n_obs, int(vec.shape[0])), dtype=np.float32)
+    stim_mask = out.obs["condition"].astype(str).map(condition_sort).eq(str(condition)).values
+    attr[stim_mask, :] = vec.reshape(1, -1)
+    out.obsm[str(attribute_key)] = attr
+    return out, source
+
+
+def _scgen_split_dict(data: TriShiftData, *, split_id: int, condition: str) -> dict:
+    return _split_celltype_seen_perturbation(
+        data,
+        seed=int(split_id),
+        domain_key="cell_type",
+        domain_test_ratio=0.2,
+        val_domain_ratio=0.1,
+        perturbation_condition=str(condition),
+        include_test_ctrl_in_train=True,
+    )
+
+
+def _scgen_training_adata_from_split(
+    full_attr_adata: ad.AnnData,
+    split_dict: dict,
+    split_id: int,
+    attribute_key: str,
+) -> tuple[ad.AnnData, str]:
+    split_key = f"scgen_split{int(split_id)}"
+    frames = [
+        split_dict["train"].copy(),
+        split_dict["val"].copy(),
+        split_dict["test"][
+            split_dict["test"].obs["condition"].astype(str).map(condition_sort).ne("ctrl").values
+        ].copy(),
+    ]
+    labels = ["train", "test", "ood"]
+    parts: list[ad.AnnData] = []
+    attr_by_obs = {
+        str(idx): full_attr_adata.obsm[str(attribute_key)][pos]
+        for pos, idx in enumerate(full_attr_adata.obs_names.astype(str))
+    }
+    for frame, label in zip(frames, labels):
+        part = frame.copy()
+        part.obs[split_key] = label
+        part.obsm[str(attribute_key)] = np.vstack([attr_by_obs[str(idx)] for idx in part.obs_names.astype(str)]).astype(np.float32)
+        parts.append(part)
+    out = ad.concat(parts, join="outer", merge="same", index_unique="-biolord")
+    out.obs[split_key] = pd.Categorical(out.obs[split_key].astype(str), categories=["train", "test", "ood"])
+    return out, split_key
+
+
+def _predict_scgen_biolord(
+    *,
+    model,
+    ctrl_adata: ad.AnnData,
+    prior_key: str,
+    attribute_key: str,
+    condition: str,
+) -> np.ndarray:
+    base = ctrl_adata.copy()
+    base.obs = base.obs.copy()
+    base.obs["condition"] = str(condition)
+    pred_adata, _ = _attach_scgen_biolord_attribute(
+        base,
+        prior_key=prior_key,
+        attribute_key=attribute_key,
+        condition=condition,
+    )
+    dataset_pred = model.get_dataset(pred_adata)
+    with torch.no_grad():
+        pred_expr, _ = model.module.get_expression(dataset_pred)
+    return np.asarray(pred_expr.detach().cpu().numpy(), dtype=np.float32)
+
+
+def run_biolord_scgen_pbmc_celltype_eval(
+    *,
+    prior_key: str = "emb_scgen_ifnb1_zenodo_prott5",
+    base_seed: int = 24,
+    export_notebook_pkl: bool = True,
+    split_ids: list[int] | tuple[int, ...] | None = None,
+    max_epochs: int | None = None,
+    batch_size: int | None = None,
+    n_latent: int | None = None,
+    attribute_width: int | None = None,
+    attribute_depth: int | None = None,
+) -> None:
+    name = "scgen_pbmc_celltype"
+    condition = "stimulated"
+    attribute_key = "biolord_attribute"
+    splits = [int(x) for x in (split_ids if split_ids is not None else [1, 2, 3, 4, 5])]
+    cfg = BiolordDatasetConfig(
+        full_data_rel="data/scgen/perturb_processed.h5ad",
+        single_data_rel="data/scgen/perturb_processed.h5ad",
+        splits=splits,
+        ordered_attribute_key=attribute_key,
+        n_latent=int(32 if n_latent is None else n_latent),
+        batch_size=int(64 if batch_size is None else batch_size),
+        max_epochs=int(100 if max_epochs is None else max_epochs),
+        attribute_nn_width=int(64 if attribute_width is None else attribute_width),
+        attribute_nn_depth=int(6 if attribute_depth is None else attribute_depth),
+        n_latent_attribute_ordered=512,
+        reconstruction_penalty=1000.0,
+        unknown_attribute_penalty=10000.0,
+    )
+    biolord_mod = _require_biolord_stack()
+    full_path = _resolve_dataset_path(name, cfg.full_data_rel)
+    full_raw = _normalize_condition_obs(ad.read_h5ad(full_path))
+    full_attr_adata, attribute_source = _attach_scgen_biolord_attribute(
+        full_raw,
+        prior_key=str(prior_key),
+        attribute_key=attribute_key,
+        condition=condition,
+    )
+    data = TriShiftData(full_attr_adata, _dummy_embedding_df())
+    top20 = _build_top20_lookup(data.adata_all)
+    cond_names = _first_condition_name(data.adata_all)
+    gene_names = _gene_names_from_adata(data.adata_all)
+    out_dir = ROOT / "artifacts" / "results" / "biolord" / name / str(prior_key)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    metrics_all: list[pd.DataFrame] = []
+    for split_id in cfg.splits:
+        print(
+            f"[biolord] dataset={name} split={split_id} prior_key={prior_key} max_epochs={cfg.max_epochs}",
+            flush=True,
+        )
+        set_seeds(int(base_seed) + int(split_id))
+        split_dict = _scgen_split_dict(data, split_id=int(split_id), condition=condition)
+        train_adata, split_key = _scgen_training_adata_from_split(
+            full_attr_adata,
+            split_dict,
+            int(split_id),
+            attribute_key,
+        )
+        model = _build_model_and_train(
+            biolord_mod=biolord_mod,
+            train_adata=train_adata,
+            split_key=split_key,
+            cfg=cfg,
+            seed=int(base_seed) + int(split_id),
+        )
+        test_adata = split_dict["test"]
+        ctrl_mask = test_adata.obs["condition"].astype(str).map(condition_sort).eq("ctrl").values
+        true_mask = test_adata.obs["condition"].astype(str).map(condition_sort).eq(condition).values
+        ctrl_adata = test_adata[ctrl_mask].copy()
+        true_expr = np.asarray(_utils.densify_X(test_adata[true_mask].X), dtype=np.float32)
+        ctrl_expr = np.asarray(_utils.densify_X(ctrl_adata.X), dtype=np.float32)
+        pred_expr = _predict_scgen_biolord(
+            model=model,
+            ctrl_adata=ctrl_adata,
+            prior_key=str(prior_key),
+            attribute_key=attribute_key,
+            condition=condition,
+        )
+        degs = np.asarray(top20.get(condition, []), dtype=int).reshape(-1)
+        if degs.size == 0:
+            raise ValueError(f"Missing DEG list for condition={condition}")
+        reference = average_of_perturbation_centroids(
+            X=_utils.densify_X(split_dict["train"].X),
+            conditions=split_dict["train"].obs["condition"].astype(str).map(condition_sort).values,
+            ctrl_label="ctrl",
+        )
+        metrics, full_summary = _scgen_metric_summary(
+            X_true=true_expr,
+            X_pred=pred_expr,
+            X_ctrl=ctrl_expr,
+            degs=degs,
+            condition=condition,
+            split_dict=split_dict,
+            split_id=int(split_id),
+            base_seed=int(base_seed),
+            systema_reference=reference,
+        )
+        metrics_df = pd.DataFrame(
+            [
+                {
+                    "condition": condition,
+                    "condition_name": cond_names.get(condition, condition),
+                    **metrics,
+                    "split_id": int(split_id),
+                    "n_ensemble": int(pred_expr.shape[0]),
+                    "n_eval_ctrl": int(ctrl_expr.shape[0]),
+                    "eval_ctrl_source": "target_domain_test_ctrl",
+                    "prediction_ctrl_source": "target_domain_test_ctrl",
+                    "biolord_prior_key": str(prior_key),
+                    "biolord_attribute_source": str(attribute_source),
+                }
+            ]
+        )
+        metrics_all.append(metrics_df)
+        if export_notebook_pkl:
+            payload = {
+                condition: {
+                    "Pred": pred_expr[:, degs],
+                    "Ctrl": ctrl_expr[:, degs],
+                    "Truth": true_expr[:, degs],
+                    "Pred_full": pred_expr,
+                    "Ctrl_full": ctrl_expr,
+                    "Truth_full": true_expr,
+                    "DE_idx": degs,
+                    "DE_name": gene_names[degs],
+                    "gene_name_full": gene_names,
+                    "export_metadata": {
+                        "model": "biolord",
+                        "dataset": name,
+                        "export_is_subset": False,
+                        "export_sample_size": None,
+                        "metrics_computed_on_full": True,
+                        "eval_ctrl_source": "target_domain_test_ctrl",
+                        "prediction_ctrl_source": "target_domain_test_ctrl",
+                        "split_id": int(split_id),
+                        "split_policy": split_dict.get("split_policy"),
+                        "split_domain_key": split_dict.get("split_domain_key"),
+                        "train_domain_values": split_dict.get("train_domain_values"),
+                        "val_domain_values": split_dict.get("val_domain_values"),
+                        "test_domain_values": split_dict.get("test_domain_values"),
+                        "ordered_attribute_key": attribute_key,
+                        "biolord_prior_key": str(prior_key),
+                        "biolord_attribute_source": str(attribute_source),
+                    },
+                    "full_summary": full_summary,
+                }
+            }
+            out_pkl = out_dir / f"biolord_{name}_{split_id}.pkl"
+            with out_pkl.open("wb") as handle:
+                pickle.dump(payload, handle)
+            print(f"[biolord] saved notebook payload: {out_pkl}", flush=True)
+
+    metrics_df_all = pd.concat(metrics_all, ignore_index=True)
+    metrics_df_all.to_csv(out_dir / "metrics.csv", index=False)
+    _write_mean_metrics(out_dir / "mean_pearson.txt", metrics_df_all)
+    print(f"[biolord] saved metrics: {out_dir / 'metrics.csv'}", flush=True)
 
 
 def _config_with_overrides(

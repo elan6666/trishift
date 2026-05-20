@@ -1,0 +1,17 @@
+dataset: scgen_pbmc_celltype
+task_args:
+  seed: 24
+  export_notebook_pkl: true
+  # Change this key to switch BioLORD's IFNB1/IFN-beta ordered attribute:
+  #   emb_scgen_ifnb1_uniprot_prott5  -> UniProt official ProtT5, dim=1024
+  #   emb_scgen_ifnb1_zenodo_prott5   -> Zenodo human SwissProt ProtT5, dim=1024
+  #   emb_scgen_ifnb1_esm2_15b        -> HuggingFace ESM2-15B, dim=5120
+  #   emb_scgen_ifnb1_genept          -> GenePT IFNB1 gene embedding, dim=1536
+  #   biolord_self_attribute          -> generated scalar ctrl=0/stimulated=1, no external prior
+  prior_key: emb_scgen_ifnb1_zenodo_prott5
+  # Split ids are defined in scripts/biolord/_core/biolord_eval_core.py: 1..5.
+  max_epochs: 100
+  batch_size: 64
+  n_latent: 32
+  attribute_width: 64
+  attribute_depth: 6
