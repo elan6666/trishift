@@ -99,6 +99,7 @@ def _infer_subgroup_metadata(
     dataset: str,
     split_ids: list[int],
     model_requests: list[str],
+    result_mode: str = "default",
 ) -> pd.DataFrame:
     ref_models = [
         str(model_name)
@@ -120,6 +121,7 @@ def _infer_subgroup_metadata(
                     model_name=model_name,
                     split_id=int(split_id),
                     condition=None,
+                    result_mode=result_mode,
                 )
                 metadata_df = _build_metadata_from_payload(
                     dataset,
@@ -149,6 +151,7 @@ def run_baseline_panel(
     subgroup_filter: str | list[str] | tuple[str, ...] | None = None,
     out_root: str | Path | None = None,
     systema_root: str | Path | None = None,
+    result_mode: str = "default",
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models)
@@ -162,6 +165,7 @@ def run_baseline_panel(
         dataset=dataset_key,
         split_ids=split_list,
         model_requests=model_requests,
+        result_mode=result_mode,
     )
     out_dir = Path(out_root).resolve() if out_root else (Path("artifacts/analysis") / f"{ts_local()}_baseline_panel_{dataset_key}").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -173,7 +177,12 @@ def run_baseline_panel(
 
     for model_name in model_requests:
         try:
-            resolved = resolve_result(dataset=dataset_key, model_name=model_name, systema_root=systema_root)
+            resolved = resolve_result(
+                dataset=dataset_key,
+                model_name=model_name,
+                systema_root=systema_root,
+                result_mode=result_mode,
+            )
             metrics_df = load_metrics_df(resolved)
         except Exception as exc:
             warn_skip(f"[baseline_panel] skip model={model_name}: {exc}")
@@ -262,6 +271,7 @@ def run_baseline_panel(
             "split_ids": split_list,
             "subgroup_filter": subgroup_values,
             "systema_root": ("" if systema_root is None else str(systema_root)),
+            "result_mode": str(result_mode),
             "default_models": DEFAULT_MODEL_REQUESTS,
             "skipped_models": skipped_models,
             "out_dir": str(out_dir),
@@ -285,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--systema_root", default="")
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args(argv)
 
     result = run_baseline_panel(
@@ -294,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         systema_root=str(args.systema_root).strip() or None,
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"out_dir: {result['out_dir']}")
     if not result["ranking_df"].empty:

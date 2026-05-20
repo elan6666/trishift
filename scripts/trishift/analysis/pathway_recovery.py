@@ -350,6 +350,7 @@ def run_pathway_recovery(
     n_degs: int = 100,
     space: str = "auto",
     trishift_runs: list[dict[str, Any]] | None = None,
+    result_mode: str = "default",
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models) if trishift_runs is None else []
@@ -384,6 +385,7 @@ def run_pathway_recovery(
                     n_degs=n_degs,
                     remove_perturbed_genes=True,
                     space=space,
+                    result_mode=result_mode,
                 )
             except Exception as exc:
                 warn_skip(f"[pathway_recovery] skip trishift label={label}: {exc}")
@@ -421,6 +423,7 @@ def run_pathway_recovery(
                     n_degs=n_degs,
                     remove_perturbed_genes=True,
                     space=space,
+                    result_mode=result_mode,
                 )
             except Exception as exc:
                 warn_skip(f"[pathway_recovery] skip model={model_name}: {exc}")
@@ -473,6 +476,7 @@ def run_pathway_recovery(
             "enrichment_library": str(enrichment_library),
             "n_degs": int(n_degs),
             "space": str(space),
+            "result_mode": str(result_mode),
             "mode": "trishift_runs" if trishift_runs is not None else "models",
             "trishift_runs": trishift_runs or [],
             "per_model_dirs": per_model_dirs,
@@ -508,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n_degs", type=int, default=100)
     ap.add_argument("--space", default="auto", choices=["auto", "full_gene", "deg"])
     ap.add_argument("--trishift_runs_manifest", default="")
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args(argv)
 
     trishift_runs = None
@@ -526,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         n_degs=int(args.n_degs),
         space=str(args.space).strip(),
         trishift_runs=trishift_runs,
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

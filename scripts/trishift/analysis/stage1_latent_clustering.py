@@ -478,42 +478,71 @@ def _prepare_pbmc_data(
     *,
     stage1_deg_weight: float = 1.0,
     pbmc_deg_mode: str = "by_cell_type",
+    paths_path: str | Path = "configs/paths.yaml",
     pbmc_filter_gene_by_counts: int | bool = 3,
     pbmc_normalize_total: float | bool = 1e4,
     pbmc_log1p: bool = True,
     pbmc_n_hvg: int | bool = 1200,
 ) -> tuple[ad.AnnData, "TriShiftData", pd.DataFrame, Path | None, dict, str]:
     source_key = str(pbmc_source).strip().lower()
-    if source_key != "scvi":
-        raise ValueError("pbmc_source must be 'scvi'")
+    if source_key == "scvi":
+        scvi = _get_scvi_module()
+        adata = scvi.data.pbmc_dataset(
+            save_path=str(_pbmc_scvi_cache_dir()),
+            remove_extracted_data=False,
+        )
+        adata = sc.AnnData(adata.X, obs=adata.obs.copy(), var=adata.var.copy())
+        adata.obs_names_make_unique()
+        adata.uns = {}
+        if "str_labels" not in adata.obs.columns:
+            raise ValueError("scvi PBMC adata must contain obs['str_labels']")
+        if "batch" not in adata.obs.columns:
+            raise ValueError("scvi PBMC adata must contain obs['batch']")
+        if "gene_symbols" not in adata.var.columns:
+            raise ValueError("scvi PBMC adata must contain var['gene_symbols']")
 
-    scvi = _get_scvi_module()
-    adata = scvi.data.pbmc_dataset(
-        save_path=str(_pbmc_scvi_cache_dir()),
-        remove_extracted_data=False,
-    )
-    adata = sc.AnnData(adata.X, obs=adata.obs.copy(), var=adata.var.copy())
-    adata.obs_names_make_unique()
-    adata.uns = {}
-    if "str_labels" not in adata.obs.columns:
-        raise ValueError("scvi PBMC adata must contain obs['str_labels']")
-    if "batch" not in adata.obs.columns:
-        raise ValueError("scvi PBMC adata must contain obs['batch']")
-    if "gene_symbols" not in adata.var.columns:
-        raise ValueError("scvi PBMC adata must contain var['gene_symbols']")
+        adata.obs["cell_type"] = adata.obs["str_labels"].astype(str)
+        adata.obs["label_cell_type"] = adata.obs["str_labels"].astype(str)
+        adata.obs["condition"] = adata.obs["batch"].astype(str)
+        adata.obs["condition_raw"] = adata.obs["condition"].astype(str)
+        adata.obs["label_condition"] = adata.obs["condition"].astype(str)
+        adata.obs["label_ctrl_pert"] = "ctrl"
+        adata.obs["condition_internal"] = "ctrl"
+        adata.obs["stage1_deg_key"] = "ctrl"
+        adata.obs["str_batch"] = adata.obs["batch"].astype(str)
+        adata.var = adata.var.set_index("gene_symbols", drop=False)
+        adata.var["gene_name"] = adata.var.index.astype(str)
+    elif source_key == "scgen":
+        paths_cfg = _load_paths(paths_path)
+        dataset_path = (_repo_root() / str(paths_cfg["datasets"]["scgen_pbmc_celltype"])).resolve()
+        adata = sc.read_h5ad(dataset_path)
+        adata = sc.AnnData(adata.X.copy(), obs=adata.obs.copy(), var=adata.var.copy())
+        adata.obs_names_make_unique()
+        adata.uns = {}
+        if "cell_type" not in adata.obs.columns:
+            raise ValueError("scgen PBMC adata must contain obs['cell_type']")
+        if "condition" not in adata.obs.columns:
+            raise ValueError("scgen PBMC adata must contain obs['condition']")
+        adata.obs["cell_type"] = adata.obs["cell_type"].astype(str)
+        adata.obs["label_cell_type"] = adata.obs["cell_type"].astype(str)
+        adata.obs["condition"] = adata.obs["condition"].astype(str)
+        adata.obs["condition_raw"] = adata.obs.get("condition_raw", adata.obs["condition"]).astype(str)
+        adata.obs["label_condition"] = adata.obs["condition"].astype(str)
+        adata.obs["label_ctrl_pert"] = np.where(adata.obs["condition"].astype(str).eq("ctrl"), "ctrl", "pert")
+        adata.obs["condition_internal"] = "ctrl"
+        adata.obs["stage1_deg_key"] = adata.obs["label_cell_type"].astype(str)
+        adata.obs["str_batch"] = adata.obs["label_cell_type"].astype(str)
+        if "gene_name" in adata.var.columns:
+            adata.var = adata.var.set_index("gene_name", drop=False)
+        elif "gene_symbol" in adata.var.columns:
+            adata.var = adata.var.set_index("gene_symbol", drop=False)
+            adata.var["gene_name"] = adata.var.index.astype(str)
+        else:
+            adata.var["gene_name"] = adata.var.index.astype(str)
+    else:
+        raise ValueError("pbmc_source must be one of: scvi, scgen")
 
-    adata.obs["cell_type"] = adata.obs["str_labels"].astype(str)
-    adata.obs["label_cell_type"] = adata.obs["str_labels"].astype(str)
-    adata.obs["condition"] = adata.obs["batch"].astype(str)
-    adata.obs["condition_raw"] = adata.obs["condition"].astype(str)
-    adata.obs["label_condition"] = adata.obs["condition"].astype(str)
-    adata.obs["label_ctrl_pert"] = "ctrl"
-    adata.obs["condition_internal"] = "ctrl"
-    adata.obs["stage1_deg_key"] = "ctrl"
-    adata.obs["str_batch"] = adata.obs["batch"].astype(str)
     adata.obs["batch_id"] = adata.obs["str_batch"].astype("category").cat.codes.values
-    adata.var = adata.var.set_index("gene_symbols", drop=False)
-    adata.var["gene_name"] = adata.var.index.astype(str)
 
     preprocessor = _get_scgpt_preprocessor_cls()(
         use_key="X",
@@ -1086,8 +1115,8 @@ def run_stage1_latent_clustering(
     pbmc_deg_mode_key = str(pbmc_deg_mode).strip().lower()
     if mode_key == "pbmc_celltype" and pbmc_deg_mode_key != "by_cell_type":
         raise ValueError("pbmc_deg_mode must be 'by_cell_type'")
-    if mode_key == "pbmc_celltype" and pbmc_source_key != "scvi":
-        raise ValueError("pbmc_source must be 'scvi'")
+    if mode_key == "pbmc_celltype" and pbmc_source_key not in {"scvi", "scgen"}:
+        raise ValueError("pbmc_source must be one of: scvi, scgen")
     stage1_deg_key_obs_key = None
     pbmc_deg_cache_path = None
     pbmc_deg_weight_status = None
@@ -1128,6 +1157,7 @@ def run_stage1_latent_clustering(
             pbmc_source=pbmc_source_key,
             stage1_deg_weight=stage1_deg_weight_eff,
             pbmc_deg_mode=pbmc_deg_mode_key,
+            paths_path=paths_path,
             pbmc_filter_gene_by_counts=pbmc_filter_gene_by_counts,
             pbmc_normalize_total=pbmc_normalize_total,
             pbmc_log1p=pbmc_log1p,

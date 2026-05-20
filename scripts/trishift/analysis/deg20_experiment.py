@@ -29,6 +29,7 @@ DEFAULT_RESULT_ROOTS = {
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
     "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
+    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
 }
 DEFAULT_DEG_CACHE_ROOT = REPO_ROOT / "artifacts" / "cache" / "degs"
 
@@ -83,8 +84,14 @@ def _pkl_path(
     split_id: int,
     result_root: Path,
     variant_tag: str | None = None,
+    result_mode: str = "default",
 ) -> Path:
     model_key = _normalize_model_name(model_name)
+    mode_key = str(result_mode or "default").strip().lower()
+    if mode_key in {"unseen", "unseen_ctrl", "unseen-control"}:
+        return result_root / f"{model_key}_{dataset}_{split_id}_unseen_ctrl.pkl"
+    if mode_key not in {"", "default"}:
+        raise ValueError(f"Unsupported result_mode={result_mode!r}")
     if model_key == "trishift":
         suffix = f"_{variant_tag}" if variant_tag else ""
         return result_root / f"trishift_{dataset}_{split_id}{suffix}.pkl"
@@ -824,6 +831,7 @@ def load_condition_payload(
     condition: str,
     result_dir: str | Path | None = None,
     variant_tag: str | None = None,
+    result_mode: str = "default",
 ) -> dict[str, Any]:
     result_root = _result_root(model_name, dataset, result_dir)
     pkl_path = _pkl_path(
@@ -832,6 +840,7 @@ def load_condition_payload(
         split_id=int(split_id),
         result_root=result_root,
         variant_tag=variant_tag,
+        result_mode=result_mode,
     )
     with pkl_path.open("rb") as f:
         payload = pickle.load(f)
@@ -941,6 +950,7 @@ def run_deg20_experiment(
     remove_perturbed_genes: bool = True,
     truth_deg_cache_root: str | Path | None = None,
     space: str = "auto",
+    result_mode: str = "default",
 ) -> DEG20ExperimentResult:
     dataset_key = str(dataset).strip()
     model_key = _normalize_model_name(model_name)
@@ -963,6 +973,7 @@ def run_deg20_experiment(
             split_id=int(split_id),
             result_root=result_root,
             variant_tag=variant_tag,
+            result_mode=result_mode,
         )
         if not pkl_path.exists():
             raise FileNotFoundError(f"Missing pkl: {pkl_path}")
@@ -1029,6 +1040,7 @@ def run_deg20_experiment(
         "split_ids": split_list,
         "result_root": str(result_root),
         "variant_tag": str(variant_tag or ""),
+        "result_mode": str(result_mode),
         "n_degs": int(n_degs),
         "truth_deg_mode": str(truth_deg_mode),
         "pred_deg_mode": str(pred_deg_mode),
@@ -1089,6 +1101,7 @@ def main() -> None:
     ap.add_argument("--enrichment_library", default="Reactome_2022")
     ap.add_argument("--keep_perturbed_genes", action="store_true")
     ap.add_argument("--space", default="auto", choices=["auto", "full_gene", "deg"])
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args()
 
     focus_conditions = [x.strip() for x in str(args.focus_conditions).split(",") if x.strip()]
@@ -1107,6 +1120,7 @@ def main() -> None:
         enrichment_library=str(args.enrichment_library).strip(),
         remove_perturbed_genes=not bool(args.keep_perturbed_genes),
         space=str(args.space).strip(),
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"[deg20] out_dir={result.out_dir}")
     print(result.dataset_summary_df.to_string(index=False))

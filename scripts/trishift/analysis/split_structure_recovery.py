@@ -389,6 +389,7 @@ def run_split_structure_recovery(
     max_cells_per_condition: int = 28,
     cluster_k: int = 4,
     seed: int = 24,
+    result_mode: str = "default",
 ) -> SplitStructureRecoveryResult:
     dataset_key = str(dataset).strip()
     model_names = parse_models(models)
@@ -418,6 +419,7 @@ def run_split_structure_recovery(
                     model_name=model_name,
                     split_id=int(split_id),
                     condition=None,
+                    result_mode=result_mode,
                 )
             except Exception:
                 payload = {}
@@ -471,6 +473,7 @@ def run_split_structure_recovery(
         "max_cells_per_condition": int(max_cells_per_condition),
         "cluster_k": int(cluster_k),
         "seed": int(seed),
+        "result_mode": str(result_mode),
         "summary_csv": str(summary_csv),
         "figure_path": str(figure_path),
     }

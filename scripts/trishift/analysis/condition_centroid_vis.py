@@ -30,6 +30,7 @@ DEFAULT_RESULT_ROOTS = {
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scouter": REPO_ROOT / "artifacts" / "results" / "scouter",
     "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
+    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
 }
 
 
@@ -67,8 +68,14 @@ def _pkl_path(
     split_id: int,
     result_root: Path,
     variant_tag: str | None = None,
+    result_mode: str = "default",
 ) -> Path:
     model_key = _normalize_model_name(model_name)
+    mode_key = str(result_mode or "default").strip().lower()
+    if mode_key in {"unseen", "unseen_ctrl", "unseen-control"}:
+        return result_root / f"{model_key}_{dataset}_{split_id}_unseen_ctrl.pkl"
+    if mode_key not in {"", "default"}:
+        raise ValueError(f"Unsupported result_mode={result_mode!r}")
     if model_key in {"trishift", "scouter"}:
         suffix = f"_{variant_tag}" if variant_tag else ""
         return result_root / f"{model_key}_{dataset}_{split_id}{suffix}.pkl"
@@ -559,6 +566,7 @@ def run_condition_centroid_visualization(
     umap_min_dist: float = 0.15,
     save_dpi: int = 420,
     seed: int = 24,
+    result_mode: str = "default",
 ) -> ConditionCentroidVisResult:
     model_key = _normalize_model_name(model_name)
     root = _result_root(model_key, dataset, result_dir)
@@ -571,6 +579,7 @@ def run_condition_centroid_visualization(
         split_id=int(split_id),
         result_root=root,
         variant_tag=variant_clean,
+        result_mode=result_mode,
     )
     payload = _load_payload(pkl_path)
 
@@ -641,6 +650,7 @@ def run_condition_centroid_visualization(
     summary_export["split_id"] = int(split_id)
     summary_export["feature_mode"] = str(feature_mode).strip().lower()
     summary_export["variant_tag"] = str(variant_clean or "")
+    summary_export["result_mode"] = str(result_mode)
     summary_export["include_ctrl"] = bool(include_ctrl)
     summary_export["plot_delta"] = bool(plot_delta)
     summary_export["umap_n_neighbors"] = ("" if umap_meta.get("n_neighbors") is None else umap_meta["n_neighbors"])
@@ -653,6 +663,7 @@ def run_condition_centroid_visualization(
         "dataset": str(dataset),
         "split_id": int(split_id),
         "variant_tag": str(variant_clean or ""),
+        "result_mode": str(result_mode),
         "feature_mode": str(feature_mode).strip().lower(),
         "include_ctrl": bool(include_ctrl),
         "plot_delta": bool(plot_delta),
@@ -688,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--umap_min_dist", type=float, default=0.15)
     ap.add_argument("--save_dpi", type=int, default=420)
     ap.add_argument("--seed", type=int, default=24)
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args(argv)
 
     result = run_condition_centroid_visualization(
@@ -704,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         umap_min_dist=float(args.umap_min_dist),
         save_dpi=int(args.save_dpi),
         seed=int(args.seed),
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"out_dir: {result.out_dir}")
     print(result.summary_df.to_string(index=False))

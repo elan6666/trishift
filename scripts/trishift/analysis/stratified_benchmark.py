@@ -206,13 +206,24 @@ def _build_metadata_from_payload(
     return pd.DataFrame(rows)
 
 
-def _choose_reference_payload_model(dataset: str, models: list[str], split_id: int) -> str | None:
+def _choose_reference_payload_model(
+    dataset: str,
+    models: list[str],
+    split_id: int,
+    result_mode: str = "default",
+) -> str | None:
     for model_name in models:
         spec = resolve_model_spec(model_name)
         if spec.kind != "payload":
             continue
         try:
-            load_payload_item(dataset=dataset, model_name=model_name, split_id=int(split_id), condition=None)
+            load_payload_item(
+                dataset=dataset,
+                model_name=model_name,
+                split_id=int(split_id),
+                condition=None,
+                result_mode=result_mode,
+            )
             return model_name
         except Exception:
             continue
@@ -491,6 +502,7 @@ def run_stratified_benchmark(
     out_root: str | Path | None = None,
     paths_path: str | Path = "configs/paths.yaml",
     systema_root: str | Path | None = None,
+    result_mode: str = "default",
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models)
@@ -504,7 +516,12 @@ def run_stratified_benchmark(
     skipped_models: list[dict[str, Any]] = []
 
     for split_id in split_list:
-        ref_model = _choose_reference_payload_model(dataset_key, model_requests, int(split_id))
+        ref_model = _choose_reference_payload_model(
+            dataset_key,
+            model_requests,
+            int(split_id),
+            result_mode=result_mode,
+        )
         if ref_model is None:
             message = f"[stratified] no payload-backed reference model for dataset={dataset_key} split={split_id}"
             metadata_messages.append(message)
@@ -512,7 +529,13 @@ def run_stratified_benchmark(
             continue
         try:
             split_dict = _load_dataset_split(dataset_key, int(split_id), paths_path)
-            _, payload = load_payload_item(dataset=dataset_key, model_name=ref_model, split_id=int(split_id), condition=None)
+            _, payload = load_payload_item(
+                dataset=dataset_key,
+                model_name=ref_model,
+                split_id=int(split_id),
+                condition=None,
+                result_mode=result_mode,
+            )
             metadata_frames.append(
                 _build_metadata_from_payload(
                     dataset_key,
@@ -553,7 +576,12 @@ def run_stratified_benchmark(
     merged_frames: list[pd.DataFrame] = []
     for model_name in model_requests:
         try:
-            resolved = resolve_result(dataset=dataset_key, model_name=model_name, systema_root=systema_root)
+            resolved = resolve_result(
+                dataset=dataset_key,
+                model_name=model_name,
+                systema_root=systema_root,
+                result_mode=result_mode,
+            )
             metrics_df = load_metrics_df(resolved)
         except Exception as exc:
             warn_skip(f"[stratified] skip model={model_name}: {exc}")
@@ -646,6 +674,7 @@ def run_stratified_benchmark(
             "models": model_requests,
             "split_ids": split_list,
             "paths_path": str(Path(paths_path).resolve()),
+            "result_mode": str(result_mode),
             "thresholds": thresholds,
             "rendered_metrics": rendered_metrics,
             "metadata_messages": metadata_messages,
@@ -674,6 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out_root", default="")
     ap.add_argument("--paths_path", default="configs/paths.yaml")
     ap.add_argument("--systema_root", default="")
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args(argv)
 
     result = run_stratified_benchmark(
@@ -683,6 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         out_root=str(args.out_root).strip() or None,
         paths_path=str(args.paths_path).strip(),
         systema_root=str(args.systema_root).strip() or None,
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

@@ -172,8 +172,19 @@ def _systema_predictions_for_split(
     return out
 
 
-def _payload_predictions_for_split(dataset: str, model_name: str, split_id: int) -> dict[str, np.ndarray]:
-    _, payload = load_payload_item(dataset=dataset, model_name=model_name, split_id=int(split_id), condition=None)
+def _payload_predictions_for_split(
+    dataset: str,
+    model_name: str,
+    split_id: int,
+    result_mode: str = "default",
+) -> dict[str, np.ndarray]:
+    _, payload = load_payload_item(
+        dataset=dataset,
+        model_name=model_name,
+        split_id=int(split_id),
+        condition=None,
+        result_mode=result_mode,
+    )
     out: dict[str, np.ndarray] = {}
     for cond, item in payload.items():
         cond_key = normalize_condition(str(cond))
@@ -245,6 +256,7 @@ def run_systema_mechanism_analysis(
     subgroup_filter: str | list[str] | tuple[str, ...] | None = None,
     out_root: str | Path | None = None,
     paths_path: str | Path = "configs/paths.yaml",
+    result_mode: str = "default",
 ) -> dict[str, Any]:
     dataset_key = str(dataset).strip()
     model_requests = parse_models(models)
@@ -295,7 +307,13 @@ def run_systema_mechanism_analysis(
             if spec.kind != "payload":
                 continue
             try:
-                _, payload_for_metadata = load_payload_item(dataset=dataset_key, model_name=model_name, split_id=int(split_id), condition=None)
+                _, payload_for_metadata = load_payload_item(
+                    dataset=dataset_key,
+                    model_name=model_name,
+                    split_id=int(split_id),
+                    condition=None,
+                    result_mode=result_mode,
+                )
                 payload_for_metadata_model = model_name
                 active_test_conds = sorted({normalize_condition(str(c)) for c in payload_for_metadata.keys()})
                 metadata_df_for_split = _build_metadata_from_payload(
@@ -325,7 +343,12 @@ def run_systema_mechanism_analysis(
             spec = resolve_model_spec(model_name)
             try:
                 if spec.kind == "payload":
-                    pred_map = _payload_predictions_for_split(dataset_key, model_name, int(split_id))
+                    pred_map = _payload_predictions_for_split(
+                        dataset_key,
+                        model_name,
+                        int(split_id),
+                        result_mode=result_mode,
+                    )
                 elif spec.request_id in {"systema_nonctl_mean", "systema_matching_mean"}:
                     pred_map = systema_pred_map[spec.request_id]
                 else:
@@ -432,6 +455,7 @@ def run_systema_mechanism_analysis(
             "split_ids": split_list,
             "subgroup_filter": subgroup_values,
             "paths_path": str(_resolve_paths_yaml(paths_path)),
+            "result_mode": str(result_mode),
             "out_dir": str(out_dir),
             "skipped_models": skipped_models,
         },
@@ -456,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--paths_path", default="configs/paths.yaml")
+    ap.add_argument("--result_mode", default="default")
     args = ap.parse_args(argv)
     result = run_systema_mechanism_analysis(
         dataset=str(args.dataset).strip(),
@@ -464,6 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         paths_path=str(args.paths_path).strip(),
+        result_mode=str(args.result_mode).strip() or "default",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

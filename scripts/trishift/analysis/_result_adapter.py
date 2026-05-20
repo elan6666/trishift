@@ -27,6 +27,7 @@ DEFAULT_PAYLOAD_ROOTS = {
     "gears": REPO_ROOT / "artifacts" / "results" / "gears",
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
+    "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
 }
 
 DATASET_EMBEDDING_KEYS = {
@@ -122,12 +123,13 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
         return ModelSpec(key, "payload", "trishift", "nearest", "TriShift nearest")
     if key == "trishift_random":
         return ModelSpec(key, "payload", "trishift", "random", "TriShift random")
-    if key in {"scouter", "gears", "genepert", "scgpt"}:
+    if key in {"scouter", "gears", "genepert", "scgpt", "biolord"}:
         label_map = {
             "scouter": "Scouter",
             "gears": "GEARS",
             "genepert": "GenePert",
             "scgpt": "scGPT",
+            "biolord": "biolord",
         }
         return ModelSpec(key, "payload", key, None, label_map[key])
     if key == "systema_nonctl_mean":
@@ -150,7 +152,18 @@ def default_systema_root(dataset: str) -> Path:
     return candidates[-1]
 
 
-def metrics_filename_for_spec(spec: ModelSpec) -> str:
+def _normalize_result_mode(result_mode: str | None) -> str:
+    mode = str(result_mode or "default").strip().lower()
+    if mode in {"", "default"}:
+        return "default"
+    if mode in {"unseen", "unseen_ctrl", "unseen-control"}:
+        return "unseen_ctrl"
+    raise ValueError(f"Unsupported result_mode={result_mode!r}")
+
+
+def metrics_filename_for_spec(spec: ModelSpec, result_mode: str | None = "default") -> str:
+    if _normalize_result_mode(result_mode) == "unseen_ctrl" and spec.kind == "payload":
+        return "metrics_unseen_ctrl.csv"
     if spec.kind == "systema":
         return "metrics.csv"
     if spec.base_model == "trishift" and spec.variant_tag:
@@ -158,7 +171,9 @@ def metrics_filename_for_spec(spec: ModelSpec) -> str:
     return "metrics.csv"
 
 
-def mean_filename_for_spec(spec: ModelSpec) -> str:
+def mean_filename_for_spec(spec: ModelSpec, result_mode: str | None = "default") -> str:
+    if _normalize_result_mode(result_mode) == "unseen_ctrl" and spec.kind == "payload":
+        return "mean_pearson_unseen_ctrl.txt"
     if spec.kind == "systema":
         return "mean_pearson.txt"
     if spec.base_model == "trishift" and spec.variant_tag:
@@ -166,14 +181,32 @@ def mean_filename_for_spec(spec: ModelSpec) -> str:
     return "mean_pearson.txt"
 
 
-def payload_filename(base_model: str, dataset: str, split_id: int, variant_tag: str | None) -> str:
+def payload_filename(
+    base_model: str,
+    dataset: str,
+    split_id: int,
+    variant_tag: str | None,
+    result_mode: str | None = "default",
+) -> str:
+    if _normalize_result_mode(result_mode) == "unseen_ctrl":
+        return f"{base_model}_{dataset}_{int(split_id)}_unseen_ctrl.pkl"
     suffix = f"_{variant_tag}" if variant_tag and base_model in {"trishift", "scouter"} else ""
     return f"{base_model}_{dataset}_{int(split_id)}{suffix}.pkl"
 
 
-def _discover_available_payload_splits(root: Path, base_model: str, dataset: str, variant_tag: str | None) -> list[int]:
+def _discover_available_payload_splits(
+    root: Path,
+    base_model: str,
+    dataset: str,
+    variant_tag: str | None,
+    result_mode: str | None = "default",
+) -> list[int]:
     prefix = f"{base_model}_{dataset}_"
-    suffix = f"_{variant_tag}.pkl" if variant_tag and base_model in {"trishift", "scouter"} else ".pkl"
+    suffix = (
+        "_unseen_ctrl.pkl"
+        if _normalize_result_mode(result_mode) == "unseen_ctrl"
+        else (f"_{variant_tag}.pkl" if variant_tag and base_model in {"trishift", "scouter"} else ".pkl")
+    )
     out: list[int] = []
     for p in root.glob(f"{prefix}*{suffix}"):
         name = p.name
@@ -203,7 +236,8 @@ def _select_metrics_root(
 ) -> Path:
     expected = set(int(x) for x in payload_split_ids)
     candidates = [root]
-    candidates.extend(sorted([p for p in root.iterdir() if p.is_dir()]))
+    if root.exists():
+        candidates.extend(sorted([p for p in root.iterdir() if p.is_dir()]))
 
     best_root = root
     best_score = (-1, -1, -1.0)
@@ -227,19 +261,27 @@ def resolve_result(
     model_name: str,
     result_dir: str | Path | None = None,
     systema_root: str | Path | None = None,
+    result_mode: str | None = "default",
 ) -> ResolvedResult:
     spec = resolve_model_spec(model_name)
     dataset_key = str(dataset).strip()
+    mode_key = _normalize_result_mode(result_mode)
     if spec.kind == "payload":
         payload_root = Path(result_dir).resolve() if result_dir else default_payload_root(spec.base_model or "", dataset_key)
-        split_ids = _discover_available_payload_splits(payload_root, spec.base_model or "", dataset_key, spec.variant_tag)
+        split_ids = _discover_available_payload_splits(
+            payload_root,
+            spec.base_model or "",
+            dataset_key,
+            spec.variant_tag,
+            result_mode=mode_key,
+        )
         metrics_root = _select_metrics_root(
             payload_root,
-            metrics_filename_for_spec(spec),
+            metrics_filename_for_spec(spec, result_mode=mode_key),
             split_ids,
         )
-        metrics_path = metrics_root / metrics_filename_for_spec(spec)
-        mean_path = metrics_root / mean_filename_for_spec(spec)
+        metrics_path = metrics_root / metrics_filename_for_spec(spec, result_mode=mode_key)
+        mean_path = metrics_root / mean_filename_for_spec(spec, result_mode=mode_key)
         return ResolvedResult(
             spec=spec,
             dataset=dataset_key,
@@ -300,8 +342,9 @@ def load_payload_item(
     split_id: int,
     condition: str | None = None,
     result_dir: str | Path | None = None,
+    result_mode: str | None = "default",
 ) -> dict[str, Any] | tuple[Path, dict[str, Any]]:
-    resolved = resolve_result(dataset=dataset, model_name=model_name, result_dir=result_dir)
+    resolved = resolve_result(dataset=dataset, model_name=model_name, result_dir=result_dir, result_mode=result_mode)
     if resolved.payload_dir is None or resolved.spec.base_model is None:
         raise ValueError(f"{model_name} does not provide payload PKLs")
     pkl_path = resolved.payload_dir / payload_filename(
@@ -309,6 +352,7 @@ def load_payload_item(
         dataset,
         split_id,
         resolved.spec.variant_tag,
+        result_mode=result_mode,
     )
     if not pkl_path.exists():
         raise FileNotFoundError(pkl_path)
