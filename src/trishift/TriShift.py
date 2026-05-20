@@ -3,10 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pickle
+import math
 import torch
 import torch.nn.functional as F
 import scipy.sparse as sp
-from torch.utils.data import DataLoader, Dataset, TensorDataset
+from torch.utils.data import DataLoader, Dataset, Sampler, TensorDataset
 from tqdm import tqdm
 
 from trishift._model import TriShiftNet, aggregate_cond_embedding
@@ -228,6 +229,7 @@ class _TopKTrainDataset(Dataset):
         self.label_key = label_key
         self.ctrl_X = _utils.densify_X(self.ctrl_adata.X).astype(np.float32, copy=False)
         self.pert_X = _utils.densify_X(self.pert_adata.X).astype(np.float32, copy=False)
+        self.cond_str = self.pert_adata.obs[self.label_key].astype(str).values
         self.z_ctrl_mu = z_ctrl_mu
         self.z_pert_mu = z_pert_mu
         self.soft_ot_weighted_delta = bool(soft_ot_weighted_delta)
@@ -290,8 +292,69 @@ class _TopKTrainDataset(Dataset):
             delta_target = z_pert_mu - z_ctrl_mu
 
         idx_list = self.pert_adata.obs[self.key_name].iloc[pert_i]
-        cond_str = self.pert_adata.obs[self.label_key].iloc[pert_i]
+        cond_str = self.cond_str[pert_i]
         return ctrl_expr, true_expr, idx_list, cond_str, z_ctrl_mu, z_pert_mu, delta_target
+
+
+class _OneConditionBatchSampler(Sampler[list[int]]):
+    """Yield mini-batches whose perturbed cells all share one condition."""
+
+    def __init__(
+        self,
+        cond_values,
+        batch_size: int,
+        *,
+        shuffle: bool,
+        seed: int,
+        steps_per_epoch: int | None = None,
+    ):
+        self.batch_size = int(batch_size)
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        self.shuffle = bool(shuffle)
+        self.seed = int(seed)
+        cond_arr = np.asarray(cond_values, dtype=str)
+        self.cond_to_idx = {
+            str(cond): np.where(cond_arr == str(cond))[0].astype(int)
+            for cond in np.unique(cond_arr)
+        }
+        self.conditions = sorted(self.cond_to_idx)
+        if not self.conditions:
+            raise ValueError("one-condition batch sampler requires at least one condition")
+        if steps_per_epoch is None:
+            if self.shuffle:
+                steps_per_epoch = max(1, math.ceil(cond_arr.size / self.batch_size))
+            else:
+                steps_per_epoch = sum(
+                    max(1, math.ceil(idx.size / self.batch_size))
+                    for idx in self.cond_to_idx.values()
+                )
+        self.steps_per_epoch = int(max(1, steps_per_epoch))
+        self._epoch = 0
+
+    def __len__(self) -> int:
+        return self.steps_per_epoch
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self._epoch)
+        self._epoch += 1
+        if self.shuffle:
+            for _ in range(self.steps_per_epoch):
+                cond = self.conditions[int(rng.integers(0, len(self.conditions)))]
+                idx = self.cond_to_idx[cond]
+                yield rng.choice(idx, size=self.batch_size, replace=True).astype(int).tolist()
+            return
+
+        batches: list[list[int]] = []
+        for cond in self.conditions:
+            idx = self.cond_to_idx[cond].copy()
+            for start in range(0, idx.size, self.batch_size):
+                batch = idx[start : start + self.batch_size]
+                if batch.size == 0:
+                    continue
+                batches.append(batch.astype(int).tolist())
+        for batch in batches:
+            yield batch
 
 
 class _Stage3PairDataset(Dataset):
@@ -1251,9 +1314,25 @@ class TriShift:
         shuffle: bool,
         num_workers: int,
         pin_memory: bool,
+        one_condition_batch: bool = False,
+        seed: int = 0,
     ) -> DataLoader | None:
         if dataset is None:
             return None
+        if one_condition_batch:
+            sampler = _OneConditionBatchSampler(
+                dataset.cond_str,
+                batch_size,
+                shuffle=shuffle,
+                seed=seed,
+            )
+            return DataLoader(
+                dataset,
+                batch_sampler=sampler,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                collate_fn=_collate_with_latent,
+            )
         return DataLoader(
             dataset,
             batch_size=batch_size,
@@ -1262,6 +1341,52 @@ class TriShift:
             pin_memory=pin_memory,
             collate_fn=_collate_with_latent,
         )
+
+    @staticmethod
+    def _mmd_pairwise_sq_dists(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return torch.cdist(x.float(), y.float(), p=2).pow(2)
+
+    @staticmethod
+    def _mmd_median_sigmas(x: torch.Tensor, scales: tuple[float, ...]) -> list[float]:
+        if x.shape[0] < 2:
+            return [1.0]
+        with torch.no_grad():
+            d2 = TriShift._mmd_pairwise_sq_dists(x, x)
+            mask = ~torch.eye(d2.shape[0], dtype=torch.bool, device=d2.device)
+            vals = d2[mask]
+            if vals.numel() == 0:
+                return [1.0]
+            median = torch.median(vals).clamp_min(1e-12)
+            sigmas = torch.sqrt(torch.as_tensor(scales, device=x.device, dtype=x.float().dtype) * median)
+        return [float(s.item()) for s in sigmas]
+
+    @staticmethod
+    def _mmd2_unbiased_multi_sigma(
+        x_pred: torch.Tensor,
+        x_true: torch.Tensor,
+        sigmas: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
+    ) -> torch.Tensor:
+        if x_pred.shape[0] < 2 or x_true.shape[0] < 2:
+            return torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
+        x = x_pred.float()
+        y = x_true.float()
+        sigma_vals = TriShift._mmd_median_sigmas(y, sigmas)
+        dxx = TriShift._mmd_pairwise_sq_dists(x, x)
+        dyy = TriShift._mmd_pairwise_sq_dists(y, y)
+        dxy = TriShift._mmd_pairwise_sq_dists(x, y)
+        m = x.shape[0]
+        n = y.shape[0]
+        vals = []
+        for sigma in sigma_vals:
+            beta = 1.0 / (2.0 * (float(sigma) ** 2) + 1e-12)
+            kxx = torch.exp(-beta * dxx)
+            kyy = torch.exp(-beta * dyy)
+            kxy = torch.exp(-beta * dxy)
+            term_xx = (kxx.sum() - kxx.diag().sum()) / (m * (m - 1) + 1e-12)
+            term_yy = (kyy.sum() - kyy.diag().sum()) / (n * (n - 1) + 1e-12)
+            vals.append(term_xx + term_yy - 2.0 * kxy.mean())
+        loss = torch.stack(vals).mean()
+        return loss.to(dtype=x_pred.dtype)
 
     @staticmethod
     def _compute_expression_loss(
@@ -2071,6 +2196,10 @@ class TriShift:
         disable_loss_z_supervision: bool = False,
         reuse_ot_cache: bool = False,
         topk_cache_key: str | None = None,
+        one_condition_batch: bool = False,
+        mmd_enable: bool = False,
+        mmd_weight: float = 0.5,
+        mmd_scales: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0),
     ) -> dict:
         """Jointly train shift predictor and generator with OT-matched pairs.
 
@@ -2108,6 +2237,10 @@ class TriShift:
             stage3_ecs_patience: Stage3 ECS fine-tune early stopping patience.
             stage3_ecs_min_delta: Stage3 ECS fine-tune early stopping minimum improvement.
             disable_loss_z_supervision: If true, do not supervise delta_z (no loss_z).
+            one_condition_batch: If true, each stage23 batch contains one perturbation condition.
+            mmd_enable: Add scDFM-style multi-sigma RBF MMD on predicted vs true expression.
+            mmd_weight: MMD loss weight.
+            mmd_scales: Multipliers for the median-distance kernel bandwidth.
 
         Returns:
             dict with per-epoch loss logs.
@@ -2123,6 +2256,14 @@ class TriShift:
             "[stage23] start joint training: "
             f"mode={mode}, k={k}, split_id={split_id}, epochs={epochs}, "
             f"lambda_neg_expr={lambda_neg_expr}, neg_expr_penalty={neg_expr_penalty}"
+        )
+        mmd_active = bool(mmd_enable) and float(mmd_weight) > 0.0
+        mmd_scales = tuple(float(s) for s in mmd_scales)
+        print(
+            "[stage23] condition-batch/mmd: "
+            f"one_condition_batch={bool(one_condition_batch)}, "
+            f"mmd_enable={bool(mmd_enable)}, mmd_active={mmd_active}, "
+            f"mmd_weight={float(mmd_weight)}, mmd_scales={mmd_scales}"
         )
         stage3_ecs_active = (
             bool(stage3_ecs_enable)
@@ -2245,6 +2386,8 @@ class TriShift:
             shuffle=True,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            one_condition_batch=one_condition_batch,
+            seed=base_seed + split_id,
         )
         val_loader = self._build_topk_loader(
             dataset=val_dataset,
@@ -2252,6 +2395,8 @@ class TriShift:
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            one_condition_batch=one_condition_batch,
+            seed=base_seed + split_id + 10_000,
         )
         for p in self.net.vae.parameters():
             p.requires_grad = False
@@ -2297,6 +2442,7 @@ class TriShift:
             epoch_loss_expr = 0.0
             epoch_loss_expr_neg = 0.0
             epoch_loss_z = 0.0
+            epoch_loss_mmd = 0.0
             optimizer.zero_grad(set_to_none=True)
             for step, (x_ctrl, x_true, idx_list, cond_str, z_ctrl_mu, _, delta_target) in enumerate(
                 tqdm(loader, desc=f"stage23 {epoch+1}/{epochs}", leave=False)
@@ -2328,9 +2474,17 @@ class TriShift:
                         lambda_neg_expr=lambda_neg_expr,
                         neg_expr_penalty=neg_expr_penalty,
                     )
+                    loss_mmd = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
+                    if mmd_active:
+                        loss_mmd = self._mmd2_unbiased_multi_sigma(
+                            x_pred,
+                            x_true,
+                            sigmas=mmd_scales,
+                        )
                     if disable_loss_z_supervision:
                         loss_z = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
-                        loss = loss_expr / grad_accum_steps
+                        loss_total = loss_expr + float(mmd_weight) * loss_mmd
+                        loss = loss_total / grad_accum_steps
                     else:
                         if shift_pred is None:
                             raise RuntimeError("shift_pred is required when shift supervision is enabled")
@@ -2343,7 +2497,8 @@ class TriShift:
                             gamma=gamma,
                             lambda_dir_z=lambda_dir_z,
                         )
-                        loss = (loss_expr + lambda_z * loss_z) / grad_accum_steps
+                        loss_total = loss_expr + lambda_z * loss_z + float(mmd_weight) * loss_mmd
+                        loss = loss_total / grad_accum_steps
                 scaler.scale(loss).backward()
                 if (step + 1) % grad_accum_steps == 0:
                     scaler.step(optimizer)
@@ -2353,6 +2508,7 @@ class TriShift:
                 epoch_loss_expr += loss_expr.item()
                 epoch_loss_expr_neg += loss_expr_neg.item()
                 epoch_loss_z += loss_z.item()
+                epoch_loss_mmd += loss_mmd.item()
 
             denom = max(len(loader), 1)
             avg_loss = epoch_loss / denom
@@ -2389,8 +2545,15 @@ class TriShift:
                             lambda_neg_expr=lambda_neg_expr,
                             neg_expr_penalty=neg_expr_penalty,
                         )
+                        loss_mmd = torch.zeros((), device=x_pred.device, dtype=x_pred.dtype)
+                        if mmd_active:
+                            loss_mmd = self._mmd2_unbiased_multi_sigma(
+                                x_pred,
+                                x_true,
+                                sigmas=mmd_scales,
+                            )
                         if disable_loss_z_supervision:
-                            val_total += loss_expr.item()
+                            val_total += (loss_expr + float(mmd_weight) * loss_mmd).item()
                         else:
                             if shift_pred is None:
                                 raise RuntimeError(
@@ -2405,7 +2568,9 @@ class TriShift:
                                 gamma=gamma,
                                 lambda_dir_z=lambda_dir_z,
                             )
-                            val_total += (loss_expr + lambda_z * loss_z).item()
+                            val_total += (
+                                loss_expr + lambda_z * loss_z + float(mmd_weight) * loss_mmd
+                            ).item()
                 val_loss = val_total / max(len(val_loader), 1)
                 self.net.shift.train()
                 self.net.gen.train()
@@ -2415,6 +2580,7 @@ class TriShift:
                     "loss_expr": epoch_loss_expr / denom,
                     "loss_expr_neg": epoch_loss_expr_neg / denom,
                     "loss_z": epoch_loss_z / denom,
+                    "loss_mmd": epoch_loss_mmd / denom,
                     "val_loss": val_loss,
                 }
             )

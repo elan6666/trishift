@@ -89,6 +89,19 @@ train:
     epochs: 40
     # Stage2/3 的 batch size（joint/sequential/stage3_only 都走这里）。
     batch_size: 256
+    # joint stage23 中是否让每个 mini-batch 只包含一种扰动；control 仍从 TriShift top-k matched pool 取。
+    one_condition_batch: false
+    mmd:
+      # 是否添加 scDFM 风格的 multi-sigma RBF MMD 分布损失。
+      enable: false
+      # MMD loss 权重；对齐 scDFM 示例脚本的 gamma=0.5。
+      weight: 0.5
+      # median bandwidth 的多尺度系数，对齐 scDFM: 0.5, 1, 2, 4。
+      scales:
+      - 0.5
+      - 1.0
+      - 2.0
+      - 4.0
     # joint 学习率。
     lr: 0.001
     sched_gamma: 0.9

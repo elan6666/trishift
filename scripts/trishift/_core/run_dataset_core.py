@@ -1745,6 +1745,15 @@ def run_dataset_with_paths(
                 disable_loss_z_supervision=disable_loss_z_supervision,
                 reuse_ot_cache=reuse_ot_cache,
                 topk_cache_key=topk_cache_key,
+                one_condition_batch=bool(stage23_cfg.get("one_condition_batch", False)),
+                mmd_enable=bool(stage23_cfg.get("mmd", {}).get("enable", False)),
+                mmd_weight=float(stage23_cfg.get("mmd", {}).get("weight", 0.5)),
+                mmd_scales=tuple(
+                    float(v)
+                    for v in stage23_cfg.get("mmd", {}).get(
+                        "scales", [0.5, 1.0, 2.0, 4.0]
+                    )
+                ),
             )
 
         train_log_pkl = out_dir_path / f"train_logs_split{split_id}{eval_suffix}.pkl"

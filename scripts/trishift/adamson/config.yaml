@@ -43,6 +43,15 @@ defaults_overrides:
     stage23:
       epochs: 40
       batch_size: 256
+      one_condition_batch: true
+      mmd:
+        enable: true
+        weight: 0.5
+        scales:
+        - 0.5
+        - 1.0
+        - 2.0
+        - 4.0
       lr: 0.001
       sched_gamma: 0.9
       patience: 10
@@ -67,7 +76,7 @@ defaults_overrides:
     lambda_z: 1
     deg_weight: 1
     lambda_expr_mse: 0
-    lambda_neg_expr: 0.5
+    lambda_neg_expr: 0.1
     neg_expr_penalty: mae
   ablation:
     stage1_use_train_split: true
@@ -113,4 +122,8 @@ defaults_overrides:
       use_layer_norm: false
       dropout: 0.0
       use_residual_head: true
-paths_overrides: {}
+paths_overrides:
+  datasets:
+    adamson: "E:/CODE/trishift/external/adamson/perturb_processed.h5ad"
+  embeddings:
+    emb_b: "E:/CODE/backups/trishift_backup_20260213_203320/src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle"
