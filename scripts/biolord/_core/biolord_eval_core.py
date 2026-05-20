@@ -35,6 +35,7 @@ from scripts.common.split_utils import (
     condition_sort,
     split_unseen_ctrl_unseen_perturbation,
 )
+from scripts.common.payload_subset import subset_payload_item
 from scripts.common.yaml_utils import load_yaml_file
 from scripts.trishift._core.run_dataset_core import _split_celltype_seen_perturbation
 
@@ -786,6 +787,7 @@ def _metric_and_payload_for_conditions(
     full_adata: ad.AnnData,
     single_adata: ad.AnnData,
     cfg: BiolordDatasetConfig,
+    dataset_name: str,
     split_id: int,
     test_adata: ad.AnnData,
     ctrl_metric_adata: ad.AnnData,
@@ -905,7 +907,7 @@ def _metric_and_payload_for_conditions(
             ctrl_export = np.asarray(ctrl_metric, dtype=np.float32)
             sample_n = int(ctrl_export.shape[0])
         pred_export = np.repeat(np.asarray(pred_expr[:1], dtype=np.float32), repeats=sample_n, axis=0)
-        export_payload[condition] = {
+        export_item = {
             "Pred": pred_export[:, degs],
             "Ctrl": ctrl_export[:, degs],
             "Truth": true_expr[:, degs],
@@ -926,6 +928,14 @@ def _metric_and_payload_for_conditions(
                 "go_attribute_source": "GEARS/PertData GO graph",
             },
         }
+        export_payload[condition] = subset_payload_item(
+            export_item,
+            model_name="biolord",
+            dataset=str(dataset_name),
+            split_id=int(split_id),
+            condition=str(condition),
+            sample_size=int(cfg.export_control_pool_size),
+        )
     return pd.DataFrame(results), export_payload
 
 
@@ -1257,37 +1267,45 @@ def run_biolord_scgen_pbmc_celltype_eval(
         )
         metrics_all.append(metrics_df)
         if export_notebook_pkl:
+            export_item = {
+                "Pred": pred_expr[:, degs],
+                "Ctrl": ctrl_expr[:, degs],
+                "Truth": true_expr[:, degs],
+                "Pred_full": pred_expr,
+                "Ctrl_full": ctrl_expr,
+                "Truth_full": true_expr,
+                "DE_idx": degs,
+                "DE_name": gene_names[degs],
+                "gene_name_full": gene_names,
+                "export_metadata": {
+                    "model": "biolord",
+                    "dataset": name,
+                    "export_is_subset": False,
+                    "export_sample_size": None,
+                    "metrics_computed_on_full": True,
+                    "eval_ctrl_source": "target_domain_test_ctrl",
+                    "prediction_ctrl_source": "target_domain_test_ctrl",
+                    "split_id": int(split_id),
+                    "split_policy": split_dict.get("split_policy"),
+                    "split_domain_key": split_dict.get("split_domain_key"),
+                    "train_domain_values": split_dict.get("train_domain_values"),
+                    "val_domain_values": split_dict.get("val_domain_values"),
+                    "test_domain_values": split_dict.get("test_domain_values"),
+                    "ordered_attribute_key": attribute_key,
+                    "biolord_prior_key": str(prior_key),
+                    "biolord_attribute_source": str(attribute_source),
+                },
+                "full_summary": full_summary,
+            }
             payload = {
-                condition: {
-                    "Pred": pred_expr[:, degs],
-                    "Ctrl": ctrl_expr[:, degs],
-                    "Truth": true_expr[:, degs],
-                    "Pred_full": pred_expr,
-                    "Ctrl_full": ctrl_expr,
-                    "Truth_full": true_expr,
-                    "DE_idx": degs,
-                    "DE_name": gene_names[degs],
-                    "gene_name_full": gene_names,
-                    "export_metadata": {
-                        "model": "biolord",
-                        "dataset": name,
-                        "export_is_subset": False,
-                        "export_sample_size": None,
-                        "metrics_computed_on_full": True,
-                        "eval_ctrl_source": "target_domain_test_ctrl",
-                        "prediction_ctrl_source": "target_domain_test_ctrl",
-                        "split_id": int(split_id),
-                        "split_policy": split_dict.get("split_policy"),
-                        "split_domain_key": split_dict.get("split_domain_key"),
-                        "train_domain_values": split_dict.get("train_domain_values"),
-                        "val_domain_values": split_dict.get("val_domain_values"),
-                        "test_domain_values": split_dict.get("test_domain_values"),
-                        "ordered_attribute_key": attribute_key,
-                        "biolord_prior_key": str(prior_key),
-                        "biolord_attribute_source": str(attribute_source),
-                    },
-                    "full_summary": full_summary,
-                }
+                condition: subset_payload_item(
+                    export_item,
+                    model_name="biolord",
+                    dataset=name,
+                    split_id=int(split_id),
+                    condition=condition,
+                    sample_size=300,
+                )
             }
             out_pkl = out_dir / f"biolord_{name}_{split_id}.pkl"
             with out_pkl.open("wb") as handle:
@@ -1418,6 +1436,7 @@ def run_biolord_eval(
             full_adata=full_adata,
             single_adata=single_adata,
             cfg=cfg,
+            dataset_name=name,
             split_id=int(split_id),
             test_adata=eval_adata,
             ctrl_metric_adata=ctrl_adata,
@@ -1511,6 +1530,7 @@ def run_biolord_unseen_ctrl_eval(
             full_adata=full_adata,
             single_adata=single_adata,
             cfg=cfg,
+            dataset_name=name,
             split_id=int(split_id),
             test_adata=split_dict["test"],
             ctrl_metric_adata=test_ctrl,

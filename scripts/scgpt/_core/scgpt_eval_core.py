@@ -41,6 +41,7 @@ from scripts.common.split_utils import (
     norman_subgroup as _shared_norman_subgroup,
     split_unseen_ctrl_unseen_perturbation,
 )
+from scripts.common.payload_subset import subset_payload_item
 from scripts.common.yaml_utils import load_yaml_file
 
 
@@ -1146,7 +1147,7 @@ def _compute_metrics_and_export_payload(
                 "eval_ctrl_source": str(eval_ctrl_source),
             }
         )
-        export_payload[condition] = {
+        export_item = {
             "Pred": pred[:, degs] if degs.size > 0 else pred[:, :0],
             "Ctrl": ctrl_sampled[:, degs] if degs.size > 0 else ctrl_sampled[:, :0],
             "Truth": true[:, degs] if degs.size > 0 else true[:, :0],
@@ -1173,6 +1174,14 @@ def _compute_metrics_and_export_payload(
             },
             "full_summary": full_summary,
         }
+        export_payload[condition] = subset_payload_item(
+            export_item,
+            model_name="scgpt",
+            dataset=str(dataset_name),
+            split_id=int(split_id),
+            condition=str(condition),
+            sample_size=300,
+        )
 
     return pd.DataFrame(results), export_payload
 

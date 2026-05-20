@@ -36,6 +36,7 @@ from scripts.common.split_utils import (
     norman_subgroup as _shared_norman_subgroup,
     split_unseen_ctrl_unseen_perturbation,
 )
+from scripts.common.payload_subset import subset_payload_item
 from scripts.common.yaml_utils import load_yaml_file
 
 
@@ -960,7 +961,7 @@ def _compute_metrics_and_export_payload(
             }
         )
 
-        export_payload[cond] = {
+        export_item = {
             "Pred": pred[:, degs] if degs.size > 0 else pred[:, :0],
             "Ctrl": ctrl[:, degs] if degs.size > 0 else ctrl[:, :0],
             "Truth": true[:, degs] if degs.size > 0 else true[:, :0],
@@ -971,6 +972,14 @@ def _compute_metrics_and_export_payload(
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
             "gene_name_full": gene_names,
         }
+        export_payload[cond] = subset_payload_item(
+            export_item,
+            model_name="gears",
+            dataset=str(name),
+            split_id=int(split_id),
+            condition=str(cond),
+            sample_size=300,
+        )
 
     return pd.DataFrame(results), export_payload
 
