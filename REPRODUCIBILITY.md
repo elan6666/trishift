@@ -74,10 +74,10 @@ This demo is a smoke test only; it is not used for paper metrics.
 Download and prepare the public benchmark datasets:
 
 ```bash
-python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
+python scripts/data/download_repro_inputs.py --items benchmark genept
 ```
 
-The script uses `GEARS/PertData`, creates GEARS-native folders under `src/data/Data_GEARS`, and syncs processed h5ad files to:
+The unified downloader uses `GEARS/PertData`, creates GEARS-native folders under `src/data/Data_GEARS`, syncs processed h5ad files, and downloads the default GenePT embedding. The processed h5ad files are written to:
 
 ```text
 src/data/<dataset>/perturb_processed.h5ad
@@ -91,7 +91,7 @@ The maintained benchmark scope in this repository is limited to `adamson`, `dixi
 The BioLORD baseline now consumes dedicated GO graph preprocessing outputs instead of on-the-fly condition multihot attributes. After the benchmark h5ad files are available, run:
 
 ```bash
-python scripts/data/prepare_biolord_perturbation_data.py --datasets adamson norman dixit --split-ids 1 2 3 4 5
+python scripts/data/download_repro_inputs.py --items biolord
 ```
 
 This step aligns the local BioLORD inputs with the external preprocessing logic from:
@@ -109,7 +109,7 @@ src/data/<dataset>/<dataset>_single_biolord.h5ad
 src/data/<dataset>/<dataset>_biolord_prep_summary.json
 ```
 
-The generated `split1..5` and `subgroup1..5` columns are aligned to the current TriShift split policy used by the shared benchmark wrappers, so BioLORD now follows the same maintained split definition as the main TriShift runs.
+The generated `split*` and `subgroup*` columns are aligned to the current TriShift split policy used by the shared benchmark wrappers, so BioLORD follows the same maintained split definition as the main TriShift runs.
 
 Default ordered attribute keys are:
 
@@ -135,6 +135,65 @@ The default `configs/paths.yaml` expects:
 | `emb_d` | `src/data/Data_GeneEmbd/GenePT_gene_protein_embedding_model_3_text.pickle` | Optional GenePT protein/text embedding used only if selected in custom configs |
 
 If your files live elsewhere, edit `configs/paths.yaml`.
+
+The preferred downloader for the GenePT files is:
+
+```bash
+python scripts/data/download_repro_inputs.py --items genept
+```
+
+This extracts `emb_b` and `emb_d` from Zenodo record `10.5281/zenodo.10833191`, and `emb_c` from Zenodo record `10.5281/zenodo.10030426`. Add `--skip-legacy-genept` if you do not need `emb_c`.
+
+## 4.1 Prepare scGen PBMC and optional protein priors
+
+The scGen PBMC IFN-beta case uses the Kang cross-cell file from Zenodo record
+`10.5281/zenodo.14607156`, file `kangCrossCell.h5ad.gz`. Download it and build the TriShift-ready h5ad with:
+
+```bash
+python scripts/data/download_repro_inputs.py --items scgen genept
+```
+
+If you want the protein-prior variants, download the optional protein embedding assets before preparing scGen priors:
+
+```bash
+python scripts/data/download_repro_inputs.py --items protein scgen genept
+```
+
+The protein asset script writes:
+
+```text
+src/data/protein_embeddings/uniprot_prott5_human_per_protein.h5
+src/data/protein_embeddings/zenodo_prott5_human_reduced_embeddings_file.h5
+src/data/protein_embeddings/hf_esm2_15b_human_mouse_embeddings.npy
+src/data/protein_embeddings/hf_esm2_15b_human_mouse_metadata.csv.gz
+```
+
+Use `python scripts/data/download_repro_inputs.py --items scgen --skip-scgen-priors` if only the h5ad is needed.
+
+## 4.2 Prepare scGPT pretrained checkpoint
+
+The scGPT wrappers expect the whole-human checkpoint at `artifacts/models/scGPT_human` unless `configs/paths.yaml` is edited. Download the expected files with:
+
+```bash
+pip install gdown
+python scripts/data/download_repro_inputs.py --items scgpt
+```
+
+Required files:
+
+```text
+artifacts/models/scGPT_human/args.json
+artifacts/models/scGPT_human/best_model.pt
+artifacts/models/scGPT_human/vocab.json
+```
+
+You can verify local inputs at any point with:
+
+```bash
+python scripts/setup/check_repro_inputs.py --scope benchmark --strict
+python scripts/setup/check_repro_inputs.py --scope baselines
+python scripts/setup/check_repro_inputs.py --scope scgen
+```
 
 ## 5. Train and evaluate TriShift
 
@@ -217,7 +276,6 @@ Run notebooks only after the result folders have been produced.
 The recommended order is:
 
 ```text
-notebooks/Fig1_MethodOverview.ipynb
 notebooks/Fig2_MultiDatasetBenchmark.ipynb
 notebooks/Fig3_ReferenceConditioning.ipynb
 notebooks/Fig4_NormanGeneralization.ipynb
@@ -236,10 +294,9 @@ Figure outputs are written under:
 artifacts/paper_figures
 ```
 
-For the manuscript bundle, the tracked notebook-to-output mapping is also summarized in:
+The standalone manuscript source, compiled PDF, and supplementary document are maintained in:
 
-- `output/doc/trishift_supplementary_data_cn.md`
-- `output/doc/trishift_supplementary_data_cn.docx`
+- <https://github.com/elan6666/trishift-paper>
 
 ## 9. Expected local-only directories
 

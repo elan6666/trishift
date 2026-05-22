@@ -70,10 +70,10 @@ The tutorial shows a minimal workflow:
 Prepare the public benchmark datasets with:
 
 ```bash
-python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
+python scripts/data/download_repro_inputs.py --items benchmark genept
 ```
 
-This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, and synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers.
+This entrypoint delegates raw data download to `GEARS/PertData`, prepares the standard simulation splits, synchronizes `perturb_processed.h5ad` files to the paths expected by TriShift and the evaluation wrappers, and downloads the default GenePT embedding.
 Run this command in an environment that has `GEARS/PertData` installed. The core `pip install -e .` environment is enough for TriShift package imports, but the public benchmark downloader needs the baseline-oriented environment described below.
 The maintained public benchmark scope in this repository is `adamson`, `dixit`, `norman`, plus the scGen PBMC IFN-beta cell-type transfer case described below.
 
@@ -85,25 +85,30 @@ By default, the repository expects local data under `src/data`. You can still ov
 
 ### scGen PBMC IFN-beta case study
 
-The scGen PBMC dataset is prepared through a dedicated local script:
+The scGen PBMC case uses the Kang IFN-beta cross-cell dataset from Zenodo record
+[`10.5281/zenodo.14607156`](https://zenodo.org/records/14607156), file
+`kangCrossCell.h5ad.gz`. Download and decompress it to the expected local path with:
 
 ```bash
-python scripts/data/prepare_scgen_pbmc.py
+python scripts/data/download_repro_inputs.py --items scgen genept
 ```
 
-The script expects the scGen-preprocessed Kang PBMC file at:
+If you want all protein-prior variants, include protein assets too:
+
+```bash
+python scripts/data/download_repro_inputs.py --items scgen genept protein
+```
+
+The unified downloader writes:
 
 - `src/data/scgen/train_kang_scgen.h5ad`
-
-It writes the TriShift-ready file:
-
 - `src/data/scgen/perturb_processed.h5ad`
 
 It also extracts the IFNB1/IFN-beta perturbation prior for the single `stimulated` condition and writes four switchable prior files under:
 
 - `src/data/scgen/priors`
 
-Prior extraction expects the local protein embedding files under `src/data/protein_embeddings` and the GenePT file under `src/data/Data_GeneEmbd`. Use `--skip_priors` if you only need to regenerate the `.h5ad`.
+Prior extraction expects the local protein embedding files under `src/data/protein_embeddings` and the GenePT file under `src/data/Data_GeneEmbd`. Use `--skip-scgen-priors` if you only need to regenerate the `.h5ad`.
 
 The TriShift entrypoint is:
 
@@ -140,11 +145,27 @@ BioLORD also supports `biolord_self_attribute`, which uses a generated scalar at
 
 For the complete paper workflow, including the order of TriShift, baseline, Systema, and notebook runs, see:
 
+- `REPRODUCIBILITY_QUICK.md` for a short smoke-test and TriShift-only path
 - `REPRODUCIBILITY.md`
 
 ### Quick reproduction paths
 
 Use one of the following three scopes depending on what you need to verify.
+
+Most local inputs can be downloaded or prepared through the unified entrypoint:
+
+```bash
+python scripts/data/download_repro_inputs.py --items benchmark genept
+```
+
+For the full local input setup, including optional protein embeddings, scGPT checkpoint files, scGen PBMC, and BioLORD-prepared h5ad files:
+
+```bash
+pip install gdown
+python scripts/data/download_repro_inputs.py --items all --check
+```
+
+This command can take a long time and downloads several large files. Use `--items` to fetch only the groups you need.
 
 1. Package smoke test
 
@@ -158,18 +179,18 @@ This validates the core `TriShiftData -> TriShift train/evaluate -> saved output
 2. Public benchmark reproduction
 
 ```bash
-python scripts/data/download_and_prepare_benchmark_data.py --datasets adamson dixit norman
+python scripts/data/download_repro_inputs.py --items benchmark genept
 python scripts/trishift/adamson/run_adamson.py
 python scripts/trishift/dixit/run_dixit.py
 python scripts/trishift/norman/run_norman.py
 ```
 
-This reproduces the maintained TriShift benchmark scope in this repository and writes model outputs under `artifacts/results/trishift`.
+This reproduces the maintained TriShift benchmark scope in this repository and writes model outputs under `artifacts/results/<dataset>`, for example `artifacts/results/adamson`.
 
 For the scGen PBMC case study:
 
 ```bash
-python scripts/data/prepare_scgen_pbmc.py
+python scripts/data/download_repro_inputs.py --items scgen protein genept
 python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
 python scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py
 python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
@@ -182,7 +203,9 @@ After the required baseline and Systema result folders exist, execute the figure
 - `artifacts/paper_figures/main`
 - `artifacts/paper_figures/supp`
 
-The supplementary command map in `output/doc/trishift_supplementary_data_cn.md` also lists the tracked notebook-to-output mapping used by the paper bundle.
+The standalone manuscript source, compiled PDF, and supplementary document are maintained separately in:
+
+- <https://github.com/elan6666/trishift-paper>
 
 ### Recommended environments
 
@@ -225,7 +248,45 @@ The script places sources under `external/` and applies tracked overlays from `p
 This bootstrap step prepares source trees only. You still need the matching conda/pip environment for each baseline before running its training script.
 For the scGen PBMC baselines, `scripts/scpram/...` imports `external/scPRAM-main/scpram`, and `scripts/biolord/...` imports the installed BioLORD package while reading the local scGen `.h5ad` and IFNB1 prior files prepared by `scripts/data/prepare_scgen_pbmc.py`.
 
+### Reproduction input checker
+
+After downloading data and external assets, check the expected local files with:
+
+```bash
+python scripts/setup/check_repro_inputs.py --scope benchmark --strict
+python scripts/setup/check_repro_inputs.py --scope baselines
+python scripts/setup/check_repro_inputs.py --scope scgen
+```
+
+The checker reports missing local datasets, embeddings, BioLORD inputs, external source trees, and scGPT checkpoint files.
+
 ### Data download and preprocessing
+
+The preferred data entrypoint is:
+
+```bash
+python scripts/data/download_repro_inputs.py --items benchmark genept
+```
+
+Useful item groups:
+
+| Item | What it does |
+| --- | --- |
+| `benchmark` | Downloads/prepares Adamson, Dixit, and Norman through GEARS/PertData and syncs `perturb_processed.h5ad` files. |
+| `genept` | Downloads GenePT Zenodo archives and extracts `emb_b`, `emb_c`, and `emb_d`; use `--skip-legacy-genept` to skip the older `emb_c` archive. |
+| `scgen` | Downloads Kang/scGen PBMC and runs `prepare_scgen_pbmc.py` unless `--no-prepare-scgen` is passed. |
+| `protein` | Downloads UniProt ProtT5, Zenodo ProtT5, and Hugging Face ESM2 protein embeddings for IFNB1 prior variants. |
+| `scgpt` | Downloads the scGPT whole-human pretrained checkpoint files into `artifacts/models/scGPT_human`. |
+| `biolord` | Builds BioLORD-specific h5ad files from prepared benchmark data and GO graph inputs. |
+| `all` | Runs all groups above. |
+
+Examples:
+
+```bash
+python scripts/data/download_repro_inputs.py --items benchmark genept --check --check-scope benchmark
+python scripts/data/download_repro_inputs.py --items scgen protein genept --skip-scgen-priors
+python scripts/data/download_repro_inputs.py --items scgpt
+```
 
 Gene embeddings are external local artifacts and are not shipped with this repository. Download the required embedding files and place them under:
 
@@ -263,13 +324,13 @@ For the scGen PBMC case, place the scGen-preprocessed Kang PBMC file at:
 
 - `src/data/scgen/train_kang_scgen.h5ad`
 
-Then run:
+The maintained downloader uses Zenodo record `10.5281/zenodo.14607156`:
 
 ```bash
-python scripts/data/prepare_scgen_pbmc.py
+python scripts/data/download_repro_inputs.py --items scgen genept
 ```
 
-The script writes `src/data/scgen/perturb_processed.h5ad` and, unless `--skip_priors` is used, writes the four IFNB1 prior pickle files under `src/data/scgen/priors`. The protein prior extraction expects:
+The script writes `src/data/scgen/perturb_processed.h5ad` and, unless `--skip-scgen-priors` is used, writes the IFNB1 prior pickle files under `src/data/scgen/priors`. The protein prior extraction expects:
 
 - `src/data/protein_embeddings/uniprot_prott5_human_per_protein.h5`
 - `src/data/protein_embeddings/zenodo_prott5_human_reduced_embeddings_file.h5`
@@ -279,6 +340,30 @@ The script writes `src/data/scgen/perturb_processed.h5ad` and, unless `--skip_pr
 The GenePT prior extraction expects:
 
 - `src/data/Data_GeneEmbd/GenePT_gene_embedding_ada_text.pickle`
+
+Protein embedding download sources used by `scripts/data/download_repro_inputs.py --items protein`:
+
+| Local file | Source |
+| --- | --- |
+| `src/data/protein_embeddings/uniprot_prott5_human_per_protein.h5` | UniProt UP000005640_9606 per-protein ProtT5: <https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/embeddings/UP000005640_9606/per-protein.h5> |
+| `src/data/protein_embeddings/zenodo_prott5_human_reduced_embeddings_file.h5` | Zenodo `10.5281/zenodo.5047020`, file `reduced_embeddings_file.h5` |
+| `src/data/protein_embeddings/hf_esm2_15b_human_mouse_embeddings.npy` | Hugging Face `Darkadin/ESM2_embeddings_Human_Mouse`, file `ESM2_15B_Human_Mouse_Embeddings.npy` |
+| `src/data/protein_embeddings/hf_esm2_15b_human_mouse_metadata.csv.gz` | Hugging Face `Darkadin/ESM2_embeddings_Human_Mouse`, file `ESM2_15B_Human_Mouse_Metadata.csv.gz` |
+
+For scGPT, the benchmark wrappers expect the whole-human pretrained checkpoint under:
+
+- `artifacts/models/scGPT_human/args.json`
+- `artifacts/models/scGPT_human/best_model.pt`
+- `artifacts/models/scGPT_human/vocab.json`
+
+Download it with:
+
+```bash
+pip install gdown
+python scripts/data/download_repro_inputs.py --items scgpt
+```
+
+The script uses the public Google Drive file ids distributed with the scGPT whole-human checkpoint. If you place the checkpoint elsewhere, update `scgpt_pretrained_root` in `configs/paths.yaml`.
 
 ### Training and evaluation entrypoints
 
@@ -323,7 +408,6 @@ Shared training core:
 
 The paper figures are generated from the notebooks under `notebooks/`:
 
-- `Fig1_MethodOverview.ipynb` -> Fig. 1
 - `Fig2_MultiDatasetBenchmark.ipynb` -> Fig. 2
 - `Fig3_ReferenceConditioning.ipynb` -> Fig. 3
 - `Fig4_NormanGeneralization.ipynb` -> Fig. 4
