@@ -61,7 +61,6 @@ def subset_payload_item(
     condition: str,
     sample_size: int = 300,
 ) -> dict[str, Any]:
-    sample_size = max(1, int(sample_size))
     out = dict(item)
     pred = out.get("Pred_full")
     ctrl = out.get("Ctrl_full")
@@ -69,36 +68,14 @@ def subset_payload_item(
 
     pred_arr = None if pred is None else np.asarray(pred)
     ctrl_arr = None if ctrl is None else np.asarray(ctrl)
-    use_shared_pred_ctrl_idx = (
-        pred_arr is not None
-        and ctrl_arr is not None
-        and pred_arr.ndim >= 1
-        and ctrl_arr.ndim >= 1
-        and int(pred_arr.shape[0]) == int(ctrl_arr.shape[0])
-    )
+    truth_arr = None if truth is None else np.asarray(truth)
+    n_pred_full = int(pred_arr.shape[0]) if pred_arr is not None and pred_arr.ndim >= 1 else 0
+    n_ctrl_full = int(ctrl_arr.shape[0]) if ctrl_arr is not None and ctrl_arr.ndim >= 1 else 0
+    n_truth_full = int(truth_arr.shape[0]) if truth_arr is not None and truth_arr.ndim >= 1 else 0
 
-    pred_seed = stable_subset_seed(model_name, dataset, split_id, condition, "pred_ctrl")
-    truth_seed = stable_subset_seed(model_name, dataset, split_id, condition, "truth")
-    if use_shared_pred_ctrl_idx:
-        pred_sub, pred_idx, n_pred_full = _subset_rows(pred_arr, sample_size=sample_size, seed=pred_seed)
-        if pred_idx is None:
-            ctrl_sub, ctrl_idx, n_ctrl_full = _subset_rows(ctrl_arr, sample_size=sample_size, seed=pred_seed)
-        else:
-            n_ctrl_full = int(ctrl_arr.shape[0])
-            ctrl_idx = pred_idx
-            ctrl_sub = ctrl_arr[pred_idx] if n_ctrl_full > int(sample_size) else ctrl_arr
-    else:
-        pred_sub, pred_idx, n_pred_full = _subset_rows(pred, sample_size=sample_size, seed=pred_seed)
-        ctrl_sub, ctrl_idx, n_ctrl_full = _subset_rows(
-            ctrl,
-            sample_size=sample_size,
-            seed=stable_subset_seed(model_name, dataset, split_id, condition, "ctrl"),
-        )
-    truth_sub, truth_idx, n_truth_full = _subset_rows(truth, sample_size=sample_size, seed=truth_seed)
-
-    out["Pred_full"] = np.asarray(pred_sub, dtype=np.float32) if pred_sub is not None else pred_sub
-    out["Ctrl_full"] = np.asarray(ctrl_sub, dtype=np.float32) if ctrl_sub is not None else ctrl_sub
-    out["Truth_full"] = np.asarray(truth_sub, dtype=np.float32) if truth_sub is not None else truth_sub
+    out["Pred_full"] = pred
+    out["Ctrl_full"] = ctrl
+    out["Truth_full"] = truth
 
     deg_idx = out.get("DE_idx", np.asarray([], dtype=int))
     out["Pred"] = _safe_de_subset(out.get("Pred_full"), deg_idx, out.get("Pred"))
@@ -108,20 +85,17 @@ def subset_payload_item(
     meta = dict(out.get("export_metadata") or {})
     meta.update(
         {
-            "export_is_subset": True,
-            "export_sample_size": int(sample_size),
+            "export_is_subset": False,
+            "export_sample_size": None,
             "metrics_computed_on_full": bool(meta.get("metrics_computed_on_full", True)),
             "n_pred_full": int(n_pred_full),
             "n_ctrl_full": int(n_ctrl_full),
             "n_truth_full": int(n_truth_full),
         }
     )
-    if pred_idx is not None:
-        meta["pred_sample_idx"] = np.asarray(pred_idx, dtype=np.int64)
-    if ctrl_idx is not None:
-        meta["ctrl_sample_idx"] = np.asarray(ctrl_idx, dtype=np.int64)
-    if truth_idx is not None:
-        meta["truth_sample_idx"] = np.asarray(truth_idx, dtype=np.int64)
+    meta.pop("pred_sample_idx", None)
+    meta.pop("ctrl_sample_idx", None)
+    meta.pop("truth_sample_idx", None)
     out["export_metadata"] = meta
     return out
 

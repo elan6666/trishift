@@ -3485,6 +3485,7 @@ class TriShift:
             ctrl_mean_all = np.asarray(X_ctrl.mean(axis=0), dtype=np.float32).reshape(1, -1)
         else:
             ctrl_mean_all = np.asarray(X_ctrl, dtype=np.float32).mean(axis=0, keepdims=True)
+        ctrl_pool_export_full = self._select_dense(X_ctrl, np.arange(int(X_ctrl.shape[0])))
         pert_reference = self._systema_reference_from_train_val(
             split_dict,
             fallback_ctrl_mean=ctrl_mean_all,
@@ -3571,20 +3572,10 @@ class TriShift:
                         sample_size=sample_size,
                         seed=seed_base + 11,
                     )
-                    if int(ctrl_expr.shape[0]) == int(x_pred.shape[0]) and pred_idx.size > 0:
-                        ctrl_export = np.asarray(ctrl_expr[pred_idx], dtype=np.float32)
-                        ctrl_idx = pred_idx
-                    else:
-                        ctrl_export, ctrl_idx = self._sample_rows_for_export(
-                            ctrl_expr,
-                            sample_size=sample_size,
-                            seed=seed_base + 17,
-                        )
-                    truth_export, truth_idx = self._sample_rows_for_export(
-                        true_expr,
-                        sample_size=sample_size,
-                        seed=seed_base + 23,
-                    )
+                    ctrl_export = np.asarray(ctrl_expr, dtype=np.float32)
+                    ctrl_idx = np.arange(int(ctrl_export.shape[0]), dtype=int)
+                    truth_export = np.asarray(true_expr, dtype=np.float32)
+                    truth_idx = np.arange(int(truth_export.shape[0]), dtype=int)
                 results[cond] = {
                     "Pred": pred_export[:, deg_idx] if deg_idx.size > 0 else pred_export[:, :0],
                     "Ctrl": ctrl_export[:, deg_idx] if deg_idx.size > 0 else ctrl_export[:, :0],
@@ -3620,10 +3611,10 @@ class TriShift:
 
             results[cond] = {
                 "Pred": x_pred[:, deg_idx] if deg_idx.size > 0 else x_pred[:, :0],
-                "Ctrl": ctrl_expr[:, deg_idx] if deg_idx.size > 0 else ctrl_expr[:, :0],
+                "Ctrl": ctrl_pool_export_full[:, deg_idx] if deg_idx.size > 0 else ctrl_pool_export_full[:, :0],
                 "Truth": true_expr[:, deg_idx] if deg_idx.size > 0 else true_expr[:, :0],
                 "Pred_full": x_pred,
-                "Ctrl_full": ctrl_expr,
+                "Ctrl_full": ctrl_pool_export_full,
                 "Truth_full": true_expr,
                 "DE_idx": deg_idx,
                 "DE_name": deg_names,
@@ -3635,7 +3626,7 @@ class TriShift:
                     "metric_ctrl_reference": "full_eval_ctrl_pool_mean",
                     "split_id": int(split_id),
                     "n_pred_full": int(x_pred.shape[0]),
-                    "n_ctrl_full": int(ctrl_expr.shape[0]),
+                    "n_ctrl_full": int(ctrl_pool_export_full.shape[0]),
                     "n_truth_full": int(true_expr.shape[0]),
                 },
             }

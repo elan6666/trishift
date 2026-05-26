@@ -975,7 +975,7 @@ def _compute_metrics_and_export_payload(
         export_payload[cond] = subset_payload_item(
             export_item,
             model_name="gears",
-            dataset=str(name),
+            dataset=str(dataset_name),
             split_id=int(split_id),
             condition=str(cond),
             sample_size=300,

@@ -1063,7 +1063,7 @@ def run_dataset_with_paths(
     unseen_ctrl_pert_val_ratio = float(unseen_ctrl_cfg.get("pert_val_ratio", 0.1))
     if is_unseen_ctrl_eval:
         eval_ctrl_source = "target_domain_test_ctrl"
-    export_full_predictions = bool(defaults.get("export_full_predictions", False))
+    export_full_predictions = bool(defaults.get("export_full_predictions", True))
     eval_batch_size = int(defaults.get("performance", {}).get("chunk_size", 4096))
     train_mode = defaults.get("train_mode", "joint")
     valid_train_modes = {"joint", "sequential", "stage3_only"}

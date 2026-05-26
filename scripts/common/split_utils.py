@@ -168,8 +168,24 @@ def _condition_split_for_dataset(
     test_ratio: float = 0.2,
     val_ratio: float = 0.1,
 ) -> tuple[list[str], list[str], list[str], pd.DataFrame | None]:
+    """Return the perturbation split used by the default benchmark policy.
+
+    Unseen-control evaluation must compare against the same perturbation holdout
+    as the default benchmark; only the control-cell source changes.  Therefore
+    this helper delegates to ``split_by_dataset_policy`` instead of reimplementing
+    a separate random perturbation split.
+    """
     name = str(dataset_name).strip().lower()
     ctrl_label = getattr(data, "ctrl_label", "ctrl")
+    default_split = split_by_dataset_policy(
+        data,
+        dataset_name=name,
+        seed=int(seed),
+        test_ratio=float(test_ratio),
+    )
+    train_conds = [str(c) for c in default_split.get("train_conds", []) if str(c) != ctrl_label]
+    val_conds = [str(c) for c in default_split.get("val_conds", []) if str(c) != ctrl_label]
+    test_conds = [str(c) for c in default_split.get("test_conds", []) if str(c) != ctrl_label]
     if name == "norman":
         label_key = getattr(data, "label_key", "condition")
         adata_all = getattr(data, "adata_all")
@@ -177,34 +193,8 @@ def _condition_split_for_dataset(
             list(adata_all.obs[label_key].astype(str).unique()),
             seed=int(seed),
         )
-        test_conds = [
-            str(x)
-            for x in subgroup_df[subgroup_df.group == "test"].index.astype(str).tolist()
-            if str(x) != ctrl_label
-        ]
-        val_conds = [
-            str(x)
-            for x in subgroup_df[subgroup_df.group == "val"].index.astype(str).tolist()
-            if str(x) != ctrl_label
-        ]
-        train_conds = [
-            str(x)
-            for x in subgroup_df[subgroup_df.group == "train"].index.astype(str).tolist()
-            if str(x) != ctrl_label
-        ]
         return train_conds, val_conds, test_conds, subgroup_df
 
-    all_conds = [str(c) for c in getattr(data, "conditions_pert") if str(c) != ctrl_label]
-    test_conds, remaining_conds = _split_conditions_for_holdout(
-        all_conds,
-        ratio=float(test_ratio),
-        seed=int(seed),
-    )
-    val_conds, train_conds = _split_conditions_for_holdout(
-        remaining_conds,
-        ratio=float(val_ratio),
-        seed=int(seed),
-    )
     return train_conds, val_conds, test_conds, None
 
 

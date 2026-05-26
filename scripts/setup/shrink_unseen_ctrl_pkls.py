@@ -46,7 +46,12 @@ def _already_subset(path: Path, sample_size: int) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Shrink unseen-control notebook PKLs to deterministic per-condition subsets.")
+    ap = argparse.ArgumentParser(
+        description=(
+            "Shrink unseen-control notebook PKLs by capping Pred/Pred_full only; "
+            "Ctrl/Ctrl_full and Truth/Truth_full are preserved when present."
+        )
+    )
     ap.add_argument("--root", default="artifacts/results", help="result root to scan")
     ap.add_argument("--models", default="scgpt,gears,genepert,biolord", help="comma-separated models or all")
     ap.add_argument("--sample_size", type=int, default=300)

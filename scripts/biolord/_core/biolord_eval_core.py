@@ -909,10 +909,10 @@ def _metric_and_payload_for_conditions(
         pred_export = np.repeat(np.asarray(pred_expr[:1], dtype=np.float32), repeats=sample_n, axis=0)
         export_item = {
             "Pred": pred_export[:, degs],
-            "Ctrl": ctrl_export[:, degs],
+            "Ctrl": ctrl_metric[:, degs],
             "Truth": true_expr[:, degs],
             "Pred_full": pred_export,
-            "Ctrl_full": ctrl_export,
+            "Ctrl_full": ctrl_metric,
             "Truth_full": true_expr,
             "DE_idx": degs,
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),
@@ -1144,6 +1144,8 @@ def _predict_scgen_biolord(
         attribute_key=attribute_key,
         condition=condition,
     )
+    if "_indices" not in pred_adata.obs.columns:
+        pred_adata.obs["_indices"] = np.arange(pred_adata.n_obs, dtype=np.int64)
     dataset_pred = model.get_dataset(pred_adata)
     with torch.no_grad():
         pred_expr, _ = model.module.get_expression(dataset_pred)

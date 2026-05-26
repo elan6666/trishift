@@ -1125,6 +1125,7 @@ def _compute_metrics_and_export_payload(
         if pred.size == 0:
             print(f"[scgpt] skip condition without predictions: {condition}")
             continue
+        ctrl_full = np.asarray(_utils.densify_X(ctrl_adata.X), dtype=np.float32)
         metrics, full_summary = _condition_metric_summary(
             X_true=true,
             X_pred=pred,
@@ -1149,10 +1150,10 @@ def _compute_metrics_and_export_payload(
         )
         export_item = {
             "Pred": pred[:, degs] if degs.size > 0 else pred[:, :0],
-            "Ctrl": ctrl_sampled[:, degs] if degs.size > 0 else ctrl_sampled[:, :0],
+            "Ctrl": ctrl_full[:, degs] if degs.size > 0 else ctrl_full[:, :0],
             "Truth": true[:, degs] if degs.size > 0 else true[:, :0],
             "Pred_full": pred,
-            "Ctrl_full": ctrl_sampled,
+            "Ctrl_full": ctrl_full,
             "Truth_full": true,
             "DE_idx": degs,
             "DE_name": gene_names[degs] if degs.size > 0 else np.array([], dtype=gene_names.dtype),

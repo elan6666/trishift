@@ -11,6 +11,8 @@ matching_mode: ot
 train_mode: joint
 # 评估时每个条件的 ensemble 采样次数（越大越稳，越慢）。
 n_eval_ensemble: 300
+# 导出 notebook pkl 时保留完整预测矩阵；关闭后仅用于旧的轻量化导出。
+export_full_predictions: true
 # 评估 control 采样模式：
 # - random_train_ctrl: 随机 train ctrl 池采样（采样数 n_eval_ensemble）
 # - nearest_genept_ot_pool: 最近 train condition 的 OT 控制池采样（采样数 n_eval_ensemble）

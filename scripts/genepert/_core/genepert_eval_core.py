@@ -542,7 +542,7 @@ def _compute_metrics_and_export_payload(
         export_payload[raw_cond] = subset_payload_item(
             export_item,
             model_name="genepert",
-            dataset=str(name),
+            dataset=str(dataset_name),
             split_id=int(split_id),
             condition=str(raw_cond),
             sample_size=300,
