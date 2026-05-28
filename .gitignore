@@ -22,6 +22,7 @@ nul
 
 # Local assistant / temp
 .backup/
+.byte-os/
 .claude/
 .qoder/
 .workbuddy/
