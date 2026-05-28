@@ -103,7 +103,6 @@ def _external_items() -> list[CheckItem]:
         CheckItem("external", ROOT / "external" / "scGPT-main", False, "scGPT source tree"),
         CheckItem("external", ROOT / "external" / "gears", False, "GEARS source tree"),
         CheckItem("external", ROOT / "external" / "GenePert-main", False, "GenePert source tree"),
-        CheckItem("external", ROOT / "external" / "scPRAM-main", False, "scPRAM source tree"),
         CheckItem("external", ROOT / "external" / "biolord" / "biolord-main", False, "BioLORD source tree"),
     ]
 

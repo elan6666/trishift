@@ -119,8 +119,8 @@ python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
 External baseline entrypoints for the same scGen PBMC split are:
 
 ```bash
-python scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py
 python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
+python scripts/scgpt/scgen_pbmc_celltype/run_scgpt_scgen_pbmc_celltype.py
 ```
 
 This experiment holds out cell types, not perturbations: the only perturbation is `stimulated`, so the model trains on `stimulated` responses in seen cell types and evaluates on held-out cell types using their target-domain control cells.
@@ -192,8 +192,8 @@ For the scGen PBMC case study:
 ```bash
 python scripts/data/download_repro_inputs.py --items scgen protein genept
 python scripts/trishift/scgen_pbmc_celltype/run_scgen_pbmc_celltype.py
-python scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py
 python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
+python scripts/scgpt/scgen_pbmc_celltype/run_scgpt_scgen_pbmc_celltype.py
 ```
 
 3. Paper-figure regeneration
@@ -234,7 +234,7 @@ conda activate trishift-baselines
 Baseline repositories are not tracked directly because `external/` is a local, ignored workspace for third-party source trees, generated caches, and large intermediate files. To populate the external baselines and apply the tracked TriShift compatibility overlays, run:
 
 ```bash
-python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert,scpram
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
 ```
 
 If you already downloaded the baseline repositories, copy from that folder instead:
@@ -246,7 +246,7 @@ python scripts/setup/bootstrap_external_baselines.py --source-root /path/to/down
 The script places sources under `external/` and applies tracked overlays from `patches/external_overlays`. The current overlays include scGPT flash-attention compatibility files.
 
 This bootstrap step prepares source trees only. You still need the matching conda/pip environment for each baseline before running its training script.
-For the scGen PBMC baselines, `scripts/scpram/...` imports `external/scPRAM-main/scpram`, and `scripts/biolord/...` imports the installed BioLORD package while reading the local scGen `.h5ad` and IFNB1 prior files prepared by `scripts/data/prepare_scgen_pbmc.py`.
+For the scGen PBMC baselines, `scripts/biolord/...` imports the installed BioLORD package while reading the local scGen `.h5ad` and IFNB1 prior files prepared by `scripts/data/prepare_scgen_pbmc.py`; `scripts/scgpt/...` uses the local scGPT source tree and pretrained checkpoint.
 
 ### Reproduction input checker
 
@@ -395,7 +395,6 @@ Additional baselines:
 
 - `scripts/genepert/<dataset>/run_genepert_*.py`
 - `scripts/scgpt/<dataset>/run_scgpt_*.py`
-- `scripts/scpram/scgen_pbmc_celltype/run_scpram_scgen_pbmc_celltype.py`
 - `scripts/biolord/<dataset>/run_biolord_*.py`
 - `scripts/systema/<dataset>/run_systema_*.py`
 

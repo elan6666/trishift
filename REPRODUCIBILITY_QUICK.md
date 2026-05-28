@@ -102,7 +102,7 @@ artifacts/results/norman/metrics.csv
 Populate external baseline source trees:
 
 ```bash
-python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert,scpram
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
 ```
 
 Prepare BioLORD inputs and scGPT checkpoint files through the same downloader:
