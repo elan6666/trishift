@@ -455,7 +455,7 @@ def _preselect_from_metrics(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Select visible qualitative cases for TriShift figures.")
     ap.add_argument("--datasets", default="adamson,norman,dixit")
-    ap.add_argument("--result_mode", default="default", choices=["default", "unseen_ctrl"])
+    ap.add_argument("--result_mode", default="unseen_ctrl", choices=["default", "unseen_ctrl"])
     ap.add_argument("--split_ids", default="1,2,3,4,5")
     ap.add_argument("--models", default="trishift_nearest,gears,genepert,scgpt,biolord")
     ap.add_argument("--top_k", type=int, default=12)

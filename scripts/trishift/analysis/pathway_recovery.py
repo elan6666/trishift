@@ -512,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n_degs", type=int, default=100)
     ap.add_argument("--space", default="auto", choices=["auto", "full_gene", "deg"])
     ap.add_argument("--trishift_runs_manifest", default="")
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args(argv)
 
     trishift_runs = None
@@ -531,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         n_degs=int(args.n_degs),
         space=str(args.space).strip(),
         trishift_runs=trishift_runs,
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

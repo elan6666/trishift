@@ -699,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--umap_min_dist", type=float, default=0.15)
     ap.add_argument("--save_dpi", type=int, default=420)
     ap.add_argument("--seed", type=int, default=24)
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args(argv)
 
     result = run_condition_centroid_visualization(
@@ -716,7 +716,7 @@ def main(argv: list[str] | None = None) -> int:
         umap_min_dist=float(args.umap_min_dist),
         save_dpi=int(args.save_dpi),
         seed=int(args.seed),
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"out_dir: {result.out_dir}")
     print(result.summary_df.to_string(index=False))

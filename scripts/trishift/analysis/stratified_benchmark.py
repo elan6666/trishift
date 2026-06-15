@@ -703,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out_root", default="")
     ap.add_argument("--paths_path", default="configs/paths.yaml")
     ap.add_argument("--systema_root", default="")
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args(argv)
 
     result = run_stratified_benchmark(
@@ -713,7 +713,7 @@ def main(argv: list[str] | None = None) -> int:
         out_root=str(args.out_root).strip() or None,
         paths_path=str(args.paths_path).strip(),
         systema_root=str(args.systema_root).strip() or None,
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

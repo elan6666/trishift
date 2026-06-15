@@ -465,7 +465,7 @@ def render_fig3() -> Path:
 
 def render_fig4() -> Path:
     out_dir = FIG_ROOT / "main" / "Fig4_NormanGeneralization"
-    metrics = collect_prediction_metrics(heldout=False)
+    metrics = collect_prediction_metrics(heldout=True)
     norman = metrics[metrics["dataset"].eq("Norman")].copy() if not metrics.empty else pd.DataFrame()
     deg = collect_long(ROOT / "artifacts" / "analysis" / "deg_prediction" / "deg_prediction_all_long.csv")
     norman_deg = deg[deg["dataset"].eq("Norman")].copy() if not deg.empty else pd.DataFrame()
@@ -504,7 +504,7 @@ def render_supp(name: str) -> Path:
         ]
         return compose_grid(panels, COMP_ROOT / "figs1_composite.png", cols=2, cell_w=1080, cell_h=570)
     if fig == "figs2":
-        metrics = collect_prediction_metrics(heldout=False)
+        metrics = collect_prediction_metrics(heldout=True)
         dixit = metrics[metrics["dataset"].eq("Dixit")].copy() if not metrics.empty else pd.DataFrame()
         deg = collect_long(ROOT / "artifacts" / "analysis" / "deg_prediction" / "deg_prediction_all_long.csv")
         dixit_deg = deg[deg["dataset"].eq("Dixit")].copy() if not deg.empty else pd.DataFrame()
@@ -516,11 +516,11 @@ def render_supp(name: str) -> Path:
         ]
         return compose_grid(panels, COMP_ROOT / "figs2_composite.png", cols=2, cell_w=1080, cell_h=570)
     if fig == "figs3":
-        metrics = collect_prediction_metrics(heldout=False)
+        metrics = collect_prediction_metrics(heldout=True)
         panels = [
-            ("a", point_panel(metrics, "pearson", out_dir / "figs3a_unseen_pearson.png", "Conventional unseen Pearson", "Pearson")),
-            ("b", point_panel(metrics, "nmse", out_dir / "figs3b_unseen_nmse.png", "Conventional unseen nMSE", "nMSE")),
-            ("c", point_panel(metrics, "systema_corr_20de_allpert", out_dir / "figs3c_unseen_systema.png", "Conventional unseen Systema", "Systema")),
+            ("a", point_panel(metrics, "pearson", out_dir / "figs3a_heldout_pearson.png", "Held-out-control Pearson", "Pearson")),
+            ("b", point_panel(metrics, "nmse", out_dir / "figs3b_heldout_nmse.png", "Held-out-control nMSE", "nMSE")),
+            ("c", point_panel(metrics, "systema_corr_20de_allpert", out_dir / "figs3c_heldout_systema.png", "Held-out-control Systema", "Systema")),
             ("d", cellot_alignment_panel(out_dir / "figs3d_cellot_aligned.png")),
         ]
         return compose_grid(panels, COMP_ROOT / "figs3_composite.png", cols=2, cell_w=1080, cell_h=570)

@@ -121,7 +121,7 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
     if key == "trishift":
         return ModelSpec(key, "payload", "trishift", None, "TriShift")
     if key == "trishift_nearest":
-        return ModelSpec(key, "payload", "trishift", "nearest", "TriShift nearest")
+        return ModelSpec(key, "payload", "trishift", "nearest", "TriShift")
     if key == "trishift_random":
         return ModelSpec(key, "payload", "trishift", "random", "TriShift random")
     if key in {"scouter", "gears", "genepert", "scgpt", "biolord", "cellot"}:

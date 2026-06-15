@@ -522,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--paths_path", default="configs/paths.yaml")
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args(argv)
     result = run_systema_mechanism_analysis(
         dataset=str(args.dataset).strip(),
@@ -531,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         paths_path=str(args.paths_path).strip(),
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"out_dir: {result['out_dir']}")
     return 0

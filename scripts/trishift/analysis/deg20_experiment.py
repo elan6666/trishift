@@ -1101,7 +1101,7 @@ def main() -> None:
     ap.add_argument("--enrichment_library", default="Reactome_2022")
     ap.add_argument("--keep_perturbed_genes", action="store_true")
     ap.add_argument("--space", default="auto", choices=["auto", "full_gene", "deg"])
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args()
 
     focus_conditions = [x.strip() for x in str(args.focus_conditions).split(",") if x.strip()]
@@ -1120,7 +1120,7 @@ def main() -> None:
         enrichment_library=str(args.enrichment_library).strip(),
         remove_perturbed_genes=not bool(args.keep_perturbed_genes),
         space=str(args.space).strip(),
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"[deg20] out_dir={result.out_dir}")
     print(result.dataset_summary_df.to_string(index=False))

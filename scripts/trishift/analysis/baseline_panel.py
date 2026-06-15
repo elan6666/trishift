@@ -295,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--subgroup_filter", default="")
     ap.add_argument("--out_root", default="")
     ap.add_argument("--systema_root", default="")
-    ap.add_argument("--result_mode", default="default")
+    ap.add_argument("--result_mode", default="unseen_ctrl")
     args = ap.parse_args(argv)
 
     result = run_baseline_panel(
@@ -305,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         subgroup_filter=str(args.subgroup_filter).strip() or None,
         out_root=str(args.out_root).strip() or None,
         systema_root=str(args.systema_root).strip() or None,
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
     )
     print(f"out_dir: {result['out_dir']}")
     if not result["ranking_df"].empty:

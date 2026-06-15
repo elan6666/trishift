@@ -61,13 +61,15 @@ def _payload_path(
 ) -> Path:
     key = str(model_name).strip().lower()
     mode = str(result_mode or "default").strip().lower()
-    if key in {"trishift_nearest", "trishift_random"}:
-        suffix = "_nearest" if key == "trishift_nearest" else "_random"
-        return result_root / f"trishift_{dataset}_{int(split_id)}{suffix}.pkl"
     if key == "trishift":
         if mode in {"unseen", "unseen_ctrl", "unseen-control"}:
             return result_root / f"trishift_{dataset}_{int(split_id)}_unseen_ctrl.pkl"
         suffix = f"_{variant_tag}" if variant_tag else ""
+        return result_root / f"trishift_{dataset}_{int(split_id)}{suffix}.pkl"
+    if key in {"trishift_nearest", "trishift_random"}:
+        if mode in {"unseen", "unseen_ctrl", "unseen-control"}:
+            return result_root / f"trishift_{dataset}_{int(split_id)}_unseen_ctrl.pkl"
+        suffix = "_nearest" if key == "trishift_nearest" else "_random"
         return result_root / f"trishift_{dataset}_{int(split_id)}{suffix}.pkl"
     if mode in {"unseen", "unseen_ctrl", "unseen-control"}:
         return result_root / f"{key}_{dataset}_{int(split_id)}_unseen_ctrl.pkl"
@@ -403,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--split-ids", default="1")
     ap.add_argument("--result-dir", default="")
     ap.add_argument("--out-root", default="")
-    ap.add_argument("--result-mode", default="default")
+    ap.add_argument("--result-mode", default="unseen_ctrl")
     ap.add_argument("--variant-tag", default="")
     ap.add_argument("--payload", default="", help="direct payload path; only valid with a single split id")
     ap.add_argument("--label-top-k", type=int, default=100)
@@ -416,7 +418,7 @@ def main(argv: list[str] | None = None) -> int:
         split_ids=_parse_split_ids(str(args.split_ids)),
         result_dir=str(args.result_dir).strip() or None,
         out_root=str(args.out_root).strip() or None,
-        result_mode=str(args.result_mode).strip() or "default",
+        result_mode=str(args.result_mode).strip() or "unseen_ctrl",
         variant_tag=str(args.variant_tag).strip() or None,
         payload_path=str(args.payload).strip() or None,
         label_top_k=int(args.label_top_k),
