@@ -431,6 +431,7 @@ def run_aligned_cellot(
     batch_size: int,
     n_iters: int,
     max_train_conditions: int | None,
+    max_eval_ctrl: int | None,
     force: bool,
     train: bool,
     evaluate: bool,
@@ -496,6 +497,11 @@ def run_aligned_cellot(
             obs_cond = split_dict["test"].obs[data.label_key].astype(str)
             test_ctrl = split_dict["test"][obs_cond.eq(data.ctrl_label).values].copy()
             ctrl_expr = _dense(test_ctrl)
+            if max_eval_ctrl is not None and ctrl_expr.shape[0] > int(max_eval_ctrl):
+                rng = np.random.default_rng(_stable_seed(base_seed, int(split_id), "cellot_eval_ctrl"))
+                ctrl_idx = np.sort(rng.choice(ctrl_expr.shape[0], size=int(max_eval_ctrl), replace=False))
+                ctrl_expr = ctrl_expr[ctrl_idx]
+            pred_cache: dict[str, np.ndarray] = {}
             for test_cond in test_conds:
                 nearest = _nearest_train_condition(test_cond, train_map, test_map)
                 if nearest is None or nearest not in map_outdirs:
@@ -526,7 +532,9 @@ def run_aligned_cellot(
                         }
                     )
                     continue
-                pred_expr = _predict_with_cellot(map_outdirs[nearest], ctrl_expr, batch_size=batch_size)
+                if nearest not in pred_cache:
+                    pred_cache[nearest] = _predict_with_cellot(map_outdirs[nearest], ctrl_expr, batch_size=batch_size)
+                pred_expr = pred_cache[nearest]
                 row, payload = _metrics_payload_for_condition(
                     data=data,
                     split_dict=split_dict,
@@ -560,6 +568,7 @@ def run_aligned_cellot(
         "work_root": str(work_dir),
         "batch_size": int(batch_size),
         "n_iters": int(n_iters),
+        "max_eval_ctrl": None if max_eval_ctrl is None else int(max_eval_ctrl),
     }
     (out_dir / "provenance_unseen_ctrl.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
     return provenance
@@ -583,6 +592,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--n-iters", type=int, default=5000)
     ap.add_argument("--max-train-conditions", type=int, default=0)
+    ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-train", action="store_true")
     ap.add_argument("--no-evaluate", action="store_true")
@@ -590,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config).resolve() if str(args.config).strip() else DATASET_CONFIG_PATHS[str(args.dataset)]
     dataset_key, defaults, _, _ = _load_profile_config(config_path)
     split_ids = _parse_split_ids(str(args.split_ids), defaults, dataset_key, fast=bool(args.fast))
+    max_eval_ctrl = int(args.max_eval_ctrl) if int(args.max_eval_ctrl) > 0 else int(defaults.get("n_eval_ensemble", 300))
     prov = run_aligned_cellot(
         dataset=dataset_key,
         config_path=config_path,
@@ -599,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=int(args.batch_size),
         n_iters=int(args.n_iters),
         max_train_conditions=(int(args.max_train_conditions) if int(args.max_train_conditions) > 0 else None),
+        max_eval_ctrl=max_eval_ctrl,
         force=bool(args.force),
         train=not bool(args.no_train),
         evaluate=not bool(args.no_evaluate),
