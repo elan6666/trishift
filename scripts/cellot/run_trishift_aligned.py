@@ -242,6 +242,7 @@ def _train_one_map(
     h5ad_path: Path,
     batch_size: int,
     n_iters: int,
+    n_inner_iters: int,
     random_state: int,
     force: bool,
 ) -> Path:
@@ -250,6 +251,7 @@ def _train_one_map(
     outdir = cond_dir / "model-cellot"
     model_cfg = _cellot_model_config()
     model_cfg["training"]["n_iters"] = int(n_iters)
+    model_cfg["training"]["n_inner_iters"] = int(n_inner_iters)
     _write_yaml(task_path, _task_config(h5ad_path, condition, batch_size, random_state))
     _write_yaml(model_path, model_cfg)
     model_pt = outdir / "cache" / "model.pt"
@@ -430,6 +432,7 @@ def run_aligned_cellot(
     work_root: Path,
     batch_size: int,
     n_iters: int,
+    n_inner_iters: int,
     max_train_conditions: int | None,
     max_eval_ctrl: int | None,
     force: bool,
@@ -488,6 +491,7 @@ def run_aligned_cellot(
                     h5ad_path=h5ad_path,
                     batch_size=batch_size,
                     n_iters=n_iters,
+                    n_inner_iters=n_inner_iters,
                     random_state=int(split_id),
                     force=force,
                 )
@@ -579,6 +583,7 @@ def run_aligned_cellot(
         "work_root": str(work_dir),
         "batch_size": int(batch_size),
         "n_iters": int(n_iters),
+        "n_inner_iters": int(n_inner_iters),
         "max_eval_ctrl": None if max_eval_ctrl is None else int(max_eval_ctrl),
     }
     (out_dir / "provenance_unseen_ctrl.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -601,7 +606,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot"))
     ap.add_argument("--work-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot" / "trishift_aligned"))
     ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--n-iters", type=int, default=1000)
+    ap.add_argument("--n-iters", type=int, default=100)
+    ap.add_argument("--n-inner-iters", type=int, default=1)
     ap.add_argument("--max-train-conditions", type=int, default=0)
     ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
@@ -620,6 +626,7 @@ def main(argv: list[str] | None = None) -> int:
         work_root=Path(args.work_root).resolve(),
         batch_size=int(args.batch_size),
         n_iters=int(args.n_iters),
+        n_inner_iters=int(args.n_inner_iters),
         max_train_conditions=(int(args.max_train_conditions) if int(args.max_train_conditions) > 0 else None),
         max_eval_ctrl=max_eval_ctrl,
         force=bool(args.force),
