@@ -170,6 +170,20 @@ def _patch_cellot_py310_compat() -> None:
     for name in ("Iterable", "Mapping", "MutableMapping", "Sequence", "MutableSequence"):
         if not hasattr(collections, name) and hasattr(collections.abc, name):
             setattr(collections, name, getattr(collections.abc, name))
+    try:
+        import torch
+    except Exception:
+        return
+    if getattr(torch.load, "_trishift_cellot_compat", False):
+        return
+    original_load = torch.load
+
+    def _load_compat(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return original_load(*args, **kwargs)
+
+    _load_compat._trishift_cellot_compat = True  # type: ignore[attr-defined]
+    torch.load = _load_compat
 
 
 def _sanitize_cellot_obs(adata, label_key: str):
@@ -248,6 +262,11 @@ def _train_one_map(
         "[(not hasattr(collections, n) and setattr(collections, n, getattr(collections.abc, n))) "
         "for n in ('Iterable','Mapping','MutableMapping','Sequence','MutableSequence')]; "
         "pd.DataFrame.to_hdf = lambda self, *args, **kwargs: None; "
+        "exec(\"import torch\\n_orig_torch_load = torch.load\\n"
+        "def _cellot_torch_load(*args, **kwargs):\\n"
+        "    kwargs.setdefault('weights_only', False)\\n"
+        "    return _orig_torch_load(*args, **kwargs)\\n"
+        "torch.load = _cellot_torch_load\"); "
         "import cellot.train.summary as cellot_summary; "
         "cellot_summary.Logger.flush = lambda self: None; "
         "sys.argv = sys.argv[1:]; "
