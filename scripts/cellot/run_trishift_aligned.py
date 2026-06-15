@@ -244,8 +244,10 @@ def _train_one_map(
     train_py = REPO_ROOT / "external" / "cellot" / "scripts" / "train.py"
     bootstrap = (
         "import collections, collections.abc, runpy, sys; "
+        "import pandas as pd; "
         "[(not hasattr(collections, n) and setattr(collections, n, getattr(collections.abc, n))) "
         "for n in ('Iterable','Mapping','MutableMapping','Sequence','MutableSequence')]; "
+        "pd.DataFrame.to_hdf = lambda self, *args, **kwargs: None; "
         "sys.argv = sys.argv[1:]; "
         "runpy.run_path(sys.argv[0], run_name='__main__')"
     )
