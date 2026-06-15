@@ -157,6 +157,15 @@ def _task_config(h5ad_path: Path, target: str, batch_size: int) -> dict[str, Any
     }
 
 
+def _patch_cellot_py310_compat() -> None:
+    import collections
+    import collections.abc
+
+    for name in ("Iterable", "Mapping", "MutableMapping", "Sequence", "MutableSequence"):
+        if not hasattr(collections, name) and hasattr(collections.abc, name):
+            setattr(collections, name, getattr(collections.abc, name))
+
+
 def _sanitize_cellot_obs(adata, label_key: str):
     keep = []
     for col in [label_key, "condition", "cell_type", "split", "transport", "cellot_condition"]:
@@ -227,9 +236,19 @@ def _train_one_map(
     model_pt = outdir / "cache" / "model.pt"
     if model_pt.exists() and not force:
         return outdir
+    train_py = REPO_ROOT / "external" / "cellot" / "scripts" / "train.py"
+    bootstrap = (
+        "import collections, collections.abc, runpy, sys; "
+        "[(not hasattr(collections, n) and setattr(collections, n, getattr(collections.abc, n))) "
+        "for n in ('Iterable','Mapping','MutableMapping','Sequence','MutableSequence')]; "
+        "sys.argv = sys.argv[1:]; "
+        "runpy.run_path(sys.argv[0], run_name='__main__')"
+    )
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "external" / "cellot" / "scripts" / "train.py"),
+        "-c",
+        bootstrap,
+        str(train_py),
         "--outdir",
         str(outdir),
         "--config",
@@ -247,6 +266,7 @@ def _train_one_map(
 
 
 def _predict_with_cellot(outdir: Path, source: np.ndarray, batch_size: int) -> np.ndarray:
+    _patch_cellot_py310_compat()
     import torch
     from cellot.utils import load_config
     from cellot.utils.loaders import load
