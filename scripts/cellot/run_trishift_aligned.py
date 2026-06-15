@@ -457,9 +457,19 @@ def run_aligned_cellot(
             train_conds = train_conds[: int(max_train_conditions)]
         train_map = _cond_embeddings(data, split_dict["train"], train_conds)
         test_map = _cond_embeddings(data, split_dict["test"], test_conds)
+        nearest_by_test = {
+            str(test_cond): _nearest_train_condition(str(test_cond), train_map, test_map)
+            for test_cond in test_conds
+        }
+        needed_train_conds = {
+            str(cond)
+            for cond in nearest_by_test.values()
+            if cond is not None
+        }
+        map_train_conds = [cond for cond in train_conds if cond in needed_train_conds]
         split_work = work_dir / f"split{int(split_id)}"
         map_outdirs: dict[str, Path] = {}
-        for train_cond in train_conds:
+        for train_cond in map_train_conds:
             safe_cond = str(train_cond).replace("/", "_")
             cond_dir = split_work / "train_maps" / safe_cond
             h5ad_path = cond_dir / "cellot_train_input.h5ad"
@@ -503,7 +513,7 @@ def run_aligned_cellot(
                 ctrl_expr = ctrl_expr[ctrl_idx]
             pred_cache: dict[str, np.ndarray] = {}
             for test_cond in test_conds:
-                nearest = _nearest_train_condition(test_cond, train_map, test_map)
+                nearest = nearest_by_test.get(str(test_cond))
                 if nearest is None or nearest not in map_outdirs:
                     all_metrics.append(
                         {
@@ -563,6 +573,7 @@ def run_aligned_cellot(
         "split_ids": [int(x) for x in split_ids],
         "split_policy_by_split": split_policies,
         "prediction_strategy": "train CellOT maps only on training perturbation conditions; apply nearest training-condition map to unseen test perturbations",
+        "train_map_strategy": "nearest-over-all-training-conditions; materialize and train only maps selected by at least one test condition",
         "deg_source": "TriShift top20_degs_final / shared DEG cache",
         "metrics_path": str(metrics_path),
         "work_root": str(work_dir),
