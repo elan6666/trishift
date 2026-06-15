@@ -304,10 +304,15 @@ def _predict_with_cellot(outdir: Path, source: np.ndarray, batch_size: int) -> n
     f_net.eval()
     g_net.eval()
     preds = []
-    with torch.no_grad():
-        for start in range(0, source.shape[0], max(1, int(batch_size))):
-            chunk = torch.tensor(source[start : start + int(batch_size)], dtype=torch.float32)
-            preds.append(g_net.transport(chunk).detach().cpu().numpy().astype(np.float32))
+    device = next(g_net.parameters()).device
+    for start in range(0, source.shape[0], max(1, int(batch_size))):
+        chunk = torch.tensor(
+            source[start : start + int(batch_size)],
+            dtype=torch.float32,
+            device=device,
+            requires_grad=True,
+        )
+        preds.append(g_net.transport(chunk).detach().cpu().numpy().astype(np.float32))
     return np.vstack(preds) if preds else np.zeros_like(source, dtype=np.float32)
 
 
