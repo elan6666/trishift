@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import pickle
@@ -433,6 +434,7 @@ def run_aligned_cellot(
     batch_size: int,
     n_iters: int,
     n_inner_iters: int,
+    parallel_maps: int,
     max_train_conditions: int | None,
     max_eval_ctrl: int | None,
     force: bool,
@@ -472,6 +474,7 @@ def run_aligned_cellot(
         map_train_conds = [cond for cond in train_conds if cond in needed_train_conds]
         split_work = work_dir / f"split{int(split_id)}"
         map_outdirs: dict[str, Path] = {}
+        train_specs: list[tuple[str, Path, Path]] = []
         for train_cond in map_train_conds:
             safe_cond = str(train_cond).replace("/", "_")
             cond_dir = split_work / "train_maps" / safe_cond
@@ -485,16 +488,7 @@ def run_aligned_cellot(
             status = "ready" if counts.get("train_source_n", 0) > 0 and counts.get("train_target_n", 0) > 0 else "empty_train_distribution"
             outdir = cond_dir / "model-cellot"
             if status == "ready" and train:
-                outdir = _train_one_map(
-                    cond_dir=cond_dir,
-                    condition=train_cond,
-                    h5ad_path=h5ad_path,
-                    batch_size=batch_size,
-                    n_iters=n_iters,
-                    n_inner_iters=n_inner_iters,
-                    random_state=int(split_id),
-                    force=force,
-                )
+                train_specs.append((train_cond, cond_dir, h5ad_path))
             map_outdirs[train_cond] = outdir
             train_rows.append(
                 {
@@ -506,6 +500,39 @@ def run_aligned_cellot(
                     **counts,
                 }
             )
+        if train_specs:
+            workers = max(1, int(parallel_maps))
+            if workers == 1:
+                for train_cond, cond_dir, h5ad_path in train_specs:
+                    map_outdirs[train_cond] = _train_one_map(
+                        cond_dir=cond_dir,
+                        condition=train_cond,
+                        h5ad_path=h5ad_path,
+                        batch_size=batch_size,
+                        n_iters=n_iters,
+                        n_inner_iters=n_inner_iters,
+                        random_state=int(split_id),
+                        force=force,
+                    )
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {
+                        pool.submit(
+                            _train_one_map,
+                            cond_dir=cond_dir,
+                            condition=train_cond,
+                            h5ad_path=h5ad_path,
+                            batch_size=batch_size,
+                            n_iters=n_iters,
+                            n_inner_iters=n_inner_iters,
+                            random_state=int(split_id),
+                            force=force,
+                        ): train_cond
+                        for train_cond, cond_dir, h5ad_path in train_specs
+                    }
+                    for future in as_completed(futures):
+                        train_cond = futures[future]
+                        map_outdirs[train_cond] = future.result()
         split_payload: dict[str, Any] = {}
         if evaluate:
             obs_cond = split_dict["test"].obs[data.label_key].astype(str)
@@ -584,6 +611,7 @@ def run_aligned_cellot(
         "batch_size": int(batch_size),
         "n_iters": int(n_iters),
         "n_inner_iters": int(n_inner_iters),
+        "parallel_maps": int(parallel_maps),
         "max_eval_ctrl": None if max_eval_ctrl is None else int(max_eval_ctrl),
     }
     (out_dir / "provenance_unseen_ctrl.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -608,6 +636,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--n-iters", type=int, default=100)
     ap.add_argument("--n-inner-iters", type=int, default=1)
+    ap.add_argument("--parallel-maps", type=int, default=1)
     ap.add_argument("--max-train-conditions", type=int, default=0)
     ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
@@ -627,6 +656,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=int(args.batch_size),
         n_iters=int(args.n_iters),
         n_inner_iters=int(args.n_inner_iters),
+        parallel_maps=int(args.parallel_maps),
         max_train_conditions=(int(args.max_train_conditions) if int(args.max_train_conditions) > 0 else None),
         max_eval_ctrl=max_eval_ctrl,
         force=bool(args.force),
