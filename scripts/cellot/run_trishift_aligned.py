@@ -601,7 +601,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot"))
     ap.add_argument("--work-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot" / "trishift_aligned"))
     ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--n-iters", type=int, default=5000)
+    ap.add_argument("--n-iters", type=int, default=1000)
     ap.add_argument("--max-train-conditions", type=int, default=0)
     ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
