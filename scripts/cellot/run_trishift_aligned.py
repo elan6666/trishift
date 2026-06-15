@@ -244,6 +244,7 @@ def _train_one_map(
     batch_size: int,
     n_iters: int,
     n_inner_iters: int,
+    map_threads: int,
     random_state: int,
     force: bool,
 ) -> Path:
@@ -260,12 +261,18 @@ def _train_one_map(
         return outdir
     train_py = REPO_ROOT / "external" / "cellot" / "scripts" / "train.py"
     bootstrap = (
-        "import collections, collections.abc, runpy, sys; "
+        "import collections, collections.abc, os, runpy, sys; "
         "import pandas as pd; "
         "[(not hasattr(collections, n) and setattr(collections, n, getattr(collections.abc, n))) "
         "for n in ('Iterable','Mapping','MutableMapping','Sequence','MutableSequence')]; "
         "pd.DataFrame.to_hdf = lambda self, *args, **kwargs: None; "
         "exec(\"import torch\\n_orig_torch_load = torch.load\\n"
+        "_trishift_threads = max(1, int(os.environ.get('TRISHIFT_CELLOT_MAP_THREADS', '4')))\\n"
+        "torch.set_num_threads(_trishift_threads)\\n"
+        "try:\\n"
+        "    torch.set_num_interop_threads(1)\\n"
+        "except RuntimeError:\\n"
+        "    pass\\n"
         "def _cellot_torch_load(*args, **kwargs):\\n"
         "    kwargs.setdefault('weights_only', False)\\n"
         "    return _orig_torch_load(*args, **kwargs)\\n"
@@ -290,6 +297,10 @@ def _train_one_map(
     if force:
         cmd.append("--restart")
     env = os.environ.copy()
+    threads = str(max(1, int(map_threads)))
+    env["TRISHIFT_CELLOT_MAP_THREADS"] = threads
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+        env.setdefault(key, threads)
     cellot_root = str(REPO_ROOT / "external" / "cellot")
     env["PYTHONPATH"] = cellot_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True)
@@ -435,6 +446,7 @@ def run_aligned_cellot(
     n_iters: int,
     n_inner_iters: int,
     parallel_maps: int,
+    map_threads: int,
     max_train_conditions: int | None,
     max_eval_ctrl: int | None,
     force: bool,
@@ -511,6 +523,7 @@ def run_aligned_cellot(
                         batch_size=batch_size,
                         n_iters=n_iters,
                         n_inner_iters=n_inner_iters,
+                        map_threads=map_threads,
                         random_state=int(split_id),
                         force=force,
                     )
@@ -525,6 +538,7 @@ def run_aligned_cellot(
                             batch_size=batch_size,
                             n_iters=n_iters,
                             n_inner_iters=n_inner_iters,
+                            map_threads=map_threads,
                             random_state=int(split_id),
                             force=force,
                         ): train_cond
@@ -612,6 +626,7 @@ def run_aligned_cellot(
         "n_iters": int(n_iters),
         "n_inner_iters": int(n_inner_iters),
         "parallel_maps": int(parallel_maps),
+        "map_threads": int(map_threads),
         "max_eval_ctrl": None if max_eval_ctrl is None else int(max_eval_ctrl),
     }
     (out_dir / "provenance_unseen_ctrl.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -637,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-iters", type=int, default=100)
     ap.add_argument("--n-inner-iters", type=int, default=1)
     ap.add_argument("--parallel-maps", type=int, default=1)
+    ap.add_argument("--map-threads", type=int, default=4)
     ap.add_argument("--max-train-conditions", type=int, default=0)
     ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
@@ -657,6 +673,7 @@ def main(argv: list[str] | None = None) -> int:
         n_iters=int(args.n_iters),
         n_inner_iters=int(args.n_inner_iters),
         parallel_maps=int(args.parallel_maps),
+        map_threads=int(args.map_threads),
         max_train_conditions=(int(args.max_train_conditions) if int(args.max_train_conditions) > 0 else None),
         max_eval_ctrl=max_eval_ctrl,
         force=bool(args.force),
