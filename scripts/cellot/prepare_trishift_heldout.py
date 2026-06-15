@@ -185,11 +185,10 @@ def _write_yaml(path: Path, obj: dict[str, Any]) -> None:
 
 
 def _sanitize_cellot_obs(adata: ad.AnnData, label_key: str) -> ad.AnnData:
-    keep = [
-        col
-        for col in [label_key, "condition", "cell_type", "split", "transport", "cellot_condition"]
-        if col in adata.obs.columns
-    ]
+    keep = []
+    for col in [label_key, "condition", "cell_type", "split", "transport", "cellot_condition"]:
+        if col in adata.obs.columns and col not in keep:
+            keep.append(col)
     adata.obs = adata.obs.loc[:, keep].copy()
     for col in adata.obs.columns:
         adata.obs[col] = adata.obs[col].astype(str).astype("category")
