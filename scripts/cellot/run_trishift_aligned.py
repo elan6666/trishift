@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import subprocess
 import sys
@@ -238,7 +239,10 @@ def _train_one_map(
     ]
     if force:
         cmd.append("--restart")
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    env = os.environ.copy()
+    cellot_root = str(REPO_ROOT / "external" / "cellot")
+    env["PYTHONPATH"] = cellot_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True)
     return outdir
 
 
