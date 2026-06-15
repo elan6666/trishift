@@ -22,12 +22,18 @@ DATASET_CONFIG = {
     "adamson": {"emb_key": "emb_b", "multi_split_default": 5, "test_ratio": 0.2},
     "dixit": {"emb_key": "emb_c", "multi_split_default": 10, "test_ratio": 0.2},
     "norman": {"emb_key": "emb_a", "multi_split_default": 5, "test_ratio": 0.2},
+    "scgen_pbmc_celltype": {
+        "emb_key": "emb_scgen_ifnb1_zenodo_prott5",
+        "multi_split_default": 5,
+        "test_ratio": 0.2,
+    },
 }
 
 DATASET_CONFIG_PATHS = {
     "adamson": REPO_ROOT / "scripts" / "trishift" / "adamson" / "config.yaml",
     "dixit": REPO_ROOT / "scripts" / "trishift" / "dixit" / "config.yaml",
     "norman": REPO_ROOT / "scripts" / "trishift" / "norman" / "config.yaml",
+    "scgen_pbmc_celltype": REPO_ROOT / "scripts" / "trishift" / "scgen_pbmc_celltype" / "config.yaml",
 }
 
 
@@ -321,8 +327,8 @@ def build_plan(
             reason = ""
             cell_counts: dict[str, Any] = {}
             if condition not in train_conds:
-                status = "not_applicable_unseen_perturbation"
-                reason = "CellOT has no target-condition training distribution under TriShift unseen-perturbation split"
+                status = "requires_aligned_runner"
+                reason = "use scripts/cellot/run_trishift_aligned.py to evaluate held-out targets with nearest training-condition maps"
             else:
                 cell_counts = _materialize_split_h5ad(
                     data=data,

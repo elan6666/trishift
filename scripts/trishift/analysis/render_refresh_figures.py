@@ -105,13 +105,29 @@ def collect_prediction_metrics(*, heldout: bool = True) -> pd.DataFrame:
         df["source_file"] = str(path.relative_to(ROOT))
         rows.append(df)
 
-    cellot = _read_csv(ROOT / "artifacts" / "results" / "cellot" / "metrics_unseen_ctrl.csv")
-    if not cellot.empty:
-        cellot = cellot.copy()
-        cellot["model"] = "CellOT"
-        cellot["dataset"] = cellot["dataset"].map(_display_dataset)
-        cellot["source_file"] = "artifacts/results/cellot/metrics_unseen_ctrl.csv"
-        rows.append(cellot)
+    if heldout:
+        for ds in ["adamson", "dixit", "norman", "scgen_pbmc_celltype"]:
+            cellot_path = ROOT / "artifacts" / "results" / "cellot" / ds / "metrics_unseen_ctrl.csv"
+            cellot = _read_csv(cellot_path)
+            if cellot.empty:
+                continue
+            cellot = cellot.copy()
+            cellot["model"] = "CellOT"
+            if "dataset" not in cellot.columns:
+                cellot["dataset"] = ds
+            cellot["dataset"] = cellot["dataset"].map(_display_dataset)
+            cellot["source_file"] = str(cellot_path.relative_to(ROOT))
+            rows.append(cellot)
+        legacy_cellot = _read_csv(ROOT / "artifacts" / "results" / "cellot" / "metrics_unseen_ctrl.csv")
+        if not legacy_cellot.empty and not any(
+            (ROOT / "artifacts" / "results" / "cellot" / ds / "metrics_unseen_ctrl.csv").exists()
+            for ds in ["adamson", "dixit", "norman", "scgen_pbmc_celltype"]
+        ):
+            legacy_cellot = legacy_cellot.copy()
+            legacy_cellot["model"] = "CellOT"
+            legacy_cellot["dataset"] = legacy_cellot["dataset"].map(_display_dataset)
+            legacy_cellot["source_file"] = "artifacts/results/cellot/metrics_unseen_ctrl.csv"
+            rows.append(legacy_cellot)
     if not rows:
         return pd.DataFrame()
     out = pd.concat(rows, ignore_index=True)
@@ -137,17 +153,24 @@ def collect_long(path: Path) -> pd.DataFrame:
 
 def collect_ablation_metrics() -> pd.DataFrame:
     rows: list[pd.DataFrame] = []
-    for p in sorted((ROOT / "artifacts" / "results" / "ablation").glob("*/*/metrics_unseen_ctrl.csv")):
-        parts = p.relative_to(ROOT / "artifacts" / "results" / "ablation").parts
-        if len(parts) < 3 or parts[0] == "plan":
+    ablation_root = ROOT / "artifacts" / "results" / "ablation"
+    for preset_dir in sorted(p for p in ablation_root.glob("*/*") if p.is_dir()):
+        parts = preset_dir.relative_to(ablation_root).parts
+        if len(parts) < 2 or parts[0] == "plan":
             continue
         dataset, preset = parts[0], parts[1]
+        p = preset_dir / "metrics_unseen_ctrl.csv"
+        if not p.exists():
+            p = preset_dir / "metrics.csv"
+        if not p.exists():
+            continue
         df = _read_csv(p)
         if df.empty:
             continue
         df = df.copy()
         df["dataset"] = _display_dataset(dataset)
         df["preset"] = preset
+        df["source_file"] = str(p.relative_to(ROOT))
         rows.append(df)
     if not rows:
         return pd.DataFrame()
@@ -314,10 +337,23 @@ def heatmap_panel(df: pd.DataFrame, out: Path, title: str, metric: str = "pearso
     return out
 
 
-def protocol_panel(out: Path) -> Path:
-    cellot = _read_csv(ROOT / "artifacts" / "results" / "cellot" / "metrics_unseen_ctrl.csv")
+def cellot_alignment_panel(out: Path) -> Path:
+    frames = []
+    for ds in ["adamson", "dixit", "norman", "scgen_pbmc_celltype"]:
+        path = ROOT / "artifacts" / "results" / "cellot" / ds / "metrics_unseen_ctrl.csv"
+        df = _read_csv(path)
+        if df.empty:
+            continue
+        df = df.copy()
+        if "dataset" not in df.columns:
+            df["dataset"] = ds
+        frames.append(df)
+    if frames:
+        cellot = pd.concat(frames, ignore_index=True)
+    else:
+        cellot = _read_csv(ROOT / "artifacts" / "results" / "cellot" / "metrics_unseen_ctrl.csv")
     if cellot.empty:
-        return no_data_panel(out, "CellOT protocol audit")
+        return no_data_panel(out, "CellOT aligned runs")
     status = (
         cellot.assign(dataset=cellot["dataset"].map(_display_dataset))
         .groupby(["dataset", "status"], as_index=False)
@@ -327,7 +363,7 @@ def protocol_panel(out: Path) -> Path:
     apply_gears_paper_style(font_scale=0.78)
     fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=240)
     ax.axis("off")
-    lines = ["CellOT protocol audit"]
+    lines = ["CellOT aligned OT baseline"]
     for _, row in status.iterrows():
         lines.append(f"{row['dataset']}: {row['status']} (n={row['size']})")
     ax.text(0.02, 0.95, "\n".join(lines), ha="left", va="top", fontsize=8)
@@ -337,6 +373,10 @@ def protocol_panel(out: Path) -> Path:
     plt.close(fig)
     _write_source(status, out.with_suffix(".csv"))
     return out
+
+
+def protocol_panel(out: Path) -> Path:
+    return cellot_alignment_panel(out)
 
 
 def _font(size: int, bold: bool = False):
@@ -406,7 +446,7 @@ def render_fig2() -> Path:
         ("e", long_metric_panel(systema, "centroid_accuracy", out_dir / "fig2e_centroid_accuracy.png", "Centroid accuracy", "accuracy")),
         ("f", long_metric_panel(systema, "generic_projection_ratio", out_dir / "fig2f_generic_shift.png", "Generic-shift dependence", "projection ratio")),
         ("g", long_metric_panel(deg, "deg_auroc", out_dir / "fig2g_deg_auroc.png", "Post-perturbation DEG prediction", "DEG AUROC")),
-        ("h", protocol_panel(out_dir / "fig2h_cellot_protocol.png")),
+        ("h", cellot_alignment_panel(out_dir / "fig2h_cellot_aligned.png")),
     ]
     return compose_grid(panels, COMP_ROOT / "fig2_main_composite.png", cols=4, cell_w=720, cell_h=470)
 
@@ -440,7 +480,7 @@ def render_fig4() -> Path:
 
 def render_fig5() -> Path:
     out_dir = FIG_ROOT / "main" / "Fig5_DistributionRecovery"
-    metrics = collect_prediction_metrics(heldout=False)
+    metrics = collect_prediction_metrics(heldout=True)
     panels = [
         ("a", point_panel(metrics, "scpram_wasserstein_degs_sum", out_dir / "fig5a_wasserstein.png", "Wasserstein distance", "Wasserstein")),
         ("b", point_panel(metrics, "scpram_r2_all_mean_mean", out_dir / "fig5b_mean_rho2.png", "Mean recovery", r"mean $\rho^2$")),
@@ -481,7 +521,7 @@ def render_supp(name: str) -> Path:
             ("a", point_panel(metrics, "pearson", out_dir / "figs3a_unseen_pearson.png", "Conventional unseen Pearson", "Pearson")),
             ("b", point_panel(metrics, "nmse", out_dir / "figs3b_unseen_nmse.png", "Conventional unseen nMSE", "nMSE")),
             ("c", point_panel(metrics, "systema_corr_20de_allpert", out_dir / "figs3c_unseen_systema.png", "Conventional unseen Systema", "Systema")),
-            ("d", protocol_panel(out_dir / "figs3d_cellot_protocol.png")),
+            ("d", cellot_alignment_panel(out_dir / "figs3d_cellot_aligned.png")),
         ]
         return compose_grid(panels, COMP_ROOT / "figs3_composite.png", cols=2, cell_w=1080, cell_h=570)
     if fig == "figs4":
@@ -497,7 +537,7 @@ def render_supp(name: str) -> Path:
         ]
         return compose_grid(panels, COMP_ROOT / "figs4_composite.png", cols=3, cell_w=760, cell_h=500)
     if fig == "figs5":
-        metrics = collect_prediction_metrics(heldout=False)
+        metrics = collect_prediction_metrics(heldout=True)
         norman = metrics[metrics["dataset"].eq("Norman")].copy() if not metrics.empty else pd.DataFrame()
         panels = [
             ("a", heatmap_panel(norman, out_dir / "figs5a_norman_heatmap.png", "Norman subgroup Pearson", "pearson")),

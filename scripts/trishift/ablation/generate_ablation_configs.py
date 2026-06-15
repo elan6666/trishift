@@ -18,6 +18,7 @@ DATASET_CONFIGS = {
     "adamson": REPO_ROOT / "scripts" / "trishift" / "adamson" / "config.yaml",
     "dixit": REPO_ROOT / "scripts" / "trishift" / "dixit" / "config.yaml",
     "norman": REPO_ROOT / "scripts" / "trishift" / "norman" / "config.yaml",
+    "scgen_pbmc_celltype": REPO_ROOT / "scripts" / "trishift" / "scgen_pbmc_celltype" / "config.yaml",
 }
 
 
@@ -188,6 +189,7 @@ def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
             encoding="utf-8",
         )
         out_dir = Path("artifacts") / "results" / "ablation" / dataset / preset_name
+        eval_flag = "" if dataset == "scgen_pbmc_celltype" else " --unseen_ctrl_eval"
         command_rows.append(
             {
                 "dataset": dataset,
@@ -200,7 +202,7 @@ def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
                 "out_dir": str(out_dir),
                 "command": (
                     "python scripts/trishift/train/main.py "
-                    f"--config {cfg_path} --unseen_ctrl_eval --out_dir {out_dir}"
+                    f"--config {cfg_path}{eval_flag} --out_dir {out_dir}"
                 ),
             }
         )
