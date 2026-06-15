@@ -344,6 +344,7 @@ def _metrics_payload_for_condition(
     condition: str,
     nearest_condition: str,
     pred_expr: np.ndarray,
+    metric_repeats: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from trishift._external_metrics import (
         average_of_perturbation_centroids,
@@ -380,7 +381,7 @@ def _metrics_payload_for_condition(
         deg_idx=degs,
         n_degs=100,
         sample_ratio=0.8,
-        times=100,
+        times=int(metric_repeats),
         seed=_stable_seed(base_seed, split_id, condition),
     )
     dist = compute_distributional_systema_metrics_from_arrays(
@@ -389,7 +390,7 @@ def _metrics_payload_for_condition(
         reference=reference,
         deg_idx=degs,
         sample_ratio=0.8,
-        times=100,
+        times=int(metric_repeats),
         seed=_stable_seed(base_seed, split_id, condition),
     )
     metrics = {
@@ -447,6 +448,7 @@ def run_aligned_cellot(
     n_inner_iters: int,
     parallel_maps: int,
     map_threads: int,
+    metric_repeats: int,
     max_train_conditions: int | None,
     max_eval_ctrl: int | None,
     force: bool,
@@ -598,6 +600,7 @@ def run_aligned_cellot(
                     condition=test_cond,
                     nearest_condition=nearest,
                     pred_expr=pred_expr,
+                    metric_repeats=metric_repeats,
                 )
                 row.update({"dataset": dataset, "model": "CellOT", "status": "ok"})
                 all_metrics.append(row)
@@ -627,6 +630,7 @@ def run_aligned_cellot(
         "n_inner_iters": int(n_inner_iters),
         "parallel_maps": int(parallel_maps),
         "map_threads": int(map_threads),
+        "metric_repeats": int(metric_repeats),
         "max_eval_ctrl": None if max_eval_ctrl is None else int(max_eval_ctrl),
     }
     (out_dir / "provenance_unseen_ctrl.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -653,6 +657,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--n-inner-iters", type=int, default=1)
     ap.add_argument("--parallel-maps", type=int, default=1)
     ap.add_argument("--map-threads", type=int, default=4)
+    ap.add_argument("--metric-repeats", type=int, default=30)
     ap.add_argument("--max-train-conditions", type=int, default=0)
     ap.add_argument("--max-eval-ctrl", type=int, default=0)
     ap.add_argument("--force", action="store_true")
@@ -674,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
         n_inner_iters=int(args.n_inner_iters),
         parallel_maps=int(args.parallel_maps),
         map_threads=int(args.map_threads),
+        metric_repeats=max(1, int(args.metric_repeats)),
         max_train_conditions=(int(args.max_train_conditions) if int(args.max_train_conditions) > 0 else None),
         max_eval_ctrl=max_eval_ctrl,
         force=bool(args.force),
