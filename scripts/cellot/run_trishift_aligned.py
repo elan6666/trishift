@@ -156,6 +156,19 @@ def _task_config(h5ad_path: Path, target: str, batch_size: int) -> dict[str, Any
     }
 
 
+def _sanitize_cellot_obs(adata, label_key: str):
+    keep = [
+        col
+        for col in [label_key, "condition", "cell_type", "split", "transport", "cellot_condition"]
+        if col in adata.obs.columns
+    ]
+    adata.obs = adata.obs.loc[:, keep].copy()
+    for col in adata.obs.columns:
+        adata.obs[col] = adata.obs[col].astype(str).astype("category")
+    adata.uns = {}
+    return adata
+
+
 def _materialize_train_condition(
     *,
     data,
@@ -183,7 +196,7 @@ def _materialize_train_condition(
         adata_part.obs["split"] = split_name
         adata_part.obs["transport"] = transport
         adata_part.obs["cellot_condition"] = ctrl_label if transport == "source" else str(train_condition)
-        parts.append(adata_part)
+        parts.append(_sanitize_cellot_obs(adata_part, label_key))
     combined = ad.concat(parts, axis=0, join="outer", merge="same", index_unique="-cellot")
     h5ad_path.parent.mkdir(parents=True, exist_ok=True)
     combined.write_h5ad(h5ad_path)

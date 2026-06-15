@@ -184,6 +184,19 @@ def _write_yaml(path: Path, obj: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(obj, sort_keys=False, allow_unicode=False), encoding="utf-8")
 
 
+def _sanitize_cellot_obs(adata: ad.AnnData, label_key: str) -> ad.AnnData:
+    keep = [
+        col
+        for col in [label_key, "condition", "cell_type", "split", "transport", "cellot_condition"]
+        if col in adata.obs.columns
+    ]
+    adata.obs = adata.obs.loc[:, keep].copy()
+    for col in adata.obs.columns:
+        adata.obs[col] = adata.obs[col].astype(str).astype("category")
+    adata.uns = {}
+    return adata
+
+
 def _materialize_split_h5ad(
     *,
     data: TriShiftData,
@@ -217,7 +230,7 @@ def _materialize_split_h5ad(
         adata_part.obs["cellot_condition"] = (
             ctrl_label if transport == "source" else str(target_condition)
         )
-        parts.append(adata_part)
+        parts.append(_sanitize_cellot_obs(adata_part, label_key))
     if not parts:
         raise ValueError(f"No cells available for CellOT target {target_condition}")
     import anndata as ad
