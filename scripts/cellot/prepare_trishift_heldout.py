@@ -145,8 +145,9 @@ def _cellot_task_config(*, h5ad_path: Path, target: str, batch_size: int, random
             "shuffle": True,
         },
         "datasplit": {
-            "name": "trishift_fixed",
+            "name": "train_test",
             "groupby": "cellot_condition",
+            "test_size": 0.2,
             "random_state": int(random_state),
         },
     }

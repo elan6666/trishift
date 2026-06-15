@@ -141,7 +141,7 @@ def _nearest_train_condition(
     return cands[0] if cands else None
 
 
-def _task_config(h5ad_path: Path, target: str, batch_size: int) -> dict[str, Any]:
+def _task_config(h5ad_path: Path, target: str, batch_size: int, random_state: int) -> dict[str, Any]:
     return {
         "data": {
             "type": "cell",
@@ -153,6 +153,12 @@ def _task_config(h5ad_path: Path, target: str, batch_size: int) -> dict[str, Any
         "dataloader": {
             "batch_size": int(batch_size),
             "shuffle": True,
+        },
+        "datasplit": {
+            "name": "train_test",
+            "groupby": "cellot_condition",
+            "test_size": 0.2,
+            "random_state": int(random_state),
         },
     }
 
@@ -196,13 +202,11 @@ def _materialize_train_condition(
     if train_ctrl.n_obs == 0 or train_target.n_obs == 0:
         return {"train_source_n": int(train_ctrl.n_obs), "train_target_n": int(train_target.n_obs)}
     parts = []
-    for split_name, transport, adata_part in (
-        ("train", "source", train_ctrl),
-        ("train", "target", train_target),
-        ("test", "source", train_ctrl[: min(train_ctrl.n_obs, max(1, min(256, train_ctrl.n_obs)))].copy()),
-        ("test", "target", train_target[: min(train_target.n_obs, max(1, min(256, train_target.n_obs)))].copy()),
+    for transport, adata_part in (
+        ("source", train_ctrl),
+        ("target", train_target),
     ):
-        adata_part.obs["split"] = split_name
+        adata_part.obs["split"] = "input"
         adata_part.obs["transport"] = transport
         adata_part.obs["cellot_condition"] = ctrl_label if transport == "source" else str(train_condition)
         parts.append(_sanitize_cellot_obs(adata_part, label_key))
@@ -224,6 +228,7 @@ def _train_one_map(
     h5ad_path: Path,
     batch_size: int,
     n_iters: int,
+    random_state: int,
     force: bool,
 ) -> Path:
     task_path = cond_dir / "task.yaml"
@@ -231,7 +236,7 @@ def _train_one_map(
     outdir = cond_dir / "model-cellot"
     model_cfg = _cellot_model_config()
     model_cfg["training"]["n_iters"] = int(n_iters)
-    _write_yaml(task_path, _task_config(h5ad_path, condition, batch_size))
+    _write_yaml(task_path, _task_config(h5ad_path, condition, batch_size, random_state))
     _write_yaml(model_path, model_cfg)
     model_pt = outdir / "cache" / "model.pt"
     if model_pt.exists() and not force:
@@ -444,6 +449,7 @@ def run_aligned_cellot(
                     h5ad_path=h5ad_path,
                     batch_size=batch_size,
                     n_iters=n_iters,
+                    random_state=int(split_id),
                     force=force,
                 )
             map_outdirs[train_cond] = outdir
