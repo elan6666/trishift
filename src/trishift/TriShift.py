@@ -1044,6 +1044,8 @@ class TriShift:
         n_ensemble: int,
     ) -> torch.Tensor:
         """Build a condition embedding matrix repeated for an ensemble."""
+        if bool(self.hparams.get("zero_condition_prior", False)):
+            return emb_table.new_zeros((int(n_ensemble), int(emb_table.shape[1])))
         cond_mode, cond_norm = self._get_cond_pool_cfg()
         cond_vec = aggregate_cond_embedding(
             emb_table,
@@ -1055,6 +1057,8 @@ class TriShift:
 
     def _build_cond_vec_batch(self, emb_table: torch.Tensor, idx_list) -> torch.Tensor:
         """Build a batch of condition embeddings from index lists."""
+        if bool(self.hparams.get("zero_condition_prior", False)):
+            return emb_table.new_zeros((len(idx_list), int(emb_table.shape[1])))
         cond_mode, cond_norm = self._get_cond_pool_cfg()
         # Scouter-style vectorized path: gather all pert indices in one tensor and reduce once.
         # Falls back to per-sample aggregation if unexpected index format is encountered.
@@ -1583,6 +1587,8 @@ class TriShift:
         gen_use_residual_head: bool = False,
         gen_state_source: str = "compressor",
         shift_input_source: str = "latent_mu",
+        zero_condition_prior: bool = False,
+        zero_reference_state: bool = False,
     ):
         """Initialize the network modules and move them to the configured device."""
         self.net = TriShiftNet(
@@ -1616,6 +1622,7 @@ class TriShift:
             gen_state_source=gen_state_source,
             gen_use_residual_head=gen_use_residual_head,
             shift_input_source=shift_input_source,
+            zero_shift_input=zero_reference_state,
         ).to(self.device)
         self.hparams["cond_pool_mode"] = str(cond_pool_mode)
         self.hparams["cond_l2_norm"] = bool(cond_l2_norm)
@@ -1624,6 +1631,8 @@ class TriShift:
         self.hparams["shift_repr_dim"] = None if shift_repr_dim is None else int(shift_repr_dim)
         self.hparams["shift_transformer_readout"] = str(shift_transformer_readout)
         self.hparams["shift_input_source"] = str(shift_input_source)
+        self.hparams["zero_condition_prior"] = bool(zero_condition_prior)
+        self.hparams["zero_reference_state"] = bool(zero_reference_state)
         self.hparams["gen_input_mode"] = str(gen_input_mode)
         self.hparams["gen_state_source"] = str(gen_state_source)
         return self

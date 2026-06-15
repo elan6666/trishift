@@ -417,6 +417,8 @@ def _init_model(
         if shift_input_source_override is not None
         else str(stage2_model_cfg.get("shift_input_source", "latent_mu"))
     )
+    zero_condition_prior = bool(stage2_model_cfg.get("zero_condition_prior", False))
+    zero_reference_state = bool(stage2_model_cfg.get("zero_reference_state", False))
     cond_pool_mode = str(stage2_model_cfg.get("cond_pool_mode", "sum"))
     cond_l2_norm = bool(stage2_model_cfg.get("cond_l2_norm", False))
     cond_dim_eff = _resolve_cond_dims_for_pool_mode(
@@ -463,6 +465,8 @@ def _init_model(
         cond_pool_mode=cond_pool_mode,
         cond_l2_norm=cond_l2_norm,
         gen_use_residual_head=gen_use_residual_head,
+        zero_condition_prior=zero_condition_prior,
+        zero_reference_state=zero_reference_state,
     )
     return model
 
@@ -1094,7 +1098,7 @@ def run_dataset_with_paths(
             "overriding for split-consistent Stage1/Stage23 training"
         )
         stage1_use_train_split = True
-    valid_matching_modes = {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}
+    valid_matching_modes = {"random", "knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}
     if mode not in valid_matching_modes:
         raise ValueError(
             f"Unsupported matching_mode={mode}. "

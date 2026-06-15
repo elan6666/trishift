@@ -426,17 +426,17 @@ class TriShiftData:
     ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Build or load top-k control indices for pert cells in split_adata.
 
-        Supports knn, ot (Sinkhorn), knn_ot, soft_ot, and scpram_ot (EMD) modes.
+        Supports random, knn, ot (Sinkhorn), knn_ot, soft_ot, and scpram_ot (EMD) modes.
         """
         if torch is None:
             raise ImportError(
                 "build_or_load_topk_map requires torch. "
                 "Install the training environment to compute top-k maps."
             )
-        if mode not in {"knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}:
-            raise ValueError("mode must be one of: knn, ot, knn_ot, soft_ot, scpram_ot")
+        if mode not in {"random", "knn", "ot", "knn_ot", "soft_ot", "scpram_ot"}:
+            raise ValueError("mode must be one of: random, knn, ot, knn_ot, soft_ot, scpram_ot")
         # Reuse KNN cache by default; OT-family cache reuse is opt-in.
-        reuse_topk_cache = mode == "knn" or (
+        reuse_topk_cache = mode in {"random", "knn"} or (
             bool(reuse_ot_cache) and mode in {"ot", "soft_ot", "knn_ot", "scpram_ot"}
         )
         cache_path_eff = cache_path if reuse_topk_cache else None
@@ -714,7 +714,11 @@ class TriShiftData:
                 f"group_key={balance_ot_group_key}, ctrl_group_counts={group_counts}"
             )
 
-        if mode == "knn":
+        if mode == "random":
+            print("[topk] computing random")
+            rng = np.random.RandomState(int(seed))
+            topk_map = rng.randint(0, int(n_ctrl), size=(int(n_pert), int(k))).astype(int, copy=False)
+        elif mode == "knn":
             print("[topk] computing knn")
             dist = torch.cdist(z_pert, z_ctrl, p=2)
             k_eff = min(k, dist.shape[1])

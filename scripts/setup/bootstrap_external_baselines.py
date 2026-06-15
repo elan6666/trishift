@@ -54,6 +54,12 @@ BASELINES: dict[str, BaselineSpec] = {
         source_candidates=("GenePert-main", "GenePert"),
         repo_url="https://github.com/zou-group/GenePert.git",
     ),
+    "cellot": BaselineSpec(
+        key="cellot",
+        target_rel="cellot",
+        source_candidates=("cellot", "CellOT"),
+        repo_url="https://github.com/bunnech/cellot.git",
+    ),
 }
 
 
@@ -195,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--only",
-        help="Comma-separated subset: scgpt,gears,biolord,genepert. Defaults to all.",
+        help="Comma-separated subset: scgpt,gears,biolord,genepert,cellot. Defaults to all.",
     )
     parser.add_argument(
         "--source-root",

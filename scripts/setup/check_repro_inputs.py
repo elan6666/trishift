@@ -104,6 +104,8 @@ def _external_items() -> list[CheckItem]:
         CheckItem("external", ROOT / "external" / "gears", False, "GEARS source tree"),
         CheckItem("external", ROOT / "external" / "GenePert-main", False, "GenePert source tree"),
         CheckItem("external", ROOT / "external" / "biolord" / "biolord-main", False, "BioLORD source tree"),
+        CheckItem("external", ROOT / "external" / "cellot", False, "CellOT source tree"),
+        CheckItem("external", ROOT / "external" / "scouter" / "results", False, "Optional Scouter result cache; source is not bootstrapped by this repository"),
     ]
 
 

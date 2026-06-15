@@ -28,6 +28,7 @@ DEFAULT_PAYLOAD_ROOTS = {
     "genepert": REPO_ROOT / "artifacts" / "results" / "genepert",
     "scgpt": REPO_ROOT / "artifacts" / "results" / "scgpt",
     "biolord": REPO_ROOT / "artifacts" / "results" / "biolord",
+    "cellot": REPO_ROOT / "artifacts" / "results" / "cellot",
 }
 
 DATASET_EMBEDDING_KEYS = {
@@ -123,13 +124,14 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
         return ModelSpec(key, "payload", "trishift", "nearest", "TriShift nearest")
     if key == "trishift_random":
         return ModelSpec(key, "payload", "trishift", "random", "TriShift random")
-    if key in {"scouter", "gears", "genepert", "scgpt", "biolord"}:
+    if key in {"scouter", "gears", "genepert", "scgpt", "biolord", "cellot"}:
         label_map = {
             "scouter": "Scouter",
             "gears": "GEARS",
             "genepert": "GenePert",
             "scgpt": "scGPT",
             "biolord": "biolord",
+            "cellot": "CellOT",
         }
         return ModelSpec(key, "payload", key, None, label_map[key])
     if key == "systema_nonctl_mean":

@@ -16,6 +16,7 @@ MODEL_COLORS = {
     "GenePert": "#8172B2",
     "scGPT": "#CCB974",
     "Scouter": "#64B5CD",
+    "CellOT": "#DD8452",
     "Systema nonctl-mean": "#7F7F7F",
     "Systema matching-mean": "#A9A9A9",
     "Mean perturbation": "#8C8C8C",

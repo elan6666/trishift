@@ -229,12 +229,27 @@ conda activate trishift-baselines
 
 `environment_baselines.yml` covers the common stack used by `GEARS` and shared evaluation tools. `GEARS` still requires a Torch/PyG installation matched to your local CUDA runtime; follow the comments in that file for the final install step.
 
+### Local asset classes
+
+This repository keeps three local asset classes separate:
+
+| Asset class | Managed by | Default location | Examples |
+| --- | --- | --- | --- |
+| Data and prepared inputs | `scripts/data/download_repro_inputs.py` and dataset-specific helpers under `scripts/data/` | `src/data/` | benchmark `.h5ad`, GenePT/protein priors, scGen PBMC inputs, BioLORD prepared `.h5ad` |
+| External source trees | `scripts/setup/bootstrap_external_baselines.py` | `external/` | scGPT, GEARS, BioLORD, GenePert, CellOT |
+| Model checkpoints | `scripts/data/download_repro_inputs.py` when a stable source is available, otherwise `configs/paths.yaml` | `artifacts/models/` | scGPT whole-human checkpoint |
+
+For scGPT specifically, keep the source checkout and pretrained checkpoint separate:
+
+- source tree: `external/scGPT-main`
+- checkpoint files: `artifacts/models/scGPT_human/{args.json,best_model.pt,vocab.json}`
+
 ### External baseline source trees
 
 Baseline repositories are not tracked directly because `external/` is a local, ignored workspace for third-party source trees, generated caches, and large intermediate files. To populate the external baselines and apply the tracked TriShift compatibility overlays, run:
 
 ```bash
-python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert,cellot
 ```
 
 If you already downloaded the baseline repositories, copy from that folder instead:
@@ -244,6 +259,7 @@ python scripts/setup/bootstrap_external_baselines.py --source-root /path/to/down
 ```
 
 The script places sources under `external/` and applies tracked overlays from `patches/external_overlays`. The current overlays include scGPT flash-attention compatibility files.
+Scouter is treated as an optional local result/source cache in this repository. If you use Scouter outputs, place or sync them under `external/scouter/`; the bootstrap script does not clone Scouter because this workflow currently consumes only already generated Scouter result files.
 
 This bootstrap step prepares source trees only. You still need the matching conda/pip environment for each baseline before running its training script.
 For the scGen PBMC baselines, `scripts/biolord/...` imports the installed BioLORD package while reading the local scGen `.h5ad` and IFNB1 prior files prepared by `scripts/data/prepare_scgen_pbmc.py`; `scripts/scgpt/...` uses the local scGPT source tree and pretrained checkpoint.
@@ -258,7 +274,7 @@ python scripts/setup/check_repro_inputs.py --scope baselines
 python scripts/setup/check_repro_inputs.py --scope scgen
 ```
 
-The checker reports missing local datasets, embeddings, BioLORD inputs, external source trees, and scGPT checkpoint files.
+The checker reports missing local datasets, embeddings, BioLORD inputs, external source trees, optional Scouter result cache, and scGPT checkpoint files.
 
 ### Data download and preprocessing
 

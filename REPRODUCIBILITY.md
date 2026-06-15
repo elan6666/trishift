@@ -309,3 +309,23 @@ The following directories are intentionally local and ignored by git:
 - `output/`
 
 Do not use ignored directories as public repository entrypoints. Use the scripts and configs tracked in git.
+
+## 10. Local Asset Boundary
+
+TriShift reproduction separates local assets into three categories:
+
+| Category | Command family | Default location |
+| --- | --- | --- |
+| Data, embeddings and prepared inputs | `scripts/data/download_repro_inputs.py` | `src/data/` |
+| Third-party source trees | `scripts/setup/bootstrap_external_baselines.py` | `external/` |
+| Model checkpoints | `scripts/data/download_repro_inputs.py` or `configs/paths.yaml` | `artifacts/models/` |
+
+For scGPT, the source checkout belongs at `external/scGPT-main`, while the whole-human pretrained checkpoint belongs at `artifacts/models/scGPT_human` unless `scgpt_pretrained_root` in `configs/paths.yaml` points elsewhere. Do not copy checkpoint files into `external/scGPT-main`.
+
+For CellOT, use:
+
+```bash
+python scripts/setup/bootstrap_external_baselines.py --only cellot
+```
+
+Scouter outputs are optional local comparison artifacts. If they are used, place or sync them under `external/scouter/`; this repository currently documents Scouter result reuse rather than bootstrapping a maintained Scouter source checkout.

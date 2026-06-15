@@ -102,8 +102,10 @@ artifacts/results/norman/metrics.csv
 Populate external baseline source trees:
 
 ```bash
-python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert
+python scripts/setup/bootstrap_external_baselines.py --only scgpt,gears,biolord,genepert,cellot
 ```
+
+This command populates third-party source trees under `external/`. It does not download model checkpoints. For scGPT, the source tree is `external/scGPT-main`, while the pretrained checkpoint is downloaded separately to `artifacts/models/scGPT_human`.
 
 Prepare BioLORD inputs and scGPT checkpoint files through the same downloader:
 

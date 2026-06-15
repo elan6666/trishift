@@ -23,6 +23,7 @@ nul
 # Local assistant / temp
 .backup/
 .byte-os/
+assets/biorender/
 .claude/
 .qoder/
 .workbuddy/

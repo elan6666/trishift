@@ -146,6 +146,7 @@ def run_unseen_ctrl_eval_from_dataset_config(
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="TriShift official training entry (profile or legacy mode)")
     ap.add_argument("--profile", default="", help="dataset profile name under scripts/trishift/train/configs")
+    ap.add_argument("--config", default="", help="dataset config overlay yaml path")
     ap.add_argument("--name", default="", help="legacy dataset name (compat mode)")
     ap.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
     ap.add_argument(
@@ -159,6 +160,14 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     out_dir = args.out_dir.strip() or None
+    config = str(args.config).strip()
+    if config:
+        if bool(args.unseen_ctrl_eval):
+            run_unseen_ctrl_eval_from_dataset_config(config, fast=bool(args.fast), out_dir=out_dir)
+        else:
+            run_from_dataset_config(config, fast=bool(args.fast), out_dir=out_dir)
+        return
+
     profile = str(args.profile).strip()
     if profile:
         if bool(args.unseen_ctrl_eval):

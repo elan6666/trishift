@@ -544,6 +544,7 @@ class TriShiftNet(nn.Module):
         gen_state_source: str = "compressor",
         gen_use_residual_head: bool = False,
         shift_input_source: str = "latent_mu",
+        zero_shift_input: bool = False,
     ):
         super().__init__()
         resolved_gen_state_dim = self._resolve_gen_state_dim(gen_state_dim, cond_dim)
@@ -556,6 +557,7 @@ class TriShiftNet(nn.Module):
             kl_weight=vae_kl_weight,
         )
         self.shift_input_source = str(shift_input_source)
+        self.zero_shift_input = bool(zero_shift_input)
         if self.shift_input_source not in {"latent_mu", "state"}:
             raise ValueError("shift_input_source must be one of: latent_mu, state")
         shift_model_dim = self._resolve_shift_model_dim(
@@ -614,12 +616,17 @@ class TriShiftNet(nn.Module):
                 if x_ctrl is None:
                     raise RuntimeError("x_ctrl is required when z_ctrl_mu is None")
                 z_ctrl_mu = self.encode_mu(x_ctrl)
+            if self.zero_shift_input:
+                return torch.zeros_like(z_ctrl_mu)
             return z_ctrl_mu
         if x_ctrl is None:
             raise RuntimeError("x_ctrl is required when shift_input_source=state")
         if self.gen.compressor is None:
             raise RuntimeError("shift_input_source=state requires generator compressor")
-        return self.gen.compressor(x_ctrl)
+        state = self.gen.compressor(x_ctrl)
+        if self.zero_shift_input:
+            return torch.zeros_like(state)
+        return state
 
     def predict_shift_repr(
         self,

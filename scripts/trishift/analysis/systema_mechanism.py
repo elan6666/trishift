@@ -438,8 +438,48 @@ def run_systema_mechanism_analysis(
         if not per_condition_df.empty and "train_distance_bin" in per_condition_df.columns
         else pd.DataFrame(columns=["dataset", "model_name", "train_distance_bin", "systema_corr_20de_allpert", "residualized_systema_corr_20de_allpert", "generic_projection_ratio"])
     )
+    long_rows: list[dict[str, Any]] = []
+    if not per_condition_df.empty:
+        for _, row in per_condition_df.iterrows():
+            for metric in [
+                "systema_corr_20de_allpert",
+                "residualized_systema_corr_20de_allpert",
+                "generic_projection_ratio",
+            ]:
+                long_rows.append(
+                    {
+                        "dataset": row["dataset"],
+                        "setting": "systema_mechanism",
+                        "split": int(row["split_id"]),
+                        "condition": row["condition"],
+                        "model": row["model_name"],
+                        "metric": metric,
+                        "value": float(row[metric]) if pd.notna(row[metric]) else float("nan"),
+                    }
+                )
+    if not centroid_df.empty:
+        for _, row in centroid_df.iterrows():
+            for metric in [
+                "centroid_accuracy",
+                "centroid_top1",
+                "centroid_top3",
+                "centroid_mean_rank",
+            ]:
+                long_rows.append(
+                    {
+                        "dataset": row["dataset"],
+                        "setting": "systema_mechanism",
+                        "split": int(row["split_id"]),
+                        "condition": "__split_summary__",
+                        "model": row["model_name"],
+                        "metric": metric,
+                        "value": float(row[metric]) if pd.notna(row[metric]) else float("nan"),
+                    }
+                )
+    long_df = pd.DataFrame(long_rows)
 
     per_condition_df.to_csv(out_dir / "systema_mechanism_per_condition.csv", index=False, encoding="utf-8-sig")
+    long_df.to_csv(out_dir / "systema_mechanism_long.csv", index=False, encoding="utf-8-sig")
     residual_summary_df.to_csv(out_dir / "residualized_systema_summary.csv", index=False, encoding="utf-8-sig")
     centroid_df.to_csv(out_dir / "centroid_accuracy_per_split.csv", index=False, encoding="utf-8-sig")
     centroid_summary_df.to_csv(out_dir / "centroid_accuracy_summary.csv", index=False, encoding="utf-8-sig")
@@ -458,6 +498,8 @@ def run_systema_mechanism_analysis(
             "result_mode": str(result_mode),
             "out_dir": str(out_dir),
             "skipped_models": skipped_models,
+            "score_boundary": "Systema-style diagnostics are evaluation-only stress tests; they reduce but do not eliminate confounding concerns.",
+            "claim_boundary": "Residualization and centroid accuracy should not be interpreted as causal mechanism discovery.",
         },
     )
     return {
