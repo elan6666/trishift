@@ -14,6 +14,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="TriShift dataset entry: norman")
     ap.add_argument('--fast', action='store_true', help='use minimal epochs/splits')
     ap.add_argument(
+        '--config',
+        default='',
+        help='dataset config overlay yaml path; defaults to this dataset config.yaml',
+    )
+    ap.add_argument(
         '--unseen_ctrl_eval',
         action='store_true',
         help='run held-out ctrl/unseen perturbation evaluation without overwriting default metrics',
@@ -26,7 +31,7 @@ def main() -> None:
         else run_from_dataset_config
     )
     runner(
-        Path(__file__).with_name('config.yaml'),
+        Path(args.config).resolve() if str(args.config).strip() else Path(__file__).with_name('config.yaml'),
         fast=bool(args.fast),
         out_dir=(args.out_dir.strip() or None),
     )
@@ -34,4 +39,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

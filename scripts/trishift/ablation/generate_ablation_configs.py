@@ -21,6 +21,17 @@ DATASET_CONFIGS = {
     "scgen_pbmc_celltype": REPO_ROOT / "scripts" / "trishift" / "scgen_pbmc_celltype" / "config.yaml",
 }
 
+DATASET_RUNNERS = {
+    "adamson": REPO_ROOT / "scripts" / "trishift" / "adamson" / "run_adamson.py",
+    "dixit": REPO_ROOT / "scripts" / "trishift" / "dixit" / "run_dixit.py",
+    "norman": REPO_ROOT / "scripts" / "trishift" / "norman" / "run_norman.py",
+    "scgen_pbmc_celltype": REPO_ROOT
+    / "scripts"
+    / "trishift"
+    / "scgen_pbmc_celltype"
+    / "run_scgen_pbmc_celltype.py",
+}
+
 
 ABLATION_PRESETS: dict[str, dict[str, Any]] = {
     "ref_random": {
@@ -165,15 +176,37 @@ def _preset_config(dataset: str, preset_name: str, split_ids: list[int] | None) 
     return out
 
 
-def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
+def _selected_presets(groups: set[str] | None, presets: set[str] | None) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for preset_name, preset in ABLATION_PRESETS.items():
+        if groups and str(preset["group"]) not in groups:
+            continue
+        if presets and preset_name not in presets:
+            continue
+        out[preset_name] = preset
+    return out
+
+
+def generate(
+    dataset: str,
+    out_root: Path,
+    split_ids: list[int] | None,
+    *,
+    groups: set[str] | None = None,
+    presets: set[str] | None = None,
+) -> dict:
     config_dir = out_root / dataset / "configs"
     command_rows: list[dict[str, Any]] = []
     config_dir.mkdir(parents=True, exist_ok=True)
-    for preset_name, preset in ABLATION_PRESETS.items():
+    selected = _selected_presets(groups, presets)
+    if not selected:
+        raise ValueError(f"No ablation presets selected for dataset={dataset}")
+    for preset_name, preset in selected.items():
         cfg = _preset_config(dataset, preset_name, split_ids)
         cfg_path = config_dir / f"{dataset}_{preset_name}.yaml"
         dump_yaml(cfg_path, cfg, allow_unicode=False)
         meta_path = config_dir / f"{dataset}_{preset_name}.meta.json"
+        runner_path = DATASET_RUNNERS[dataset].relative_to(REPO_ROOT)
         meta_path.write_text(
             json.dumps(
                 {
@@ -182,6 +215,9 @@ def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
                     "group": preset["group"],
                     "label": preset["label"],
                     "overrides": preset["overrides"],
+                    "inherits_dataset_config": str(DATASET_CONFIGS[dataset].relative_to(REPO_ROOT)),
+                    "runner": str(runner_path),
+                    "split_override": [int(x) for x in split_ids] if split_ids else None,
                 },
                 indent=2,
                 ensure_ascii=False,
@@ -201,7 +237,7 @@ def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
                 "meta_path": str(meta_path),
                 "out_dir": str(out_dir),
                 "command": (
-                    "python scripts/trishift/train/main.py "
+                    f"python {runner_path} "
                     f"--config {cfg_path}{eval_flag} --out_dir {out_dir}"
                 ),
             }
@@ -218,6 +254,8 @@ def generate(dataset: str, out_root: Path, split_ids: list[int] | None) -> dict:
         "commands_json": str(command_path),
         "commands_csv": str(csv_path),
         "n_presets": len(command_rows),
+        "groups": sorted(groups) if groups else None,
+        "presets": sorted(presets) if presets else None,
         "requires_code_flag": [
             row["preset"] for row in command_rows if row["requires_code_flag"]
         ],
@@ -229,10 +267,34 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dataset", choices=sorted(DATASET_CONFIGS), action="append", required=True)
     ap.add_argument("--out-root", default="artifacts/results/ablation/plan")
     ap.add_argument("--split-id", action="append", type=int, default=[])
+    ap.add_argument(
+        "--group",
+        action="append",
+        choices=sorted({str(p["group"]) for p in ABLATION_PRESETS.values()}),
+        default=[],
+        help="only emit presets from the selected ablation group; may be repeated",
+    )
+    ap.add_argument(
+        "--preset",
+        action="append",
+        choices=sorted(ABLATION_PRESETS),
+        default=[],
+        help="only emit selected preset names; may be repeated",
+    )
     args = ap.parse_args(argv)
     out = []
+    groups = set(args.group or []) or None
+    presets = set(args.preset or []) or None
     for dataset in args.dataset:
-        out.append(generate(dataset, Path(args.out_root), args.split_id or None))
+        out.append(
+            generate(
+                dataset,
+                Path(args.out_root),
+                args.split_id or None,
+                groups=groups,
+                presets=presets,
+            )
+        )
     print(json.dumps(out, indent=2, ensure_ascii=False))
     return 0
 

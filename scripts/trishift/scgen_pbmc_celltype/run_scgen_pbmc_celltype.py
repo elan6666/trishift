@@ -10,10 +10,15 @@ from scripts.trishift._core.train_main_core import run_from_dataset_config
 def main() -> None:
     ap = argparse.ArgumentParser(description="TriShift dataset entry: scgen_pbmc_celltype")
     ap.add_argument("--fast", action="store_true", help="use minimal epochs/splits")
+    ap.add_argument(
+        "--config",
+        default="",
+        help="dataset config overlay yaml path; defaults to this dataset config.yaml",
+    )
     ap.add_argument("--out_dir", default="", help="output directory override")
     args = ap.parse_args()
     run_from_dataset_config(
-        Path(__file__).with_name("config.yaml"),
+        Path(args.config).resolve() if str(args.config).strip() else Path(__file__).with_name("config.yaml"),
         fast=bool(args.fast),
         out_dir=(args.out_dir.strip() or None),
     )
