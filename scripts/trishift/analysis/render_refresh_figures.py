@@ -202,6 +202,15 @@ def collect_prediction_metrics(*, heldout: bool = True) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     out = pd.concat(rows, ignore_index=True)
+    if {"dataset", "condition", "subgroup"}.issubset(out.columns):
+        keyed = out.dropna(subset=["dataset", "condition", "subgroup"]).copy()
+        if not keyed.empty:
+            subgroup_map = keyed.drop_duplicates(["dataset", "condition"]).set_index(["dataset", "condition"])["subgroup"].to_dict()
+            missing = out["subgroup"].isna()
+            out.loc[missing, "subgroup"] = [
+                subgroup_map.get((dataset, condition))
+                for dataset, condition in zip(out.loc[missing, "dataset"], out.loc[missing, "condition"])
+            ]
     for col in ["pearson", "nmse", "mse_pred", "systema_corr_20de_allpert", "scpram_wasserstein_degs_sum"]:
         if col in out.columns:
             out[col] = pd.to_numeric(out[col], errors="coerce")
