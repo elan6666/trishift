@@ -34,7 +34,7 @@ SERVER_REFRESH_ROOT = ROOT / "artifacts" / "server_refresh" / "extracted"
 
 DATASET_ORDER = ["Adamson", "Dixit", "Norman", "PBMC"]
 MODEL_ORDER = ["TriShift", "CellOT", "GEARS", "BioLORD", "GenePert", "scGPT"]
-TRISHIFT_MODEL_ORDER = ["TriShift", "random", "kNN", "OT", "no reference", "no prior", "full"]
+TRISHIFT_MODEL_ORDER = ["TriShift", "kNN", "OT", "no reference", "no prior", "full"]
 SUBGROUP_ORDER = ["single", "seen2", "seen1", "seen0"]
 DISPLAY_COLORS = {
     "TriShift": "#9FD9D3",
@@ -290,6 +290,36 @@ def _color_map(names: list[str]) -> dict[str, object]:
     return cmap
 
 
+def _legend_above(
+    ax,
+    handles=None,
+    labels=None,
+    *,
+    ncol: int | None = None,
+    fontsize: float = 6.2,
+    y: float = 1.18,
+) -> None:
+    if handles is None or labels is None:
+        handles, labels = ax.get_legend_handles_labels()
+    labels = list(labels)
+    if not labels:
+        return
+    ncol = ncol or min(4, max(1, len(labels)))
+    ax.legend(
+        handles,
+        labels,
+        frameon=False,
+        fontsize=fontsize,
+        ncol=ncol,
+        loc="upper center",
+        bbox_to_anchor=(0.5, y),
+        borderaxespad=0.0,
+        handlelength=0.95,
+        columnspacing=0.75,
+        handletextpad=0.35,
+    )
+
+
 def _metric_plot_frame(
     df: pd.DataFrame,
     metric_col: str,
@@ -399,7 +429,7 @@ def compact_bar_panel(
     ax.set_xticklabels(xs, rotation=32, ha="right")
     ax.set_xlabel("")
     ax.set_ylabel(ylabel)
-    ax.set_title(title, pad=8)
+    ax.set_title(title, pad=13)
     if y_cap is not None:
         ax.set_ylim(top=y_cap * 1.18)
     else:
@@ -407,8 +437,8 @@ def compact_bar_panel(
         if not vals.empty and vals.min() >= 0:
             ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis="y")
-    ax.legend(frameon=False, fontsize=6.2, ncol=min(3, max(1, len(hues))), loc="upper left", bbox_to_anchor=(0.02, 0.995), borderaxespad=0.0, handlelength=0.9, columnspacing=0.8)
-    fig.tight_layout(pad=0.35)
+    _legend_above(ax, ncol=min(4, max(1, len(hues))), y=1.32)
+    fig.tight_layout(pad=0.35, rect=(0, 0, 1, 0.78))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -481,13 +511,13 @@ def boxplot_panel(
     ax.set_xticklabels(xs, rotation=28, ha="right")
     ax.set_xlabel("")
     ax.set_ylabel(ylabel)
-    ax.set_title(title, pad=6)
+    ax.set_title(title, pad=12)
     if y_cap is not None:
         ax.set_ylim(top=y_cap * 1.18)
     style_axis(ax, grid_axis="y")
     handles = [plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], edgecolor="#444444", linewidth=0.65) for h in hues]
-    ax.legend(handles, hues, frameon=False, fontsize=6.2, ncol=min(3, len(hues)), loc="upper left", bbox_to_anchor=(0.02, 1.02), borderaxespad=0.0, handlelength=0.9, columnspacing=0.8)
-    fig.tight_layout(pad=0.35)
+    _legend_above(ax, handles, hues, ncol=min(4, len(hues)), y=1.32)
+    fig.tight_layout(pad=0.35, rect=(0, 0, 1, 0.78))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -722,11 +752,11 @@ def case_bar_panel(
     ax.set_xticklabels(genes_order)
     ax.set_xlabel("")
     ax.set_ylabel("Change over control")
-    ax.set_title(title, pad=10)
+    ax.set_title(title, pad=16)
     ax.tick_params(axis="x", rotation=38)
     style_axis(ax, grid_axis="y")
-    ax.legend(frameon=False, ncol=min(6, len(hue_order)), loc="lower center", bbox_to_anchor=(0.5, -0.52), borderaxespad=0.0, handlelength=1.4, columnspacing=1.0)
-    fig.subplots_adjust(top=0.88, bottom=0.38)
+    _legend_above(ax, ncol=min(6, len(hue_order)), fontsize=6.5, y=1.17)
+    fig.subplots_adjust(top=0.78, bottom=0.26, left=0.08, right=0.99)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -885,10 +915,10 @@ def line_panel(
     ax.set_xticklabels(order)
     ax.set_xlabel("Train-distance bin")
     ax.set_ylabel(ylabel)
-    ax.set_title(title, pad=4)
+    ax.set_title(title, pad=11)
     style_axis(ax, grid_axis="y")
-    ax.legend(frameon=False, fontsize=6.2, ncol=2, handlelength=1.1)
-    fig.tight_layout(pad=0.35)
+    _legend_above(ax, ncol=min(3, max(1, len(models))), y=1.30)
+    fig.tight_layout(pad=0.35, rect=(0, 0, 1, 0.78))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -1059,9 +1089,9 @@ def render_fig3() -> Path:
     out_dir = FIG_ROOT / "main" / "Fig3_Ablation"
     ab = collect_ablation_metrics()
     panels = [
-        ("a", ablation_metric_panel(ab, ["ref_random", "ref_knn", "ref_ot"], {"ref_random": "random", "ref_knn": "kNN", "ref_ot": "OT"}, "pearson", out_dir / "fig3a_reference_pearson.png", "Reference construction: Pearson", "Pearson")),
-        ("b", ablation_metric_panel(ab, ["ref_random", "ref_knn", "ref_ot"], {"ref_random": "random", "ref_knn": "kNN", "ref_ot": "OT"}, "nmse", out_dir / "fig3b_reference_nmse.png", "Reference construction: nMSE", "nMSE")),
-        ("c", ablation_metric_panel(ab, ["ref_random", "ref_knn", "ref_ot"], {"ref_random": "random", "ref_knn": "kNN", "ref_ot": "OT"}, "systema_corr_20de_allpert", out_dir / "fig3c_reference_systema.png", "Reference construction: Systema", "Systema Pearson")),
+        ("a", ablation_metric_panel(ab, ["ref_knn", "ref_ot"], {"ref_knn": "kNN", "ref_ot": "OT"}, "pearson", out_dir / "fig3a_reference_pearson.png", "Reference construction: Pearson", "Pearson")),
+        ("b", ablation_metric_panel(ab, ["ref_knn", "ref_ot"], {"ref_knn": "kNN", "ref_ot": "OT"}, "nmse", out_dir / "fig3b_reference_nmse.png", "Reference construction: nMSE", "nMSE")),
+        ("c", ablation_metric_panel(ab, ["ref_knn", "ref_ot"], {"ref_knn": "kNN", "ref_ot": "OT"}, "systema_corr_20de_allpert", out_dir / "fig3c_reference_systema.png", "Reference construction: Systema", "Systema Pearson")),
         ("d", ablation_metric_panel(ab, ["cond_no_reference", "cond_no_prior", "cond_full"], {"cond_no_reference": "no reference", "cond_no_prior": "no prior", "cond_full": "full"}, "pearson", out_dir / "fig3d_conditioning_pearson.png", "Conditioning input: Pearson", "Pearson")),
         ("e", ablation_metric_panel(ab, ["cond_no_reference", "cond_no_prior", "cond_full"], {"cond_no_reference": "no reference", "cond_no_prior": "no prior", "cond_full": "full"}, "nmse", out_dir / "fig3e_conditioning_nmse.png", "Conditioning input: nMSE", "nMSE")),
         ("f", ablation_metric_panel(ab, ["cond_no_reference", "cond_no_prior", "cond_full"], {"cond_no_reference": "no reference", "cond_no_prior": "no prior", "cond_full": "full"}, "systema_corr_20de_allpert", out_dir / "fig3f_conditioning_systema.png", "Conditioning input: Systema", "Systema Pearson")),
