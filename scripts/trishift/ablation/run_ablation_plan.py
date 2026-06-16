@@ -4,7 +4,9 @@ import argparse
 import csv
 import os
 import queue
+import shlex
 import subprocess
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -60,7 +62,7 @@ def _write_commands(log_dir: Path, rows: list[dict[str, str]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["idx", "dataset", "preset", "group", "out_dir", "command"],
+            fieldnames=["idx", "dataset", "preset", "group", "out_dir", "command", "resolved_command"],
         )
         writer.writeheader()
         for idx, row in enumerate(rows):
@@ -72,8 +74,15 @@ def _write_commands(log_dir: Path, rows: list[dict[str, str]]) -> None:
                     "group": row["group"],
                     "out_dir": row["out_dir"],
                     "command": row["command"],
+                    "resolved_command": _resolve_command(row["command"]),
                 }
             )
+
+
+def _resolve_command(command: str) -> str:
+    if command.startswith("python "):
+        return f"{shlex.quote(sys.executable)} {command[len('python '):]}"
+    return command
 
 
 def run_plan(
@@ -121,7 +130,7 @@ def run_plan(
                 return
             dataset = row["dataset"]
             preset = row["preset"]
-            command = row["command"]
+            command = _resolve_command(row["command"])
             log = log_dir / f"{idx:02d}_{dataset}_{preset}.log"
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
