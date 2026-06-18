@@ -12,22 +12,101 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "external" / "cellot"))
 
-from scripts.cellot.prepare_trishift_heldout import (
-    DATASET_CONFIG,
-    DATASET_CONFIG_PATHS,
-    _cellot_model_config,
-    _load_profile_config,
-    _resolve_repo_path,
-    _split_ids,
-    _trishift_unseen_ctrl_split,
-    _write_yaml,
-)
+from scripts.common.yaml_utils import load_yaml_file, merged_dict
+
+
+DATASET_CONFIG = {
+    "scgen_pbmc_celltype": {
+        "emb_key": "emb_scgen_ifnb1_zenodo_prott5",
+        "multi_split_default": 5,
+        "test_ratio": 0.2,
+    },
+}
+
+DATASET_CONFIG_PATHS = {
+    "scgen_pbmc_celltype": REPO_ROOT / "scripts" / "trishift" / "scgen_pbmc_celltype" / "config.yaml",
+}
+
+
+def _resolve_repo_path(path_value: str | Path) -> str:
+    path = Path(str(path_value))
+    if path.is_absolute():
+        return str(path)
+    return str((REPO_ROOT / path).resolve())
+
+
+def _load_profile_config(config_path: Path) -> tuple[str, dict, dict, dict]:
+    profile = load_yaml_file(config_path)
+    dataset = str(profile.get("dataset", "")).strip().lower()
+    if dataset not in DATASET_CONFIG:
+        raise ValueError(
+            "This CellOT entry point now keeps only the official-style PBMC "
+            f"cell-type transfer workflow; unsupported dataset: {dataset!r}"
+        )
+    base = profile.get("base") or {}
+    defaults_base = load_yaml_file(REPO_ROOT / str(base.get("defaults", "configs/defaults.yaml")))
+    paths_base = load_yaml_file(REPO_ROOT / str(base.get("paths", "configs/paths.yaml")))
+    defaults = merged_dict(defaults_base, profile.get("defaults_overrides") or {})
+    paths = merged_dict(paths_base, profile.get("paths_overrides") or {})
+    return dataset, defaults, paths, profile
+
+
+def _split_ids(defaults: dict, dataset: str, fast: bool) -> list[int]:
+    run_cfg = defaults.get("run", {}) or {}
+    raw = run_cfg.get("split_ids")
+    if raw:
+        out = []
+        for item in raw:
+            val = int(item)
+            if val > 0 and val not in out:
+                out.append(val)
+        return out[:1] if fast else out
+    n_splits = (
+        int(run_cfg.get("n_splits", DATASET_CONFIG[dataset]["multi_split_default"]))
+        if bool(run_cfg.get("multi_split", False))
+        else 1
+    )
+    out = list(range(1, n_splits + 1))
+    return out[:1] if fast else out
+
+
+def _cellot_model_config() -> dict[str, Any]:
+    return {
+        "model": {
+            "name": "cellot",
+            "hidden_units": [64, 64, 64, 64],
+            "latent_dim": 50,
+            "softplus_W_kernels": False,
+            "g": {"fnorm_penalty": 1},
+            "kernel_init_fxn": {"b": 0.1, "name": "uniform"},
+        },
+        "optim": {
+            "optimizer": "Adam",
+            "lr": 0.0001,
+            "beta1": 0.5,
+            "beta2": 0.9,
+            "weight_decay": 0,
+        },
+        "training": {
+            "n_iters": 100000,
+            "n_inner_iters": 10,
+            "cache_freq": 1000,
+            "eval_freq": 250,
+            "logs_freq": 50,
+        },
+    }
+
+
+def _write_yaml(path: Path, obj: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(obj, sort_keys=False, allow_unicode=False), encoding="utf-8")
 
 
 def _load_data_with_degs(dataset: str, defaults: dict, paths: dict):
@@ -103,21 +182,21 @@ def _cond_embeddings(data, adata, conds: list[str]) -> dict[str, np.ndarray]:
 
 
 def _aligned_split(data, *, dataset: str, split_id: int, defaults: dict) -> dict:
-    if dataset == "scgen_pbmc_celltype":
-        from scripts.trishift._core.run_dataset_core import (
-            DATASET_CONFIG as CORE_DATASET_CONFIG,
-            _split_by_dataset_config_policy,
-        )
+    if dataset != "scgen_pbmc_celltype":
+        raise ValueError("CellOT is retained only for the PBMC cell-type transfer workflow")
+    from scripts.trishift._core.run_dataset_core import (
+        DATASET_CONFIG as CORE_DATASET_CONFIG,
+        _split_by_dataset_config_policy,
+    )
 
-        split_dict = _split_by_dataset_config_policy(
-            data,
-            dataset_cfg=CORE_DATASET_CONFIG[dataset],
-            seed=int(split_id),
-        )
-        if split_dict is None:
-            raise ValueError("PBMC CellOT alignment requires the celltype_seen_perturbation split policy")
-        return split_dict
-    return _trishift_unseen_ctrl_split(data, dataset=dataset, split_id=int(split_id), defaults=defaults)
+    split_dict = _split_by_dataset_config_policy(
+        data,
+        dataset_cfg=CORE_DATASET_CONFIG[dataset],
+        seed=int(split_id),
+    )
+    if split_dict is None:
+        raise ValueError("PBMC CellOT alignment requires the celltype_seen_perturbation split policy")
+    return split_dict
 
 
 def _nearest_train_condition(
@@ -211,6 +290,12 @@ def _materialize_train_condition(
     label_key = data.label_key
     ctrl_label = data.ctrl_label
     train = split_dict["train"]
+    if str(split_dict.get("split_policy", "")) == "celltype_seen_perturbation":
+        domain_key = str(split_dict.get("split_domain_key", "cell_type"))
+        test_domains = {str(x) for x in split_dict.get("test_domain_values", [])}
+        if domain_key in train.obs.columns and test_domains:
+            domain_values = train.obs[domain_key].astype(str)
+            train = train[~domain_values.isin(test_domains).values].copy()
     obs_cond = train.obs[label_key].astype(str)
     train_ctrl = train[obs_cond.eq(ctrl_label).values].copy()
     train_target = train[obs_cond.eq(str(train_condition)).values].copy()
@@ -234,6 +319,115 @@ def _materialize_train_condition(
         "h5ad_n_obs": int(combined.n_obs),
         "h5ad_n_vars": int(combined.n_vars),
     }
+
+
+def _cellot_runtime_patch() -> str:
+    return r'''
+import os
+import torch
+
+_orig_torch_load = torch.load
+_trishift_threads = max(1, int(os.environ.get('TRISHIFT_CELLOT_MAP_THREADS', '4')))
+torch.set_num_threads(_trishift_threads)
+try:
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    pass
+
+def _cellot_torch_load(*args, **kwargs):
+    kwargs.setdefault('weights_only', False)
+    return _orig_torch_load(*args, **kwargs)
+
+torch.load = _cellot_torch_load
+
+_device_name = os.environ.get('TRISHIFT_CELLOT_DEVICE', '').strip().lower()
+if _device_name in {'auto', 'gpu'}:
+    _device_name = 'cuda' if torch.cuda.is_available() else 'cpu'
+if _device_name == 'cuda' and not torch.cuda.is_available():
+    raise RuntimeError('TRISHIFT_CELLOT_DEVICE=cuda was requested, but torch.cuda.is_available() is false')
+
+if _device_name and _device_name != 'cpu':
+    _device = torch.device(_device_name)
+    print(f'[trishift-cellot] using device={_device}', flush=True)
+
+    _orig_tensor_numpy = torch.Tensor.numpy
+
+    def _tensor_numpy_cpu_safe(self):
+        if self.device.type != 'cpu':
+            return _orig_tensor_numpy(self.detach().cpu())
+        return _orig_tensor_numpy(self)
+
+    torch.Tensor.numpy = _tensor_numpy_cpu_safe
+
+    import cellot.train.train as _cellot_train
+    import cellot.utils.loaders as _cellot_loaders
+    from collections.abc import MutableMapping
+
+    def _move_batch(obj):
+        if torch.is_tensor(obj):
+            return obj.to(_device, non_blocking=True)
+        if isinstance(obj, tuple):
+            return type(obj)(*[_move_batch(x) for x in obj]) if hasattr(obj, '_fields') else tuple(_move_batch(x) for x in obj)
+        if isinstance(obj, list):
+            return [_move_batch(x) for x in obj]
+        if isinstance(obj, MutableMapping):
+            return type(obj)((k, _move_batch(v)) for k, v in obj.items())
+        return obj
+
+    def _move_modules(obj):
+        if isinstance(obj, torch.nn.Module):
+            return obj.to(_device)
+        if isinstance(obj, tuple):
+            return type(obj)(*[_move_modules(x) for x in obj]) if hasattr(obj, '_fields') else tuple(_move_modules(x) for x in obj)
+        if isinstance(obj, list):
+            return [_move_modules(x) for x in obj]
+        return obj
+
+    def _move_optimizer_state(opt):
+        for state in opt.state.values():
+            for key, value in list(state.items()):
+                state[key] = _move_batch(value)
+
+    def _move_opts(obj):
+        if hasattr(obj, '_fields'):
+            for opt in obj:
+                _move_optimizer_state(opt)
+            return obj
+        if isinstance(obj, (tuple, list)):
+            for opt in obj:
+                _move_optimizer_state(opt)
+            return obj
+        _move_optimizer_state(obj)
+        return obj
+
+    _orig_load = _cellot_train.load
+
+    def _load_on_device(*args, **kwargs):
+        model, opts, loader = _orig_load(*args, **kwargs)
+        return _move_modules(model), _move_opts(opts), loader
+
+    _cellot_train.load = _load_on_device
+    _cellot_loaders.load = _load_on_device
+
+    _orig_cast_loader_to_iterator = _cellot_train.cast_loader_to_iterator
+
+    def _wrap_iterator_tree(obj):
+        if isinstance(obj, MutableMapping):
+            for key, value in list(obj.items()):
+                obj[key] = _wrap_iterator_tree(value)
+            return obj
+        if hasattr(obj, '__next__'):
+            def _gen():
+                for item in obj:
+                    yield _move_batch(item)
+            return _gen()
+        return obj
+
+    def _cast_loader_to_iterator_on_device(*args, **kwargs):
+        return _wrap_iterator_tree(_orig_cast_loader_to_iterator(*args, **kwargs))
+
+    _cellot_train.cast_loader_to_iterator = _cast_loader_to_iterator_on_device
+'''
 
 
 def _train_one_map(
@@ -266,17 +460,7 @@ def _train_one_map(
         "[(not hasattr(collections, n) and setattr(collections, n, getattr(collections.abc, n))) "
         "for n in ('Iterable','Mapping','MutableMapping','Sequence','MutableSequence')]; "
         "pd.DataFrame.to_hdf = lambda self, *args, **kwargs: None; "
-        "exec(\"import torch\\n_orig_torch_load = torch.load\\n"
-        "_trishift_threads = max(1, int(os.environ.get('TRISHIFT_CELLOT_MAP_THREADS', '4')))\\n"
-        "torch.set_num_threads(_trishift_threads)\\n"
-        "try:\\n"
-        "    torch.set_num_interop_threads(1)\\n"
-        "except RuntimeError:\\n"
-        "    pass\\n"
-        "def _cellot_torch_load(*args, **kwargs):\\n"
-        "    kwargs.setdefault('weights_only', False)\\n"
-        "    return _orig_torch_load(*args, **kwargs)\\n"
-        "torch.load = _cellot_torch_load\"); "
+        f"exec({_cellot_runtime_patch()!r}); "
         "import cellot.train.summary as cellot_summary; "
         "cellot_summary.Logger.flush = lambda self: None; "
         "sys.argv = sys.argv[1:]; "
@@ -333,6 +517,41 @@ def _predict_with_cellot(outdir: Path, source: np.ndarray, batch_size: int) -> n
 def _stable_seed(base_seed: int, split_id: int, condition: str) -> int:
     raw = f"{int(base_seed)}::{int(split_id)}::{condition}"
     return int(np.frombuffer(raw.encode("utf-8"), dtype=np.uint8).sum()) % 1000003
+
+
+def _write_mean_metrics_txt(path: Path, metrics_df: pd.DataFrame) -> None:
+    numeric = metrics_df.mean(numeric_only=True) if not metrics_df.empty else pd.Series(dtype=float)
+    preferred = [
+        "pearson",
+        "nmse",
+        "mse_de",
+        "mse_all",
+        "corr_20de",
+        "corr_all",
+        "systema_corr_20de_allpert",
+        "systema_corr_deg_r2",
+        "scpram_wasserstein_degs_sum",
+        "scpram_r2_all_mean_mean",
+        "scpram_r2_all_var_mean",
+        "distributional_systema_corr_mean",
+        "distributional_systema_corr_var",
+    ]
+    lines: list[str] = []
+    if "pearson" in numeric:
+        lines.append(str(float(numeric.get("pearson", np.nan))))
+    written = set()
+    for key in preferred:
+        if key not in numeric:
+            continue
+        out_key = key if key.startswith("mean_") else f"mean_{key}"
+        lines.append(f"{out_key}={float(numeric[key])}")
+        written.add(key)
+    for key in sorted(k for k in numeric.index if k not in written):
+        if key in {"split_id", "n_ensemble", "n_eval_ctrl"}:
+            continue
+        out_key = key if str(key).startswith("mean_") else f"mean_{key}"
+        lines.append(f"{out_key}={float(numeric[key])}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _metrics_payload_for_condition(
@@ -404,8 +623,11 @@ def _metrics_payload_for_condition(
         "n_ensemble": int(pred_expr.shape[0]),
         "n_eval_ctrl": int(ctrl_expr.shape[0]),
         "eval_ctrl_source": "target_domain_test_ctrl",
-        "prediction_ctrl_source": "cellot_nearest_train_condition_map",
+        "prediction_ctrl_source": "cellot_target_domain_ctrl_all",
+        "cellot_eval_setting": "unseen_cell_type_ood",
         "nearest_train_condition": str(nearest_condition),
+        "include_test_ctrl_in_train": split_dict.get("include_test_ctrl_in_train"),
+        "pbmc_protocol": split_dict.get("pbmc_protocol"),
     }
     genes = _gene_names(data)
     payload = {
@@ -423,8 +645,11 @@ def _metrics_payload_for_condition(
             "split_id": int(split_id),
             "split_policy": str(split_dict.get("split_policy", "unseen_ctrl_unseen_perturbation")),
             "eval_ctrl_source": "target_domain_test_ctrl",
-            "prediction_ctrl_source": "cellot_nearest_train_condition_map",
+            "prediction_ctrl_source": "cellot_target_domain_ctrl_all",
+            "cellot_eval_setting": "unseen_cell_type_ood",
             "nearest_train_condition": str(nearest_condition),
+            "include_test_ctrl_in_train": split_dict.get("include_test_ctrl_in_train"),
+            "pbmc_protocol": split_dict.get("pbmc_protocol"),
             "degs_source": "top20_degs_final",
         },
         "scpram_repeats": scpram["repeats"],
@@ -467,9 +692,14 @@ def run_aligned_cellot(
     all_metrics: list[dict[str, Any]] = []
     train_rows: list[dict[str, Any]] = []
     split_policies: dict[int, str] = {}
+    split_protocols: dict[int, str] = {}
+    split_include_test_ctrl: dict[int, bool | None] = {}
     for split_id in split_ids:
         split_dict = _aligned_split(data, dataset=dataset, split_id=int(split_id), defaults=defaults)
         split_policies[int(split_id)] = str(split_dict.get("split_policy", "unknown"))
+        split_protocols[int(split_id)] = str(split_dict.get("pbmc_protocol", "unknown"))
+        include_flag = split_dict.get("include_test_ctrl_in_train", None)
+        split_include_test_ctrl[int(split_id)] = None if include_flag is None else bool(include_flag)
         train_conds = [str(c) for c in split_dict.get("train_conds", [])]
         test_conds = [str(c) for c in split_dict.get("test_conds", [])]
         if max_train_conditions is not None:
@@ -477,7 +707,7 @@ def run_aligned_cellot(
         train_map = _cond_embeddings(data, split_dict["train"], train_conds)
         test_map = _cond_embeddings(data, split_dict["test"], test_conds)
         nearest_by_test = {
-            str(test_cond): _nearest_train_condition(str(test_cond), train_map, test_map)
+            str(test_cond): str(test_cond) if str(test_cond) in set(train_conds) else _nearest_train_condition(str(test_cond), train_map, test_map)
             for test_cond in test_conds
         }
         needed_train_conds = {
@@ -511,6 +741,10 @@ def run_aligned_cellot(
                     "train_condition": train_cond,
                     "status": status,
                     "cellot_outdir": str(outdir),
+                    "include_test_ctrl_in_train": split_dict.get(
+                        "include_test_ctrl_in_train"
+                    ),
+                    "pbmc_protocol": split_dict.get("pbmc_protocol"),
                     **counts,
                 }
             )
@@ -569,6 +803,10 @@ def run_aligned_cellot(
                             "condition": test_cond,
                             "model": "CellOT",
                             "status": "missing_nearest_train_map",
+                            "include_test_ctrl_in_train": split_dict.get(
+                                "include_test_ctrl_in_train"
+                            ),
+                            "pbmc_protocol": split_dict.get("pbmc_protocol"),
                             "pearson": np.nan,
                             "nmse": np.nan,
                         }
@@ -584,6 +822,10 @@ def run_aligned_cellot(
                             "model": "CellOT",
                             "status": "missing_trained_model",
                             "nearest_train_condition": nearest,
+                            "include_test_ctrl_in_train": split_dict.get(
+                                "include_test_ctrl_in_train"
+                            ),
+                            "pbmc_protocol": split_dict.get("pbmc_protocol"),
                             "pearson": np.nan,
                             "nmse": np.nan,
                         }
@@ -611,17 +853,16 @@ def run_aligned_cellot(
     metrics_df = pd.DataFrame(all_metrics)
     metrics_path = out_dir / "metrics_unseen_ctrl.csv"
     metrics_df.to_csv(metrics_path, index=False)
-    if not metrics_df.empty:
-        numeric = metrics_df.mean(numeric_only=True)
-        with (out_dir / "mean_pearson_unseen_ctrl.txt").open("w", encoding="utf-8") as f:
-            f.write(f"{float(numeric.get('pearson', np.nan))}\n")
+    _write_mean_metrics_txt(out_dir / "mean_pearson_unseen_ctrl.txt", metrics_df)
     pd.DataFrame(train_rows).to_csv(out_dir / "cellot_train_maps.csv", index=False)
     provenance = {
         "dataset": dataset,
         "split_ids": [int(x) for x in split_ids],
         "split_policy_by_split": split_policies,
-        "prediction_strategy": "train CellOT maps only on training perturbation conditions; apply nearest training-condition map to unseen test perturbations",
-        "train_map_strategy": "nearest-over-all-training-conditions; materialize and train only maps selected by at least one test condition",
+        "include_test_ctrl_in_train_by_split": split_include_test_ctrl,
+        "pbmc_protocol_by_split": split_protocols,
+        "prediction_strategy": "PBMC: train one ctrl-to-stimulated CellOT map on seen cell types and push held-out target-domain control cells.",
+        "train_map_strategy": "PBMC follows true unseen target-domain-control semantics with the TriShift cell-type split.",
         "deg_source": "TriShift top20_degs_final / shared DEG cache",
         "metrics_path": str(metrics_path),
         "work_root": str(work_dir),
@@ -645,16 +886,16 @@ def _parse_split_ids(value: str, defaults: dict, dataset: str, fast: bool) -> li
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Run CellOT under TriShift held-out-control/unseen-perturbation splits and metrics.")
+    ap = argparse.ArgumentParser(description="Run the PBMC official-style CellOT OOD baseline under the TriShift cell-type split and shared metrics.")
     ap.add_argument("--dataset", choices=sorted(DATASET_CONFIG_PATHS), required=True)
     ap.add_argument("--config", default="")
     ap.add_argument("--split-ids", default="")
     ap.add_argument("--fast", action="store_true")
     ap.add_argument("--out-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot"))
     ap.add_argument("--work-root", default=str(REPO_ROOT / "artifacts" / "results" / "cellot" / "trishift_aligned"))
-    ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--n-iters", type=int, default=100)
-    ap.add_argument("--n-inner-iters", type=int, default=1)
+    ap.add_argument("--batch-size", type=int, default=64)
+    ap.add_argument("--n-iters", type=int, default=100000)
+    ap.add_argument("--n-inner-iters", type=int, default=10)
     ap.add_argument("--parallel-maps", type=int, default=1)
     ap.add_argument("--map-threads", type=int, default=4)
     ap.add_argument("--metric-repeats", type=int, default=30)
@@ -667,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
     config_path = Path(args.config).resolve() if str(args.config).strip() else DATASET_CONFIG_PATHS[str(args.dataset)]
     dataset_key, defaults, _, _ = _load_profile_config(config_path)
     split_ids = _parse_split_ids(str(args.split_ids), defaults, dataset_key, fast=bool(args.fast))
-    max_eval_ctrl = int(args.max_eval_ctrl) if int(args.max_eval_ctrl) > 0 else int(defaults.get("n_eval_ensemble", 300))
+    max_eval_ctrl = int(args.max_eval_ctrl) if int(args.max_eval_ctrl) > 0 else None
     prov = run_aligned_cellot(
         dataset=dataset_key,
         config_path=config_path,

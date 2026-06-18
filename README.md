@@ -85,9 +85,10 @@ By default, the repository expects local data under `src/data`. You can still ov
 
 ### scGen PBMC IFN-beta case study
 
-The scGen PBMC case uses the Kang IFN-beta cross-cell dataset from Zenodo record
-[`10.5281/zenodo.14607156`](https://zenodo.org/records/14607156), file
-`kangCrossCell.h5ad.gz`. Download and decompress it to the expected local path with:
+The scGen PBMC case uses the Kang IFN-beta PBMC file distributed through the
+[scGen perturbation-prediction tutorial](https://scgen.readthedocs.io/en/stable/tutorials/scgen_perturbation_prediction.html)
+as `train_kang.h5ad` (backup file id `1r87vhoLLq6PXAYdmyyd89zG90eJOFYLk`).
+Download it to the expected local path with:
 
 ```bash
 python scripts/data/download_repro_inputs.py --items scgen genept
@@ -123,7 +124,7 @@ python scripts/biolord/scgen_pbmc_celltype/run_biolord_scgen_pbmc_celltype.py
 python scripts/scgpt/scgen_pbmc_celltype/run_scgpt_scgen_pbmc_celltype.py
 ```
 
-This experiment holds out cell types, not perturbations: the only perturbation is `stimulated`, so the model trains on `stimulated` responses in seen cell types and evaluates on held-out cell types using their target-domain control cells.
+This experiment holds out cell types, not perturbations: the only perturbation is `stimulated`, so the model trains on control and `stimulated` cells from seen cell types, withholds target-domain control and stimulated cells from training/model selection, and uses the target-domain control cells only as test-time reference origins.
 To switch the prior, edit `defaults_overrides.emb_key` in:
 
 - `scripts/trishift/scgen_pbmc_celltype/config.yaml`
@@ -340,7 +341,7 @@ For the scGen PBMC case, place the scGen-preprocessed Kang PBMC file at:
 
 - `src/data/scgen/train_kang_scgen.h5ad`
 
-The maintained downloader uses Zenodo record `10.5281/zenodo.14607156`:
+The maintained downloader uses the scGen tutorial backup file for `train_kang.h5ad`:
 
 ```bash
 python scripts/data/download_repro_inputs.py --items scgen genept
@@ -421,18 +422,20 @@ Shared training core:
 
 ### Figure generation
 
-The paper figures are generated from the notebooks under `notebooks/`:
+The paper figures are generated from the notebooks under `notebooks/`.
+These notebooks are the maintained figure-generation entrypoints; do not call a
+standalone figure-rendering script to create manuscript images. Shared plotting
+utilities live in `notebooks/_figure_helpers.py` and are imported by notebook
+execution only.
 
-- `Fig2_MultiDatasetBenchmark.ipynb` -> Fig. 2
-- `Fig3_ReferenceConditioning.ipynb` -> Fig. 3
+- `Fig2_ReferenceTransfer.ipynb` -> Fig. 2
+- `Fig3_Ablation.ipynb` -> Fig. 3
 - `Fig4_NormanGeneralization.ipynb` -> Fig. 4
 - `Fig5_DistributionRecovery.ipynb` -> Fig. 5
-- `FigS1_BenchmarkExtension.ipynb` -> Fig. S1
+- `FigS1_ReferenceTransferFull.ipynb` -> Fig. S1
 - `FigS2_AdditionalCases.ipynb` -> Fig. S2
-- `FigS3_BiologyAndAblation.ipynb` -> Fig. S3
-- `FigS4_CentroidAnalysis.ipynb` -> Fig. S4
-- `FigS5_Robustness.ipynb` -> Fig. S5
-- `FigS6_Stage1LatentClustering.ipynb` -> Fig. S6
+- `FigS3_DixitRobustness.ipynb` -> Fig. S3
+- `FigS4_Module1LatentState.ipynb` -> Fig. S4
 
 Primary outputs are written under:
 

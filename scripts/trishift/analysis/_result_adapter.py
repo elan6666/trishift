@@ -15,6 +15,7 @@ import pandas as pd
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+REQUIRED_PBMC_PROTOCOL = "true_unseen_target_domain_ctrl"
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
@@ -142,6 +143,8 @@ def resolve_model_spec(model_name: str) -> ModelSpec:
 
 
 def default_payload_root(base_model: str, dataset: str) -> Path:
+    if base_model == "cellot" and str(dataset) != "scgen_pbmc_celltype":
+        raise ValueError("CellOT payload analysis is retained only for scgen_pbmc_celltype")
     root = DEFAULT_PAYLOAD_ROOTS[base_model]
     return (root / dataset).resolve()
 
@@ -268,6 +271,8 @@ def resolve_result(
     spec = resolve_model_spec(model_name)
     dataset_key = str(dataset).strip()
     mode_key = _normalize_result_mode(result_mode)
+    if spec.base_model == "cellot" and dataset_key != "scgen_pbmc_celltype":
+        raise ValueError("CellOT payload analysis is retained only for scgen_pbmc_celltype")
     if spec.kind == "payload":
         payload_root = Path(result_dir).resolve() if result_dir else default_payload_root(spec.base_model or "", dataset_key)
         split_ids = _discover_available_payload_splits(
@@ -368,7 +373,23 @@ def load_payload_item(
     normalized = {normalize_condition(str(k)): v for k, v in payload.items()}
     if cond_key not in normalized:
         raise KeyError(f"Condition not found in payload: {condition}")
-    return normalized[cond_key]
+    item = normalized[cond_key]
+    if normalize_condition(str(dataset)) == "scgen_pbmc_celltype":
+        meta = item.get("export_metadata", {}) if isinstance(item, dict) else {}
+        if not isinstance(meta, dict):
+            raise ValueError(f"PBMC payload lacks export_metadata: {pkl_path}")
+        protocol = str(meta.get("pbmc_protocol", "")).strip()
+        if protocol != REQUIRED_PBMC_PROTOCOL:
+            raise ValueError(
+                f"PBMC payload has protocol={protocol!r} at {pkl_path}; "
+                f"expected {REQUIRED_PBMC_PROTOCOL}"
+            )
+        include_flag = str(meta.get("include_test_ctrl_in_train", "")).strip().lower()
+        if include_flag not in {"false", "0"}:
+            raise ValueError(
+                f"PBMC payload does not confirm include_test_ctrl_in_train=false: {pkl_path}"
+            )
+    return item
 
 
 def condition_tokens(condition: str) -> list[str]:

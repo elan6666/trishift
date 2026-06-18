@@ -1,0 +1,37 @@
+dataset: scgen_pbmc_celltype
+base:
+  defaults: configs/defaults.yaml
+  paths: configs/paths.yaml
+defaults_overrides:
+  emb_key: emb_scgen_ifnb1_zenodo_prott5
+  n_eval_ensemble: 300
+  # Manuscript-facing PBMC protocol: target-domain controls are held out from
+  # training and used only as test-time references.
+  include_test_ctrl_in_train: false
+  pbmc_protocol: true_unseen_target_domain_ctrl
+  seed: 24
+  run:
+    multi_split: true
+    n_splits: 5
+paths_overrides:
+  datasets:
+    scgen_pbmc_celltype: src/data/scgen/perturb_processed.h5ad
+  embeddings:
+    emb_scgen_ifnb1_uniprot_prott5: src/data/scgen/priors/scgen_ifnb1_uniprot_prott5.pickle
+    emb_scgen_ifnb1_zenodo_prott5: src/data/scgen/priors/scgen_ifnb1_zenodo_prott5.pickle
+    emb_scgen_ifnb1_esm2_15b: src/data/scgen/priors/scgen_ifnb1_esm2_15b.pickle
+    emb_scgen_ifnb1_genept: src/data/scgen/priors/scgen_ifnb1_genept.pickle
+cellot_args:
+  out_root: artifacts/results/cellot
+  work_root: artifacts/results/cellot/trishift_aligned
+  # Match the official CellOT lupuspatients/IFN-beta RNA task defaults.
+  # The wrapper changes only the domain split and downstream metric export.
+  batch_size: 64
+  n_iters: 10000
+  n_inner_iters: 10
+  parallel_maps: 1
+  map_threads: 4
+  metric_repeats: 30
+  # 0 means use every target-domain control cell, matching CellOT's OOD
+  # evaluation style where all held-out source cells are pushed forward.
+  max_eval_ctrl: 0

@@ -626,7 +626,10 @@ class TriShift:
             "split_policy": split_dict.get("split_policy", None),
             "split_domain_key": split_dict.get("split_domain_key", None),
             "train_domain_values": split_dict.get("train_domain_values", None),
+            "val_domain_values": split_dict.get("val_domain_values", None),
             "test_domain_values": split_dict.get("test_domain_values", None),
+            "include_test_ctrl_in_train": split_dict.get("include_test_ctrl_in_train", None),
+            "pbmc_protocol": split_dict.get("pbmc_protocol", None),
             "eval_ctrl_source": str(eval_ctrl_source),
         }
         return metrics, full_summary
@@ -3405,6 +3408,10 @@ class TriShift:
                     "n_ensemble": ensemble_size,
                     "n_eval_ctrl": int(ctrl_expr.shape[0]),
                     "eval_ctrl_source": str(ctrl_source_eff),
+                    "include_test_ctrl_in_train": split_dict.get(
+                        "include_test_ctrl_in_train", None
+                    ),
+                    "pbmc_protocol": split_dict.get("pbmc_protocol", None),
                 }
             )
 
@@ -3606,7 +3613,12 @@ class TriShift:
                         "split_policy": split_dict.get("split_policy", None),
                         "split_domain_key": split_dict.get("split_domain_key", None),
                         "train_domain_values": split_dict.get("train_domain_values", None),
+                        "val_domain_values": split_dict.get("val_domain_values", None),
                         "test_domain_values": split_dict.get("test_domain_values", None),
+                        "include_test_ctrl_in_train": split_dict.get(
+                            "include_test_ctrl_in_train", None
+                        ),
+                        "pbmc_protocol": split_dict.get("pbmc_protocol", None),
                         "pred_sample_idx": pred_idx.astype(int),
                         "ctrl_sample_idx": ctrl_idx.astype(int),
                         "truth_sample_idx": truth_idx.astype(int),
@@ -3634,6 +3646,15 @@ class TriShift:
                     "eval_ctrl_source": str(ctrl_source_eff),
                     "metric_ctrl_reference": "full_eval_ctrl_pool_mean",
                     "split_id": int(split_id),
+                    "split_policy": split_dict.get("split_policy", None),
+                    "split_domain_key": split_dict.get("split_domain_key", None),
+                    "train_domain_values": split_dict.get("train_domain_values", None),
+                    "val_domain_values": split_dict.get("val_domain_values", None),
+                    "test_domain_values": split_dict.get("test_domain_values", None),
+                    "include_test_ctrl_in_train": split_dict.get(
+                        "include_test_ctrl_in_train", None
+                    ),
+                    "pbmc_protocol": split_dict.get("pbmc_protocol", None),
                     "n_pred_full": int(x_pred.shape[0]),
                     "n_ctrl_full": int(ctrl_pool_export_full.shape[0]),
                     "n_truth_full": int(true_expr.shape[0]),

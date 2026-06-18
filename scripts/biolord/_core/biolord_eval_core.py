@@ -1035,6 +1035,8 @@ def _scgen_metric_summary(
         "train_domain_values": split_dict.get("train_domain_values"),
         "val_domain_values": split_dict.get("val_domain_values"),
         "test_domain_values": split_dict.get("test_domain_values"),
+        "include_test_ctrl_in_train": split_dict.get("include_test_ctrl_in_train"),
+        "pbmc_protocol": split_dict.get("pbmc_protocol"),
         "eval_ctrl_source": "target_domain_test_ctrl",
     }
     return metrics, full_summary
@@ -1093,7 +1095,7 @@ def _scgen_split_dict(data: TriShiftData, *, split_id: int, condition: str) -> d
         domain_test_ratio=0.2,
         val_domain_ratio=0.1,
         perturbation_condition=str(condition),
-        include_test_ctrl_in_train=True,
+        include_test_ctrl_in_train=False,
     )
 
 
@@ -1262,6 +1264,10 @@ def run_biolord_scgen_pbmc_celltype_eval(
                     "n_eval_ctrl": int(ctrl_expr.shape[0]),
                     "eval_ctrl_source": "target_domain_test_ctrl",
                     "prediction_ctrl_source": "target_domain_test_ctrl",
+                    "include_test_ctrl_in_train": split_dict.get(
+                        "include_test_ctrl_in_train"
+                    ),
+                    "pbmc_protocol": split_dict.get("pbmc_protocol"),
                     "biolord_prior_key": str(prior_key),
                     "biolord_attribute_source": str(attribute_source),
                 }
@@ -1293,6 +1299,10 @@ def run_biolord_scgen_pbmc_celltype_eval(
                     "train_domain_values": split_dict.get("train_domain_values"),
                     "val_domain_values": split_dict.get("val_domain_values"),
                     "test_domain_values": split_dict.get("test_domain_values"),
+                    "include_test_ctrl_in_train": split_dict.get(
+                        "include_test_ctrl_in_train"
+                    ),
+                    "pbmc_protocol": split_dict.get("pbmc_protocol"),
                     "ordered_attribute_key": attribute_key,
                     "biolord_prior_key": str(prior_key),
                     "biolord_attribute_source": str(attribute_source),

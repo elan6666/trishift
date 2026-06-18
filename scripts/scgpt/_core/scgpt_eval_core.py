@@ -110,7 +110,7 @@ DATASET_CONFIG = {
         domain_test_ratio=0.2,
         val_domain_ratio=0.1,
         perturbation_condition="stimulated",
-        include_test_ctrl_in_train=True,
+        include_test_ctrl_in_train=False,
         eval_ctrl_source="target_domain_test_ctrl",
         condition_gene_map={"stimulated": "IFNB1"},
     ),
@@ -494,6 +494,11 @@ def _split_celltype_seen_perturbation(
         "val_domain_values": [str(x) for x in val_domains],
         "test_domain_values": [str(x) for x in test_domains],
         "include_test_ctrl_in_train": bool(cfg.include_test_ctrl_in_train),
+        "pbmc_protocol": (
+            "target_domain_ctrl_seen_in_train"
+            if bool(cfg.include_test_ctrl_in_train)
+            else "true_unseen_target_domain_ctrl"
+        ),
     }
 
 
@@ -1146,6 +1151,10 @@ def _compute_metrics_and_export_payload(
                 "n_ensemble": int(pred.shape[0]),
                 "n_eval_ctrl": int(ctrl_sampled.shape[0]),
                 "eval_ctrl_source": str(eval_ctrl_source),
+                "include_test_ctrl_in_train": split_dict.get(
+                    "include_test_ctrl_in_train", None
+                ),
+                "pbmc_protocol": split_dict.get("pbmc_protocol", None),
             }
         )
         export_item = {
@@ -1171,6 +1180,10 @@ def _compute_metrics_and_export_payload(
                 "train_domain_values": split_dict.get("train_domain_values"),
                 "val_domain_values": split_dict.get("val_domain_values"),
                 "test_domain_values": split_dict.get("test_domain_values"),
+                "include_test_ctrl_in_train": split_dict.get(
+                    "include_test_ctrl_in_train", None
+                ),
+                "pbmc_protocol": split_dict.get("pbmc_protocol", None),
                 "condition_gene_map": cfg.condition_gene_map,
             },
             "full_summary": full_summary,

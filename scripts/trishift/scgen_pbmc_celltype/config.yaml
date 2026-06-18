@@ -15,6 +15,10 @@ defaults_overrides:
   n_eval_ensemble: 300
   export_full_predictions: true
   eval_ctrl_pool_mode: random_train_ctrl
+  # Manuscript-facing PBMC protocol: target-domain controls are held out from
+  # training and used only as test-time references.
+  include_test_ctrl_in_train: false
+  pbmc_protocol: true_unseen_target_domain_ctrl
   eval_ctrl_source: target_domain_test_ctrl
   eval_genept_distance: l2
   eval_genept_compare_mode: aggregate_cond

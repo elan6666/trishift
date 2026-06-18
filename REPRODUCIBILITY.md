@@ -146,8 +146,10 @@ This extracts `emb_b` and `emb_d` from Zenodo record `10.5281/zenodo.10833191`, 
 
 ## 4.1 Prepare scGen PBMC and optional protein priors
 
-The scGen PBMC IFN-beta case uses the Kang cross-cell file from Zenodo record
-`10.5281/zenodo.14607156`, file `kangCrossCell.h5ad.gz`. Download it and build the TriShift-ready h5ad with:
+The scGen PBMC IFN-beta case uses the Kang PBMC file distributed through the
+scGen perturbation-prediction tutorial as `train_kang.h5ad` (backup file id
+`1r87vhoLLq6PXAYdmyyd89zG90eJOFYLk`). Download it and build the TriShift-ready
+h5ad with:
 
 ```bash
 python scripts/data/download_repro_inputs.py --items scgen genept
@@ -272,20 +274,20 @@ python scripts/systema/adamson/run_systema_ref_compare_adamson.py
 
 ## 8. Generate paper figures
 
-Run notebooks only after the result folders have been produced.
+Run notebooks only after the result folders have been produced. The notebooks
+below are the maintained figure-generation entrypoints; manuscript images should
+not be produced by standalone render scripts.
 The recommended order is:
 
 ```text
-notebooks/Fig2_MultiDatasetBenchmark.ipynb
-notebooks/Fig3_ReferenceConditioning.ipynb
+notebooks/Fig2_ReferenceTransfer.ipynb
+notebooks/Fig3_Ablation.ipynb
 notebooks/Fig4_NormanGeneralization.ipynb
 notebooks/Fig5_DistributionRecovery.ipynb
-notebooks/FigS1_BenchmarkExtension.ipynb
+notebooks/FigS1_ReferenceTransferFull.ipynb
 notebooks/FigS2_AdditionalCases.ipynb
-notebooks/FigS3_BiologyAndAblation.ipynb
-notebooks/FigS4_CentroidAnalysis.ipynb
-notebooks/FigS5_Robustness.ipynb
-notebooks/FigS6_Stage1LatentClustering.ipynb
+notebooks/FigS3_DixitRobustness.ipynb
+notebooks/FigS4_Module1LatentState.ipynb
 ```
 
 Figure outputs are written under:

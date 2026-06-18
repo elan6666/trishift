@@ -66,7 +66,7 @@ DATASET_CONFIG = {
             "domain_test_ratio": 0.2,
             "val_domain_ratio": 0.1,
             "condition": "stimulated",
-            "include_test_ctrl_in_train": True,
+            "include_test_ctrl_in_train": False,
         },
     },
 }
@@ -678,6 +678,11 @@ def _split_celltype_seen_perturbation(
         "val_domain_values": [str(x) for x in val_domains],
         "test_domain_values": [str(x) for x in test_domains],
         "include_test_ctrl_in_train": bool(include_test_ctrl_in_train),
+        "pbmc_protocol": (
+            "target_domain_ctrl_seen_in_train"
+            if bool(include_test_ctrl_in_train)
+            else "true_unseen_target_domain_ctrl"
+        ),
     }
 
 
@@ -864,7 +869,7 @@ def _split_by_dataset_config_policy(
             perturbation_condition=(
                 None if policy.get("condition", None) is None else str(policy.get("condition"))
             ),
-            include_test_ctrl_in_train=bool(policy.get("include_test_ctrl_in_train", True)),
+            include_test_ctrl_in_train=bool(policy.get("include_test_ctrl_in_train", False)),
         )
     raise ValueError(f"Unsupported split_policy.name={policy_name!r}")
 
@@ -1264,7 +1269,7 @@ def run_dataset_with_paths(
     if eval_ctrl_source == "target_domain_test_ctrl":
         print(
             "[run] eval_ctrl_source=target_domain_test_ctrl "
-            "(cell-level target-domain controls; ignores nearest/random ctrl sampling)"
+            "(cell-level controls from split_dict['test']; ignores nearest/random ctrl sampling)"
         )
     if is_unseen_ctrl_eval:
         print(

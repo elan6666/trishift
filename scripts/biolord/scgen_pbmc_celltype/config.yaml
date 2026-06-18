@@ -10,6 +10,10 @@ task_args:
   #   biolord_self_attribute          -> generated scalar ctrl=0/stimulated=1, no external prior
   prior_key: emb_scgen_ifnb1_zenodo_prott5
   # Split ids are defined in scripts/biolord/_core/biolord_eval_core.py: 1..5.
+  # Manuscript-facing PBMC protocol: target-domain controls are held out from
+  # training and used only as test-time references.
+  include_test_ctrl_in_train: false
+  pbmc_protocol: true_unseen_target_domain_ctrl
   max_epochs: 100
   batch_size: 64
   n_latent: 32

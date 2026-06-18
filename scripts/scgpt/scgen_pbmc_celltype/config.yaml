@@ -5,6 +5,10 @@ task_args:
   # Split ids are defined in scripts/scgpt/_core/scgpt_eval_core.py: 1..5.
   # 0 means use every target-domain control cell at evaluation time.
   control_pool_size: 0
+  # Manuscript-facing PBMC protocol: target-domain controls are held out from
+  # training and used only as test-time references.
+  include_test_ctrl_in_train: false
+  pbmc_protocol: true_unseen_target_domain_ctrl
   epochs: 15
   batch_size: 64
   eval_batch_size: 64

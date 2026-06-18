@@ -269,6 +269,8 @@ def run_deg_prediction(
     if model_key not in DEFAULT_RESULT_ROOTS:
         raise ValueError(f"Unsupported model_name={model_name}")
     dataset_key = str(dataset).strip()
+    if model_key == "cellot" and dataset_key != "scgen_pbmc_celltype":
+        raise ValueError("CellOT DEG analysis is retained only for scgen_pbmc_celltype")
     overlap_ks = overlap_ks or [20, 50]
     result_root = (
         Path(result_dir).resolve()
