@@ -2,7 +2,7 @@
 
 # 每个 pert 细胞匹配的 top-k control 邻居数。
 k_topk: 100
-# control/pert 匹配方式：random | knn | ot | knn_ot | soft_ot | scpram_ot。
+# control/pert 匹配方式：knn | ot | knn_ot | soft_ot | scpram_ot。
 matching_mode: ot
 # matching_mode options: knn | ot (Sinkhorn OT) | knn_ot | soft_ot | scpram_ot (EMD / POT ot.emd)
 # 训练模式：joint | sequential | stage3_only。
@@ -206,10 +206,6 @@ model:
     cond_pool_mode: sum
     # 条件向量是否做 L2 归一化。
     cond_l2_norm: false
-    # 消融专用：将扰动先验向量置零，用于 Fig.3b no-prior。
-    zero_condition_prior: false
-    # 消融专用：将 shift 头输入的参考状态置零，用于 Fig.3b no-reference-state。
-    zero_reference_state: false
     # cross-attention（与 transformer block 互斥）。
     use_cross_attention: false
     # 注意力头数（需整除 model_dim）。
