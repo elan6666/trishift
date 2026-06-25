@@ -38,20 +38,23 @@ DATASET_ORDER = ["Adamson", "Dixit", "Norman", "PBMC"]
 MODEL_ORDER = ["TriShift", "CellOT", "GEARS", "BioLORD", "GenePert", "scGPT"]
 TRISHIFT_MODEL_ORDER = ["TriShift", "kNN", "OT", "no reference", "no prior", "full"]
 SUBGROUP_ORDER = ["single", "seen2", "seen1", "seen0"]
+BAR_MODEL_COLORS = {
+    "TriShift": "#DDB328",
+    "CellOT": "#7F7F7F",
+    "GEARS": "#D45A4C",
+    "BioLORD": "#E6863A",
+    "GenePert": "#5B82C2",
+    "scGPT": "#8E7CCB",
+    "Truth": "#6F6F6F",
+    "Control": "#CFCFCF",
+    "Perturbed": "#6F6F6F",
+}
 DISPLAY_COLORS = {
     "Adamson": "#9FD9D3",
     "Dixit": "#F2B56B",
     "Norman": "#87A8D8",
     "PBMC": "#DDD3C8",
-    "TriShift": "#9FD9D3",
-    "CellOT": "#DD8452",
-    "GEARS": "#F2B56B",
-    "BioLORD": "#F0806A",
-    "GenePert": "#87A8D8",
-    "scGPT": "#DDD3C8",
-    "Truth": "#7F7F7F",
-    "Control": "#CFCFCF",
-    "Perturbed": "#7F7F7F",
+    **BAR_MODEL_COLORS,
     "random": "#C8DCEB",
     "kNN": "#B7C8A6",
     "OT": "#9FD9D3",
@@ -72,14 +75,17 @@ FIG3_VARIANT_COLORS = {
     "no prior": "#D45A4C",
     "full": "#DDB328",
 }
-FIG2_MODEL_COLORS = {
-    "TriShift": "#DDB328",
-    "CellOT": "#7F7F7F",
-    "GEARS": "#D45A4C",
-    "BioLORD": "#E6863A",
-    "GenePert": "#5B82C2",
-    "scGPT": "#8E7CCB",
-}
+FIG2_MODEL_COLORS = {name: BAR_MODEL_COLORS[name] for name in ["TriShift", "CellOT", "GEARS", "BioLORD", "GenePert", "scGPT"]}
+PAPER_BAR_WIDTH_FRACTION = 0.68
+PAPER_BAR_EDGE_COLOR = "black"
+PAPER_BAR_EDGE_LW = 0.8
+PAPER_SINGLE_BAR_WIDTH = 0.42
+PAPER_ERROR_COLOR = "#333333"
+PAPER_ERROR_LW = 0.7
+PAPER_ERROR_CAPSIZE = 0.0
+PAPER_FIG4_BAR_PANEL_FIGSIZE = (3.4, 4.3)
+PAPER_FIG4_BAR_CELL_W = 463
+PAPER_FIG4_BAR_CELL_H = 538
 RESULT_MODE = "unseen_ctrl"
 REQUIRED_PBMC_PROTOCOL = "true_unseen_target_domain_ctrl"
 SUPP_DIRS = {
@@ -87,6 +93,7 @@ SUPP_DIRS = {
     "figs2": "FigS2_AdditionalCases",
     "figs3": "FigS3_DixitRobustness",
     "figs4": "FigS4_Module1LatentState",
+    "figs5": "FigS5_NormanGeneralizationContext",
 }
 STALE_SUPP_DIRS = [
     "FigS1_BenchmarkExtension",
@@ -104,6 +111,30 @@ STALE_SUPP_DIRS = [
     "FigS6_Module1LatentState",
     "FigS6_Stage1LatentClustering",
 ]
+
+
+def _paper_bar_kwargs(alpha: float = 1.0) -> dict[str, object]:
+    return {
+        "edgecolor": PAPER_BAR_EDGE_COLOR,
+        "linewidth": PAPER_BAR_EDGE_LW,
+        "alpha": alpha,
+    }
+
+
+def _paper_error_kwargs() -> dict[str, object]:
+    return {
+        "color": PAPER_ERROR_COLOR,
+        "linewidth": PAPER_ERROR_LW,
+        "capsize": PAPER_ERROR_CAPSIZE,
+        "capthick": 0,
+    }
+
+
+def _save_figure(fig, out: Path, *, vector_sidecar: bool = False, **kwargs) -> None:
+    """Save the canonical raster output and, for production plots, a PDF sidecar."""
+    fig.savefig(out, **kwargs)
+    if vector_sidecar and out.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+        fig.savefig(out.with_suffix(".pdf"), **kwargs)
 
 
 def _display_dataset(name: str) -> str:
@@ -665,6 +696,58 @@ def _metric_plot_frame(
     return plot
 
 
+def _summary_for_axis(
+    df: pd.DataFrame,
+    metric_col: str,
+    *,
+    x_col: str = "dataset",
+    hue_col: str = "model",
+    x_order: list[str] | None = None,
+    hue_order: list[str] | None = None,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    plot = _metric_plot_frame(df, metric_col, x_col=x_col, hue_col=hue_col)
+    if plot.empty:
+        return pd.DataFrame(), [], []
+    summary = plot.groupby([x_col, hue_col], as_index=False).agg(
+        mean=(metric_col, "mean"),
+        sem=(metric_col, "sem"),
+        n=(metric_col, "size"),
+    )
+    xs = x_order or available_order(summary[x_col], DATASET_ORDER if x_col == "dataset" else SUBGROUP_ORDER)
+    hues = hue_order or available_order(summary[hue_col], MODEL_ORDER)
+    xs = [x for x in xs if x in set(summary[x_col])]
+    hues = [h for h in hues if h in set(summary[hue_col])]
+    return summary, xs, hues
+
+
+def _summary_table_for_axis(
+    df: pd.DataFrame,
+    *,
+    x_col: str = "subgroup",
+    hue_col: str = "model",
+    value_col: str = "mean",
+    sem_col: str = "sem",
+    x_order: list[str] | None = None,
+    hue_order: list[str] | None = None,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    if df.empty or x_col not in df.columns or hue_col not in df.columns or value_col not in df.columns:
+        return pd.DataFrame(), [], []
+    summary = df[[x_col, hue_col, value_col] + ([sem_col] if sem_col in df.columns else [])].copy()
+    summary = summary.rename(columns={value_col: "mean", sem_col: "sem"})
+    if "sem" not in summary.columns:
+        summary["sem"] = np.nan
+    summary[x_col] = summary[x_col].astype(str)
+    summary[hue_col] = summary[hue_col].astype(str).map(_display_model)
+    summary["mean"] = pd.to_numeric(summary["mean"], errors="coerce")
+    summary["sem"] = pd.to_numeric(summary["sem"], errors="coerce")
+    summary = summary.dropna(subset=[x_col, hue_col, "mean"])
+    xs = x_order or available_order(summary[x_col], SUBGROUP_ORDER if x_col == "subgroup" else DATASET_ORDER)
+    hues = hue_order or available_order(summary[hue_col], MODEL_ORDER)
+    xs = [x for x in xs if x in set(summary[x_col])]
+    hues = [h for h in hues if h in set(summary[hue_col])]
+    return summary, xs, hues
+
+
 def _visible_limit(values: pd.Series) -> float | None:
     vals = pd.to_numeric(values, errors="coerce").dropna()
     if vals.empty:
@@ -689,13 +772,97 @@ def _visible_limit(values: pd.Series) -> float | None:
 
 def _group_mark_width(
     max_present: int,
-    group_width: float = 0.72,
+    group_width: float = 0.82,
     *,
-    bar_width_fraction: float = 0.86,
-    bar_step_max: float = 0.18,
+    bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
+    bar_step_max: float = 0.15,
 ) -> tuple[float, float]:
     base_width = min(bar_step_max, group_width / max(max_present, 1))
     return base_width, base_width * bar_width_fraction
+
+
+def _draw_grouped_summary_axis(
+    ax: plt.Axes,
+    summary: pd.DataFrame,
+    *,
+    metric_title: str,
+    ylabel: str,
+    panel_label: str,
+    xs: list[str],
+    hues: list[str],
+    x_col: str = "subgroup",
+    hue_col: str = "model",
+    colors: dict[str, object] | None = None,
+    cap_extreme: bool = False,
+    group_width: float = 0.82,
+    bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
+    bar_step_max: float = 0.15,
+    xtick_rotation: float = 26,
+    xtick_ha: str = "right",
+) -> None:
+    if summary.empty or not xs or not hues:
+        ax.text(0.5, 0.5, "No data", ha="center", va="center", color="#555555")
+        ax.set_axis_off()
+        return
+    colors = colors or _color_map(hues)
+    present_by_x = {
+        xval: [hue for hue in hues if not summary[(summary[x_col].eq(xval)) & (summary[hue_col].eq(hue))].empty]
+        for xval in xs
+    }
+    max_present = max([len(v) for v in present_by_x.values()] or [1])
+    base_width, bar_width = _group_mark_width(
+        max_present,
+        group_width,
+        bar_width_fraction=bar_width_fraction,
+        bar_step_max=bar_step_max,
+    )
+    x_positions = np.arange(len(xs), dtype=float)
+    y_cap = _visible_limit(summary["mean"]) if cap_extreme else None
+    for xidx, xval in enumerate(xs):
+        present_hues = present_by_x[xval]
+        offsets = [0.0] if len(present_hues) == 1 else np.linspace(
+            -base_width * (len(present_hues) - 1) / 2,
+            base_width * (len(present_hues) - 1) / 2,
+            len(present_hues),
+        )
+        for hidx, hue in enumerate(present_hues):
+            row = summary[(summary[x_col].eq(xval)) & (summary[hue_col].eq(hue))]
+            if row.empty:
+                continue
+            value = float(row["mean"].iloc[0])
+            sem = row["sem"].iloc[0] if "sem" in row.columns else np.nan
+            draw_value = min(value, y_cap) if y_cap is not None else value
+            xpos = float(x_positions[xidx] + offsets[hidx])
+            ax.bar(
+                xpos,
+                draw_value,
+                width=bar_width,
+                color=colors.get(hue),
+                **_paper_bar_kwargs(),
+            )
+            if pd.notna(sem) and not (y_cap is not None and value > y_cap):
+                ax.errorbar(
+                    xpos,
+                    draw_value,
+                    yerr=float(sem),
+                    **_paper_error_kwargs(),
+                )
+            if y_cap is not None and value > y_cap:
+                ax.text(xpos, y_cap, f">{y_cap:.2g}", ha="center", va="bottom", fontsize=6.5, color="#222222")
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(xs, rotation=xtick_rotation, ha=xtick_ha)
+    ax.set_xlabel("")
+    ax.set_ylabel(ylabel, fontsize=8.6, labelpad=2)
+    ax.set_title(metric_title, pad=4, fontsize=9.4)
+    half_group = base_width * max(max_present - 1, 0) / 2 + bar_width / 2
+    ax.set_xlim(float(x_positions[0]) - half_group - 0.08, float(x_positions[-1]) + half_group + 0.08)
+    if y_cap is not None:
+        ax.set_ylim(top=y_cap * 1.16)
+    elif not summary["mean"].dropna().empty and summary["mean"].dropna().min() >= 0:
+        ax.set_ylim(bottom=0)
+    style_axis(ax, grid_axis=None)
+    ax.tick_params(axis="both", labelsize=8.1)
+    ax.text(-0.24, 1.10, panel_label, transform=ax.transAxes, fontsize=10.5, fontweight="bold", va="top")
 
 
 def compact_bar_panel(
@@ -718,10 +885,10 @@ def compact_bar_panel(
     title_pad: float = 13,
     xtick_rotation: float = 32,
     xtick_ha: str = "right",
-    grid_axis: str | None = "y",
-    group_width: float = 0.72,
-    bar_width_fraction: float = 0.86,
-    bar_step_max: float = 0.18,
+    grid_axis: str | None = None,
+    group_width: float = 0.82,
+    bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
+    bar_step_max: float = 0.15,
     x_step: float = 1.0,
 ) -> Path:
     plot = _metric_plot_frame(df, metric_col, x_col=x_col, hue_col=hue_col)
@@ -772,19 +939,14 @@ def compact_bar_panel(
                 draw_value,
                 width=bar_width,
                 color=colors.get(hue),
-                edgecolor="black",
-                linewidth=0.5,
-                alpha=bar_alpha,
+                **_paper_bar_kwargs(bar_alpha),
             )
             if pd.notna(sem) and not (y_cap is not None and value > y_cap):
                 ax.errorbar(
                     x_base + float(offsets[hidx]),
                     draw_value,
                     yerr=float(sem),
-                    color="#333333",
-                    linewidth=0.5,
-                    capsize=1.4,
-                    capthick=0.5,
+                    **_paper_error_kwargs(),
                 )
             if y_cap is not None and value > y_cap:
                 ax.text(
@@ -811,11 +973,14 @@ def compact_bar_panel(
         if not vals.empty and vals.min() >= 0:
             ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis=grid_axis)
-    handles = [plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], edgecolor="black", linewidth=0.5, alpha=bar_alpha) for h in hues]
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
+        for h in hues
+    ]
     _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
     fig.tight_layout(pad=0.35, rect=(0, 0, 1, layout_top))
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    _save_figure(fig, out, vector_sidecar=True)
     plt.close(fig)
     _write_source(summary, out.with_suffix(".csv"))
     return out
@@ -842,10 +1007,10 @@ def compact_summary_bar_panel(
     title_pad: float = 13,
     xtick_rotation: float = 32,
     xtick_ha: str = "right",
-    grid_axis: str | None = "y",
-    group_width: float = 0.72,
-    bar_width_fraction: float = 0.86,
-    bar_step_max: float = 0.18,
+    grid_axis: str | None = None,
+    group_width: float = 0.82,
+    bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
+    bar_step_max: float = 0.15,
     x_step: float = 1.0,
 ) -> Path:
     if df.empty or x_col not in df.columns or hue_col not in df.columns or value_col not in df.columns:
@@ -903,19 +1068,14 @@ def compact_summary_bar_panel(
                 draw_value,
                 width=bar_width,
                 color=colors.get(hue),
-                edgecolor="black",
-                linewidth=0.5,
-                alpha=bar_alpha,
+                **_paper_bar_kwargs(bar_alpha),
             )
             if pd.notna(sem) and not (y_cap is not None and value > y_cap):
                 ax.errorbar(
                     x_base + float(offsets[hidx]),
                     draw_value,
                     yerr=float(sem),
-                    color="#333333",
-                    linewidth=0.5,
-                    capsize=1.4,
-                    capthick=0.5,
+                    **_paper_error_kwargs(),
                 )
             if y_cap is not None and value > y_cap:
                 ax.text(
@@ -941,13 +1101,13 @@ def compact_summary_bar_panel(
         ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis=grid_axis)
     handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], edgecolor="black", linewidth=0.5, alpha=bar_alpha)
+        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
         for h in hues
     ]
     _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
     fig.tight_layout(pad=0.35, rect=(0, 0, 1, layout_top))
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    _save_figure(fig, out, vector_sidecar=True)
     plt.close(fig)
     _write_source(summary.rename(columns={"mean": value_col, "sem": sem_col}), out.with_suffix(".csv"))
     return out
@@ -1152,7 +1312,7 @@ def ablation_metric_panel(
         x_order=DATASET_ORDER,
         hue_order=order,
         cap_extreme=metric_col == "nmse",
-        figsize=(5.1, 3.9),
+        figsize=PAPER_FIG4_BAR_PANEL_FIGSIZE,
         color_overrides=FIG3_VARIANT_COLORS,
         bar_alpha=1.0,
         legend_y=1.22,
@@ -1161,11 +1321,93 @@ def ablation_metric_panel(
         xtick_rotation=0,
         xtick_ha="center",
         grid_axis=None,
-        group_width=0.66,
-        bar_width_fraction=1.0,
-        bar_step_max=0.24,
-        x_step=1.12,
+        group_width=0.82,
+        bar_width_fraction=PAPER_BAR_WIDTH_FRACTION,
+        bar_step_max=0.15,
+        x_step=1.0,
     )
+
+
+def _ablation_metric_summary(
+    df: pd.DataFrame,
+    presets: list[str],
+    labels: dict[str, str],
+    metric_col: str,
+) -> tuple[pd.DataFrame, list[str]]:
+    if df.empty or metric_col not in df.columns:
+        return pd.DataFrame(), []
+    sub = df[df["preset"].isin(presets)].copy()
+    if sub.empty:
+        return pd.DataFrame(), []
+    sub["variant"] = sub["preset"].map(labels).fillna(sub["preset"])
+    order = [labels[p] for p in presets if p in labels and labels[p] in set(sub["variant"])]
+    plot = _metric_plot_frame(sub, metric_col, x_col="dataset", hue_col="variant")
+    if plot.empty:
+        return pd.DataFrame(), order
+    summary = plot.groupby(["dataset", "variant"], as_index=False).agg(
+        mean=(metric_col, "mean"),
+        sem=(metric_col, "sem"),
+        n=(metric_col, "size"),
+    )
+    return summary, order
+
+
+def _render_fig3_vector_composite(ab: pd.DataFrame, out: Path) -> Path:
+    ref_labels = {"ref_knn": "kNN", "ref_ot": "OT"}
+    cond_labels = {"cond_no_reference": "no reference", "cond_no_prior": "no prior", "cond_full": "full"}
+    configs = [
+        ("a", ["ref_knn", "ref_ot"], ref_labels, "nmse", "Reference construction: nMSE", "nMSE"),
+        ("b", ["ref_knn", "ref_ot"], ref_labels, "systema_corr_20de_allpert", "Reference construction: Systema", "Systema Pearson"),
+        ("c", ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "nmse", "Conditioning input: nMSE", "nMSE"),
+        ("d", ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "systema_corr_20de_allpert", "Conditioning input: Systema", "Systema Pearson"),
+    ]
+    apply_gears_paper_style(font_scale=0.82)
+    fig, axes = plt.subplots(1, 4, figsize=(13.6, 4.3), dpi=240)
+    hue_union: list[str] = []
+    for ax, (label, presets, labels, metric, title, ylabel) in zip(axes, configs):
+        summary, hues = _ablation_metric_summary(ab, presets, labels, metric)
+        xs = [x for x in DATASET_ORDER if x in set(summary["dataset"])] if not summary.empty else []
+        _draw_grouped_summary_axis(
+            ax,
+            summary,
+            metric_title=title,
+            ylabel=ylabel,
+            panel_label=label,
+            xs=xs,
+            hues=hues,
+            x_col="dataset",
+            hue_col="variant",
+            colors=FIG3_VARIANT_COLORS,
+            cap_extreme=metric == "nmse",
+            xtick_rotation=0,
+            xtick_ha="center",
+        )
+        for hue in hues:
+            if hue not in hue_union:
+                hue_union.append(hue)
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=FIG3_VARIANT_COLORS[h], **_paper_bar_kwargs())
+        for h in hue_union
+        if h in FIG3_VARIANT_COLORS
+    ]
+    if handles:
+        fig.legend(
+            handles,
+            [h for h in hue_union if h in FIG3_VARIANT_COLORS],
+            frameon=False,
+            ncol=min(len(handles), 5),
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.03),
+            fontsize=7.8,
+            handlelength=0.9,
+            columnspacing=0.8,
+            handletextpad=0.35,
+        )
+    fig.subplots_adjust(left=0.065, right=0.995, bottom=0.23, top=0.80, wspace=0.52)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _save_figure(fig, out)
+    plt.close(fig)
+    return out
 
 
 def heatmap_panel(df: pd.DataFrame, out: Path, title: str, metric: str = "pearson") -> Path:
@@ -1193,7 +1435,7 @@ def heatmap_panel(df: pd.DataFrame, out: Path, title: str, metric: str = "pearso
     fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
     fig.tight_layout(pad=0.35)
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    _save_figure(fig, out, vector_sidecar=True)
     plt.close(fig)
     _write_source(piv.reset_index(), out.with_suffix(".csv"))
     return out
@@ -1275,11 +1517,9 @@ def cellot_aligned_metric_panel(metric_col: str, out: Path, title: str, ylabel: 
     ax.bar(
         x,
         med.values,
-        width=0.42,
+        width=PAPER_SINGLE_BAR_WIDTH,
         color="#E67E3F",
-        edgecolor="black",
-        linewidth=0.55,
-        alpha=1.0,
+        **_paper_bar_kwargs(),
         label="CellOT",
     )
     rng = np.random.default_rng(11)
@@ -1397,16 +1637,16 @@ def module1_metrics_panel(out: Path) -> Path:
         plot_df = pd.DataFrame(rows)
         fig, ax = plt.subplots(figsize=(5.2, 3.8), dpi=220)
         colors = ["#4E79A7", "#5B8CC0", "#6E9BC8", "#7FAAD0"][: len(plot_df)]
-        ax.bar(plot_df["metric"], plot_df["score"], color=colors, edgecolor="black", linewidth=0.55, width=0.62)
+        ax.bar(plot_df["metric"], plot_df["score"], color=colors, width=PAPER_SINGLE_BAR_WIDTH, **_paper_bar_kwargs())
         for x, y in enumerate(plot_df["score"]):
             ax.text(x, y + 0.025, f"{y:.2f}", ha="center", va="bottom", fontsize=7)
         ax.set_title("PBMC clustering metrics", pad=5)
         ax.set_ylabel("Score")
         ax.set_ylim(0, max(0.9, float(plot_df["score"].max()) * 1.22))
-        style_axis(ax, grid_axis="y")
+        style_axis(ax, grid_axis=None)
         fig.tight_layout(pad=0.45)
         out.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out)
+        _save_figure(fig, out, vector_sidecar=True)
         plt.close(fig)
         _write_source(plot_df, out.with_suffix(".csv"))
         return out
@@ -1446,7 +1686,7 @@ def case_bar_panel_from_table(
     apply_gears_paper_style(font_scale=0.82)
     fig, ax = plt.subplots(figsize=figsize, dpi=240)
     base_width = min(0.16, 0.90 / max(len(hue_order), 1))
-    bar_width = base_width * 0.74
+    bar_width = base_width * PAPER_BAR_WIDTH_FRACTION
     offsets = [0.0] if len(hue_order) == 1 else np.linspace(
         -base_width * (len(hue_order) - 1) / 2,
         base_width * (len(hue_order) - 1) / 2,
@@ -1462,8 +1702,7 @@ def case_bar_panel_from_table(
                 float(row["delta"].iloc[0]),
                 width=bar_width,
                 color=FIG2_MODEL_COLORS.get(model, DISPLAY_COLORS.get(model, "#BBBBBB")),
-                edgecolor="black",
-                linewidth=0.5,
+                **_paper_bar_kwargs(),
                 label=model if gidx == 0 else None,
             )
     ax.set_xticks(np.arange(len(genes_order)))
@@ -1682,7 +1921,7 @@ def case_bar_panel(
     fig, ax = plt.subplots(figsize=figsize, dpi=240)
     genes_order = list(dict.fromkeys(plot_df["gene"].astype(str).tolist()))
     base_width = min(0.16, 0.90 / max(len(hue_order), 1))
-    bar_width = base_width * 0.74
+    bar_width = base_width * PAPER_BAR_WIDTH_FRACTION
     offsets = [0.0] if len(hue_order) == 1 else np.linspace(
         -base_width * (len(hue_order) - 1) / 2,
         base_width * (len(hue_order) - 1) / 2,
@@ -1698,8 +1937,7 @@ def case_bar_panel(
                 float(row["delta"].iloc[0]),
                 width=bar_width,
                 color=FIG2_MODEL_COLORS.get(model, DISPLAY_COLORS.get(model, "#BBBBBB")),
-                edgecolor="black",
-                linewidth=0.5,
+                **_paper_bar_kwargs(),
                 label=model if gidx == 0 else None,
             )
     ax.set_xticks(np.arange(len(genes_order)))
@@ -1866,7 +2104,7 @@ def pbmc_case_umap_panel(
     out: Path,
     title: str,
     top_genes: int = 500,
-    max_cells_per_group: int = 240,
+    max_cells_per_group: int = 360,
 ) -> Path:
     try:
         items = _load_pbmc_case_items(split_id, condition)
@@ -1878,60 +2116,85 @@ def pbmc_case_umap_panel(
         delta = np.abs(truth.mean(axis=0) - ctrl.mean(axis=0))
         feature_idx = np.argsort(-delta)[: min(top_genes, delta.shape[0])]
 
-        def subset_cells(values: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        def subset_cells(values: np.ndarray, rng: np.random.Generator, max_cells: int = max_cells_per_group) -> np.ndarray:
             if values.size == 0:
                 return values[:, feature_idx]
             n = values.shape[0]
             take = np.arange(n)
-            if n > max_cells_per_group:
-                take = np.sort(rng.choice(n, size=max_cells_per_group, replace=False))
+            if n > max_cells:
+                take = np.sort(rng.choice(n, size=max_cells, replace=False))
             return values[take][:, feature_idx]
 
-        rows: list[pd.DataFrame] = []
-        method = "UMAP"
-        for model_idx, label in enumerate(["TriShift", "scGPT", "CellOT"]):
-            item = items.get(label)
-            if item is None:
-                continue
-            rng = np.random.default_rng(17 + model_idx)
-            panel_mats = {
-                "Control": subset_cells(ctrl, rng),
-                "Ground truth": subset_cells(truth, rng),
-                "Prediction": subset_cells(np.asarray(item["Pred_full"], dtype=float), rng),
-            }
-            matrices = [mat for mat in panel_mats.values() if mat.size > 0]
-            if not matrices:
-                continue
-            X = np.vstack(matrices)
-            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-            X = (X - X.mean(axis=0, keepdims=True)) / np.maximum(X.std(axis=0, keepdims=True), 1e-6)
-            try:
-                import umap  # type: ignore
+        models = [label for label in ["TriShift", "scGPT", "CellOT"] if label in items]
+        if not models:
+            raise RuntimeError("No PBMC model payloads are available")
+        source_rng = np.random.default_rng(1701)
+        source_mat = subset_cells(ctrl, source_rng)
+        target_mat = subset_cells(truth, np.random.default_rng(1702))
 
-                reducer = umap.UMAP(n_neighbors=28, min_dist=0.24, metric="euclidean", random_state=17)
-                emb = reducer.fit_transform(X)
-                panel_method = "UMAP"
-            except Exception:
-                centered = X - X.mean(axis=0, keepdims=True)
-                _, _, vh = np.linalg.svd(centered, full_matrices=False)
-                emb = centered @ vh[:2].T
-                panel_method = "PCA"
-            if panel_method == "PCA":
-                method = "PCA"
-            start = 0
-            for group, mat in panel_mats.items():
-                stop = start + mat.shape[0]
+        background_parts = [
+            subset_cells(ctrl, np.random.default_rng(1711), max_cells=480),
+            subset_cells(truth, np.random.default_rng(1712), max_cells=480),
+        ]
+        model_pred_mats: dict[str, np.ndarray] = {}
+        for model_idx, label in enumerate(models):
+            pred = np.asarray(items[label]["Pred_full"], dtype=float)
+            model_pred_mats[label] = subset_cells(pred, np.random.default_rng(1720 + model_idx))
+            background_parts.append(subset_cells(pred, np.random.default_rng(1730 + model_idx), max_cells=360))
+
+        background_parts = [mat for mat in background_parts if mat.size > 0]
+        overlay_parts = [source_mat, target_mat] + [model_pred_mats[label] for label in models]
+        matrices = [mat for mat in background_parts + overlay_parts if mat.size > 0]
+        if not matrices:
+            raise RuntimeError("No PBMC matrices are available")
+        background_X = np.vstack(background_parts)
+        background_X = np.nan_to_num(background_X, nan=0.0, posinf=0.0, neginf=0.0)
+        mean = background_X.mean(axis=0, keepdims=True)
+        std = np.maximum(background_X.std(axis=0, keepdims=True), 1e-6)
+        background_X = (background_X - mean) / std
+
+        try:
+            import umap  # type: ignore
+
+            reducer = umap.UMAP(n_neighbors=18, min_dist=0.30, metric="euclidean", random_state=1234)
+            background_emb = reducer.fit_transform(background_X)
+
+            def transform(mat: np.ndarray) -> np.ndarray:
+                scaled = np.nan_to_num(mat, nan=0.0, posinf=0.0, neginf=0.0)
+                scaled = (scaled - mean) / std
+                return reducer.transform(scaled)
+
+        except Exception as exc:
+            raise RuntimeError("umap-learn is required for Fig. 5e UMAP panels") from exc
+
+        source_emb = transform(source_mat)
+        target_emb = transform(target_mat)
+        rows: list[pd.DataFrame] = []
+        for label in models:
+            for role, emb in [("Control", source_emb), ("Perturbed", target_emb)]:
                 rows.append(
                     pd.DataFrame(
                         {
+                            "panel": label,
                             "model": label,
-                            "group": group,
-                            "x": emb[start:stop, 0],
-                            "y": emb[start:stop, 1],
+                            "role": role,
+                            "x": emb[:, 0],
+                            "y": emb[:, 1],
                         }
                     )
                 )
-                start = stop
+            pred_emb = transform(model_pred_mats[label])
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "panel": label,
+                        "model": label,
+                        "role": "Predict",
+                        "x": pred_emb[:, 0],
+                        "y": pred_emb[:, 1],
+                    }
+                )
+            )
         if not rows:
             raise RuntimeError("No PBMC matrices are available")
         plot_df = pd.concat(rows, ignore_index=True)
@@ -1939,76 +2202,109 @@ def pbmc_case_umap_panel(
         return no_data_panel(out, title, "PBMC case payload is unavailable")
 
     apply_gears_paper_style(font_scale=0.85)
-    models = [model for model in ["TriShift", "scGPT", "CellOT"] if model in set(plot_df["model"])]
-    fig, axes = plt.subplots(1, len(models), figsize=(7.2, 2.65), dpi=240, squeeze=False)
+    panels = [panel for panel in ["TriShift", "scGPT", "CellOT"] if panel in set(plot_df["panel"])]
+    fig, axes = plt.subplots(1, len(panels), figsize=(8.1, 2.85), dpi=240, squeeze=False)
     color_map = {
-        "Control": "#F0B38F",
-        "Ground truth": "#A9CBE8",
-        "Prediction": "#79C77B",
+        "Control": "#BDBDBD",
+        "Predict": "#373078",
+        "Perturbed": "#9ED9E1",
     }
-    alphas = {"Control": 0.34, "Ground truth": 0.44, "Prediction": 0.46}
+    alpha_map = {
+        "Control": 0.56,
+        "Predict": 0.78,
+        "Perturbed": 0.68,
+    }
+    size_map = {
+        "Control": 13.0,
+        "Predict": 12.0,
+        "Perturbed": 13.0,
+    }
+    role_plot_order = ["Control", "Perturbed", "Predict"]
+    legend_order = ["Control", "Predict", "Perturbed"]
+    finite = plot_df[np.isfinite(plot_df["x"]) & np.isfinite(plot_df["y"])]
 
-    def draw_density(ax: plt.Axes, sub: pd.DataFrame, *, group: str) -> None:
-        if sub.shape[0] < 8 or sub["x"].std() < 1e-8 or sub["y"].std() < 1e-8 or sns is None:
+    def robust_axis_limits(values: pd.Series, percentiles: tuple[float, float] = (1.0, 99.0)) -> tuple[float, float]:
+        vals = pd.to_numeric(values, errors="coerce").dropna().astype(float).to_numpy()
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            return -1.0, 1.0
+        lo, hi = np.percentile(vals, percentiles)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = float(vals.min()), float(vals.max())
+        span = max(float(hi - lo), 1e-3)
+        pad = span * 0.08
+        return float(lo - pad), float(hi + pad)
+
+    def local_display_window(panel: pd.DataFrame) -> tuple[float, float, float, float]:
+        panel = panel[np.isfinite(panel["x"]) & np.isfinite(panel["y"])]
+        if panel.empty:
+            x0, x1 = robust_axis_limits(finite["x"])
+            y0, y1 = robust_axis_limits(finite["y"])
+        else:
+            x0, x1 = robust_axis_limits(panel["x"])
+            y0, y1 = robust_axis_limits(panel["y"])
+        x_span = max(x1 - x0, 1e-3)
+        y_span = max(y1 - y0, 1e-3)
+        span = max(x_span, y_span)
+        x_center = 0.5 * (x0 + x1)
+        y_center = 0.5 * (y0 + y1)
+        pad = span * 0.06
+        return (
+            x_center - 0.5 * span - pad,
+            x_center + 0.5 * span + pad,
+            y_center - 0.5 * span - pad,
+            y_center + 0.5 * span + pad,
+        )
+
+    for ax, panel_name in zip(axes.flat, panels):
+        panel = plot_df[plot_df["panel"].eq(panel_name)]
+        for zidx, role in enumerate(role_plot_order, start=1):
+            sub = panel[panel["role"].eq(role)]
+            if sub.empty:
+                continue
             ax.scatter(
                 sub["x"],
                 sub["y"],
-                s=5,
-                c=color_map[group],
-                alpha=alphas[group] * 0.55,
-                edgecolors="none",
+                s=size_map[role],
+                color=color_map[role],
+                alpha=alpha_map[role],
+                linewidths=0,
+                label=role,
+                zorder=zidx,
             )
-            return
-        sns.kdeplot(
-            data=sub,
-            x="x",
-            y="y",
-            ax=ax,
-            fill=True,
-            levels=7,
-            thresh=0.04,
-            bw_adjust=0.85,
-            color=color_map[group],
-            alpha=alphas[group],
-            warn_singular=False,
-        )
-
-    from matplotlib.patches import Patch
-
-    legend_handles = [
-        Patch(facecolor=color_map[group], edgecolor="none", alpha=alphas[group], label=group)
-        for group in ["Control", "Ground truth", "Prediction"]
-    ]
-    for ax, model in zip(axes.flat, models):
-        panel = plot_df[plot_df["model"].eq(model)]
-        for group in ["Control", "Ground truth", "Prediction"]:
-            sub = panel[panel["group"].eq(group)]
-            if sub.empty:
-                continue
-            draw_density(ax, sub, group=group)
-        ax.set_title(model, pad=4, fontsize=7.2)
-        ax.set_xlabel(f"{method}1", labelpad=1, fontsize=6.2)
-        ax.set_ylabel(f"{method}2", labelpad=1, fontsize=6.2)
+        ax.set_title(panel_name, pad=3.8, fontsize=9.2)
+        x_min, x_max, y_min, y_max = local_display_window(panel)
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(y_min, y_max)
         ax.set_xticks([])
         ax.set_yticks([])
         ax.tick_params(length=0)
         ax.grid(False)
         for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(0.55)
-            spine.set_color("#9A9A9A")
-        ax.legend(
-            handles=legend_handles,
-            loc="upper right",
-            fontsize=4.5,
-            frameon=False,
-            handletextpad=0.2,
-            borderpad=0.1,
-            labelspacing=0.15,
-            markerscale=1.0,
-        )
-    fig.suptitle(title, y=0.985, fontsize=8.2)
-    fig.tight_layout(rect=[0, 0, 1, 0.92], w_pad=0.8)
+            spine.set_visible(False)
+    first_ax = axes.flat[0]
+    first_ax.text(-0.09, 0.56, "PBMC", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=8.2)
+    first_ax.plot([0.08, 0.27], [0.13, 0.13], transform=first_ax.transAxes, color="black", lw=0.9, clip_on=False)
+    first_ax.plot([0.08, 0.08], [0.13, 0.38], transform=first_ax.transAxes, color="black", lw=0.9, clip_on=False)
+    first_ax.text(0.175, 0.03, "UMAP1", transform=first_ax.transAxes, ha="center", va="bottom", fontsize=6.8)
+    first_ax.text(0.00, 0.255, "UMAP2", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=6.8)
+
+    handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="", markersize=5.2, markerfacecolor=color_map[role], markeredgewidth=0, alpha=alpha_map[role])
+        for role in legend_order
+    ]
+    fig.legend(
+        handles,
+        legend_order,
+        loc="lower center",
+        ncol=3,
+        frameon=False,
+        fontsize=7.4,
+        handletextpad=0.35,
+        columnspacing=1.2,
+        bbox_to_anchor=(0.5, 0.00),
+    )
+    fig.subplots_adjust(left=0.052, right=0.997, top=0.84, bottom=0.21, wspace=0.11)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
     plt.close(fig)
@@ -2607,15 +2903,15 @@ def render_fig2() -> Path:
     fig2_bar_kwargs = {
         "color_overrides": FIG2_MODEL_COLORS,
         "bar_alpha": 1.0,
-        "figsize": (5.7, 4.45),
+        "figsize": PAPER_FIG4_BAR_PANEL_FIGSIZE,
         "legend_y": 1.18,
         "layout_top": 0.84,
         "title_pad": 4,
         "grid_axis": None,
-        "group_width": 0.84,
-        "bar_width_fraction": 1.0,
-        "bar_step_max": 0.22,
-        "x_step": 1.18,
+        "group_width": 0.82,
+        "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
+        "bar_step_max": 0.15,
+        "x_step": 1.0,
         "xtick_rotation": 24,
         "xtick_ha": "right",
     }
@@ -2654,7 +2950,13 @@ def render_fig2() -> Path:
         {"label": label, "src": src, "span": 2 if label == "g" else 1, "height_scale": 1.28 if label == "g" else 1.0}
         for label, src in panels
     ]
-    return compose_grid_spans(panel_specs, COMP_ROOT / "fig2_main_composite.png", cols=4, cell_w=760, cell_h=560)
+    return compose_grid_spans(
+        panel_specs,
+        COMP_ROOT / "fig2_main_composite.png",
+        cols=4,
+        cell_w=PAPER_FIG4_BAR_CELL_W,
+        cell_h=PAPER_FIG4_BAR_CELL_H,
+    )
 
 
 def render_fig3() -> Path:
@@ -2672,7 +2974,15 @@ def render_fig3() -> Path:
         ("c", ablation_metric_panel(ab, ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "nmse", out_dir / "fig3c_conditioning_nmse.png", "Conditioning input: nMSE", "nMSE")),
         ("d", ablation_metric_panel(ab, ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "systema_corr_20de_allpert", out_dir / "fig3d_conditioning_systema.png", "Conditioning input: Systema", "Systema Pearson")),
     ]
-    return compose_grid(panels, COMP_ROOT / "fig3_main_composite.png", cols=4, cell_w=820, cell_h=570)
+    png_out = compose_grid(
+        panels,
+        COMP_ROOT / "fig3_main_composite.png",
+        cols=4,
+        cell_w=PAPER_FIG4_BAR_CELL_W,
+        cell_h=PAPER_FIG4_BAR_CELL_H,
+    )
+    _render_fig3_vector_composite(ab, COMP_ROOT / "fig3_main_composite.pdf")
+    return png_out
 
 
 def _has_subgroup_metric(df: pd.DataFrame, metric: str) -> bool:
@@ -2705,13 +3015,20 @@ def render_fig4() -> Path:
     out_dir = FIG_ROOT / "main" / "Fig4_NormanGeneralization"
     if out_dir.exists():
         for pattern in [
+            "fig4a_norman_subgroup_heatmap.*",
+            "fig4a_subgroup_pearson.*",
             "fig4b_seen0_pearson.*",
+            "fig4b_subgroup_nmse.*",
             "fig4c_norman_deg_auroc.*",
+            "fig4c_subgroup_systema.*",
             "fig4d_direction_agreement.*",
+            "fig4d_overlap_at_20.*",
             "fig4d_subgroup_systema_pearson.*",
             "fig4e_norman_deg_auroc.*",
+            "fig4e_overlap_at_20.*",
             "fig4f_direction_agreement.*",
             "fig4f_combo_case*",
+            "fig4f_cnn1_mapk1_case.*",
             "fig4g_cnn1_mapk1_case.*",
         ]:
             for stale in out_dir.glob(pattern):
@@ -2739,65 +3056,97 @@ def render_fig4() -> Path:
         "title_pad": 4,
         "grid_axis": None,
         "group_width": 0.78,
-        "bar_width_fraction": 1.0,
+        "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
         "bar_step_max": 0.20,
         "x_step": 1.10,
         "xtick_rotation": 0,
         "xtick_ha": "center",
     }
     fig4_overlap_kwargs = {**fig4_bar_kwargs, "group_width": 0.56, "bar_step_max": 0.14}
-    panels = [
-        ("a", heatmap_panel(norman_heatmap, out_dir / "fig4a_norman_subgroup_heatmap.png", "Norman subgroup Pearson", "pearson")),
-        (
-            "b",
-            compact_bar_panel(norman, "pearson", out_dir / "fig4b_subgroup_pearson.png", "Norman subgroup Pearson", "Pearson", x_col="subgroup", x_order=SUBGROUP_ORDER, **fig4_bar_kwargs)
-            if _has_subgroup_metric(norman, "pearson")
-            else compact_summary_bar_panel(pearson_summary, out_dir / "fig4b_subgroup_pearson.png", "Norman subgroup Pearson", "Pearson", x_order=SUBGROUP_ORDER, **fig4_bar_kwargs),
-        ),
-        (
-            "c",
-            compact_bar_panel(norman, "nmse", out_dir / "fig4c_subgroup_nmse.png", "Norman subgroup nMSE", "nMSE", x_col="subgroup", x_order=SUBGROUP_ORDER, cap_extreme=True, **fig4_bar_kwargs)
-            if _has_subgroup_metric(norman, "nmse")
-            else compact_summary_bar_panel(nmse_summary, out_dir / "fig4c_subgroup_nmse.png", "Norman subgroup nMSE", "nMSE", x_order=SUBGROUP_ORDER, cap_extreme=True, **fig4_bar_kwargs),
-        ),
-        (
-            "d",
-            compact_bar_panel(norman, "systema_corr_20de_allpert", out_dir / "fig4d_subgroup_systema.png", "Norman subgroup Systema", "Systema Pearson", x_col="subgroup", x_order=SUBGROUP_ORDER, **fig4_bar_kwargs)
-            if _has_subgroup_metric(norman, "systema_corr_20de_allpert")
-            else compact_summary_bar_panel(systema_summary, out_dir / "fig4d_subgroup_systema.png", "Norman subgroup Systema", "Systema Pearson", x_order=SUBGROUP_ORDER, **fig4_bar_kwargs),
-        ),
-        ("e", long_metric_bar_panel(norman_deg, "overlap_at_20", out_dir / "fig4e_overlap_at_20.png", "Norman Overlap@20", "Overlap@20", **fig4_overlap_kwargs)),
-        (
-            "f",
-            case_bar_panel(
-                dataset="norman",
-                split_id=3,
-                condition="CNN1+MAPK1",
-                out=out_dir / "fig4f_cnn1_mapk1_case.png",
-                title="CNN1+MAPK1 response case",
-                figsize=(11.8, 6.0),
-                legend_y=1.15,
-                layout_top=0.80,
-                layout_bottom=0.25,
-                fallback=[
-                    SERVER_REFRESH_ROOT
-                    / "artifacts"
-                    / "analysis"
-                    / "case_selection"
-                    / "unseen_ctrl"
-                    / "preview"
-                    / "norman_split3_CNN1-MAPK1_unseen_ctrl.png"
-                ],
-            ),
-        ),
+
+    if _has_subgroup_metric(norman, "pearson"):
+        pearson_axis, xs, hues = _summary_for_axis(norman, "pearson", x_col="subgroup", x_order=SUBGROUP_ORDER)
+    else:
+        pearson_axis, xs, hues = _summary_table_for_axis(pearson_summary, x_order=SUBGROUP_ORDER)
+    if _has_subgroup_metric(norman, "nmse"):
+        nmse_axis, _, nmse_hues = _summary_for_axis(norman, "nmse", x_col="subgroup", x_order=SUBGROUP_ORDER)
+    else:
+        nmse_axis, _, nmse_hues = _summary_table_for_axis(nmse_summary, x_order=SUBGROUP_ORDER)
+    if _has_subgroup_metric(norman, "systema_corr_20de_allpert"):
+        systema_axis, _, systema_hues = _summary_for_axis(
+            norman,
+            "systema_corr_20de_allpert",
+            x_col="subgroup",
+            x_order=SUBGROUP_ORDER,
+        )
+    else:
+        systema_axis, _, systema_hues = _summary_table_for_axis(systema_summary, x_order=SUBGROUP_ORDER)
+    overlap_axis, _, overlap_hues = _summary_for_axis(
+        long_metric_frame(norman_deg, "overlap_at_20"),
+        "overlap_at_20",
+        x_col="dataset",
+        x_order=["Norman"],
+    )
+
+    hue_union = []
+    for hue in MODEL_ORDER:
+        if hue in set(hues + nmse_hues + systema_hues + overlap_hues):
+            hue_union.append(hue)
+    colors = _color_map(hue_union)
+    colors.update({name: color for name, color in FIG2_MODEL_COLORS.items() if name in hue_union})
+
+    apply_gears_paper_style(font_scale=0.86)
+    fig, axes = plt.subplots(1, 4, figsize=(8.4, 2.45), dpi=300, squeeze=False)
+    specs = [
+        ("a", pearson_axis, "Pearson", "Pearson", False, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("b", nmse_axis, "nMSE", "nMSE", True, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("c", systema_axis, "Systema", "Systema Pearson", False, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("d", overlap_axis, "Overlap@20", "Overlap@20", False, 0.72, 0.14, "dataset", ["Norman"], 0, "center"),
     ]
-    panel_specs = []
-    for label, src in panels:
-        spec = {"label": label, "src": src, "span": 3 if label == "f" else 1}
-        if label == "f":
-            spec["height_scale"] = 1.35
-        panel_specs.append(spec)
-    return compose_grid_spans(panel_specs, COMP_ROOT / "fig4_main_composite.png", cols=4, cell_w=760, cell_h=520)
+    for ax, (label, summary, title, ylabel, cap, group_width, bar_step_max, x_col, x_values, xrot, xha) in zip(axes.flat, specs):
+        _draw_grouped_summary_axis(
+            ax,
+            summary,
+            metric_title=title,
+            ylabel=ylabel,
+            panel_label=label,
+            xs=x_values,
+            hues=hue_union,
+            x_col=x_col,
+            colors=colors,
+            cap_extreme=cap,
+            group_width=group_width,
+            bar_step_max=bar_step_max,
+            xtick_rotation=xrot,
+            xtick_ha=xha,
+        )
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs())
+        for h in hue_union
+    ]
+    fig.legend(
+        handles,
+        hue_union,
+        frameon=False,
+        ncol=min(len(hue_union), 6),
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.035),
+        fontsize=7.8,
+        handlelength=0.9,
+        columnspacing=0.8,
+        handletextpad=0.35,
+    )
+    fig.subplots_adjust(left=0.065, right=0.995, bottom=0.23, top=0.80, wspace=0.52)
+    out = COMP_ROOT / "fig4_main_composite.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    _save_figure(fig, out, vector_sidecar=True)
+    plt.close(fig)
+    _write_source(pearson_axis, out_dir / "fig4a_subgroup_pearson.csv")
+    _write_source(nmse_axis, out_dir / "fig4b_subgroup_nmse.csv")
+    _write_source(systema_axis, out_dir / "fig4c_subgroup_systema.csv")
+    _write_source(overlap_axis, out_dir / "fig4d_overlap_at_20.csv")
+    render_supp("figs5")
+    return out
 
 
 def render_fig5() -> Path:
@@ -2814,15 +3163,15 @@ def render_fig5() -> Path:
         metrics = metrics[~(metrics["dataset"].eq("PBMC") & metrics["model"].eq("BioLORD"))].copy()
     _write_source(metrics, out_dir / "fig5_summary_used.csv")
     fig5_bar_kwargs = {
-        "figsize": (5.6, 4.2),
+        "figsize": PAPER_FIG4_BAR_PANEL_FIGSIZE,
         "legend_y": 1.22,
         "layout_top": 0.82,
         "title_pad": 6,
-        "grid_axis": "y",
-        "group_width": 0.78,
-        "bar_width_fraction": 0.92,
+        "grid_axis": None,
+        "group_width": 0.82,
+        "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
         "bar_step_max": 0.15,
-        "x_step": 0.70,
+        "x_step": 1.0,
     }
     panels = [
         {
@@ -2867,7 +3216,7 @@ def render_fig5() -> Path:
                     condition="stimulated",
                     gene="ISG15",
                     out=out_dir / "fig5d_isg15_pbmc_distribution_violin.png",
-                    title="ISG15 | PBMC stimulated",
+                    title="ISG15 | Dendritic stimulated",
                 ),
             }
         ),
@@ -2879,12 +3228,18 @@ def render_fig5() -> Path:
                     split_id=3,
                     condition="stimulated",
                     out=out_dir / "fig5e_pbmc_stimulated_umap.png",
-                    title="PBMC stimulated distribution embedding",
+                    title="Dendritic stimulated UMAP comparison",
                 ),
             }
         ),
     ]
-    return compose_grid_spans(panels, COMP_ROOT / "fig5_main_composite.png", cols=3, cell_w=650, cell_h=500)
+    return compose_grid_spans(
+        panels,
+        COMP_ROOT / "fig5_main_composite.png",
+        cols=3,
+        cell_w=PAPER_FIG4_BAR_CELL_W,
+        cell_h=PAPER_FIG4_BAR_CELL_H,
+    )
 
 
 def render_supp(name: str) -> Path:
@@ -2913,10 +3268,17 @@ def render_supp(name: str) -> Path:
                 if stale.is_file():
                     stale.unlink()
         panels = [
-            ("a", copy_panel([
-                out_dir / "figs2a_single_case_barplot.png",
-                SERVER_REFRESH_ROOT / "artifacts" / "paper_figures" / "supp" / "FigS2_AdditionalCases" / "figs2a_single_case_barplot.png",
-            ], out_dir / "figs2a_single_case_barplot.png", "PTDSS1+ctrl case")),
+            ("a", case_bar_panel(
+                dataset="adamson",
+                split_id=4,
+                condition="PTDSS1+ctrl",
+                out=out_dir / "figs2a_single_case_barplot.png",
+                title="PTDSS1+ctrl (Adamson, split 4)",
+                top_k=12,
+                fallback=[
+                    SERVER_REFRESH_ROOT / "artifacts" / "paper_figures" / "supp" / "FigS2_AdditionalCases" / "figs2a_single_case_barplot.png"
+                ],
+            )),
             ("b", violin_case_panel(
                 dataset="adamson",
                 split_id=4,
@@ -2926,10 +3288,17 @@ def render_supp(name: str) -> Path:
                 title="RPS29 | PTDSS1+ctrl",
                 fallback=[SERVER_REFRESH_ROOT / "artifacts" / "paper_figures" / "supp" / "FigS2_AdditionalCases" / "figs2b_single_case_violin.png"],
             )),
-            ("c", copy_panel([
-                out_dir / "figs2c_combo_case_barplot.png",
-                SERVER_REFRESH_ROOT / "artifacts" / "paper_figures" / "supp" / "FigS2_AdditionalCases" / "figs2c_combo_case_barplot.png",
-            ], out_dir / "figs2c_combo_case_barplot.png", "UBASH3A+UBASH3B case")),
+            ("c", case_bar_panel(
+                dataset="norman",
+                split_id=5,
+                condition="UBASH3A+UBASH3B",
+                out=out_dir / "figs2c_combo_case_barplot.png",
+                title="UBASH3A+UBASH3B (Norman, split 5)",
+                top_k=12,
+                fallback=[
+                    SERVER_REFRESH_ROOT / "artifacts" / "paper_figures" / "supp" / "FigS2_AdditionalCases" / "figs2c_combo_case_barplot.png"
+                ],
+            )),
             ("d", violin_case_panel(
                 dataset="norman",
                 split_id=5,
@@ -2964,9 +3333,9 @@ def render_supp(name: str) -> Path:
             "layout_top": 0.84,
             "title_pad": 4,
             "grid_axis": None,
-            "group_width": 0.72,
-            "bar_width_fraction": 1.0,
-            "bar_step_max": 0.16,
+            "group_width": 0.82,
+            "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
+            "bar_step_max": 0.15,
             "x_step": 1.08,
             "xtick_rotation": 0,
             "xtick_ha": "center",
@@ -3009,6 +3378,51 @@ def render_supp(name: str) -> Path:
             ("d", module1_metrics_panel(out_dir / "figs4d_cluster_metrics.png")),
         ]
         return compose_grid(panels, COMP_ROOT / "figs4_composite.png", cols=2, cell_w=900, cell_h=560)
+    if fig == "figs5":
+        metrics = collect_prediction_metrics(heldout=True)
+        norman = metrics[metrics["dataset"].eq("Norman")].copy() if not metrics.empty else pd.DataFrame()
+        out_dir = FIG_ROOT / "supp" / SUPP_DIRS[fig]
+        norman_heatmap = norman if _has_subgroup_metric(norman, "pearson") else _fig4_heatmap_fallback(
+            FIG_ROOT / "main" / "Fig4_NormanGeneralization"
+        )
+        panels = [
+            {
+                "label": "a",
+                "src": heatmap_panel(
+                    norman_heatmap,
+                    out_dir / "figs5a_norman_subgroup_heatmap.png",
+                    "Norman subgroup Pearson",
+                    "pearson",
+                ),
+                "span": 1,
+            },
+            {
+                "label": "b",
+                "src": case_bar_panel(
+                    dataset="norman",
+                    split_id=3,
+                    condition="CNN1+MAPK1",
+                    out=out_dir / "figs5b_cnn1_mapk1_case.png",
+                    title="CNN1+MAPK1 response case",
+                    figsize=(11.8, 6.0),
+                    legend_y=1.15,
+                    layout_top=0.80,
+                    layout_bottom=0.25,
+                    fallback=[
+                        SERVER_REFRESH_ROOT
+                        / "artifacts"
+                        / "analysis"
+                        / "case_selection"
+                        / "unseen_ctrl"
+                        / "preview"
+                        / "norman_split3_CNN1-MAPK1_unseen_ctrl.png"
+                    ],
+                ),
+                "span": 2,
+                "height_scale": 1.05,
+            },
+        ]
+        return compose_grid_spans(panels, COMP_ROOT / "figs5_composite.png", cols=3, cell_w=760, cell_h=590)
     raise ValueError(f"Unknown supplementary figure: {name}")
 
 
@@ -3023,6 +3437,7 @@ def write_manifest() -> Path:
         ("supp", "figs2", "Additional fixed-display response cases", "artifacts/paper_figures/composites/figs2_composite.png"),
         ("supp", "figs3", "Dixit distance-stratified robustness diagnostics", "artifacts/paper_figures/composites/figs3_composite.png"),
         ("supp", "figs4", "Module 1 PBMC latent-state diagnostics", "artifacts/paper_figures/composites/figs4_composite.png"),
+        ("supp", "figs5", "Norman subgroup heatmap and fixed CNN1+MAPK1 response case moved from Fig. 4", "artifacts/paper_figures/composites/figs5_composite.png"),
     ]
     manifest = pd.DataFrame(rows, columns=["section", "figure_id", "description", "composite_path"])
     out = FIG_ROOT / "figure_manifest.csv"
@@ -3035,7 +3450,7 @@ def clean_stale_supplement_outputs() -> None:
         path = FIG_ROOT / "supp" / folder
         if path.exists():
             shutil.rmtree(path)
-    stale_composites = [COMP_ROOT / "figs5_composite.png", COMP_ROOT / "figs6_composite.png"]
+    stale_composites = [COMP_ROOT / "figs6_composite.png"]
     for path in stale_composites:
         if path.exists():
             path.unlink()
@@ -3052,12 +3467,12 @@ def render(figure: str) -> Path:
         return render_fig4()
     if key == "fig5":
         return render_fig5()
-    if key in {"figs1", "figs2", "figs3", "figs4"}:
+    if key in {"figs1", "figs2", "figs3", "figs4", "figs5"}:
         return render_supp(key)
     if key == "all":
         clean_stale_supplement_outputs()
         paths = [render_fig2(), render_fig3(), render_fig4(), render_fig5()]
-        paths.extend(render_supp(f"figs{i}") for i in range(1, 5))
+        paths.extend(render_supp(f"figs{i}") for i in range(1, 6))
         write_manifest()
         return paths[-1]
     raise ValueError(f"Unknown figure: {figure}")

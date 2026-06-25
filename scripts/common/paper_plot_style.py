@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 
 
 _GEARS_STYLE_APPLIED = False
+_FONT_BOOST = 1.18
 
 
 MODEL_COLORS = {
@@ -28,9 +29,7 @@ CLUSTER_COLORS = ["#C9CDD1", "#F28E2B", "#4E9F50", "#E15759", "#5E81AC", "#B07AA
 
 def apply_gears_paper_style(font_scale: float = 1.0) -> None:
     global _GEARS_STYLE_APPLIED
-    if _GEARS_STYLE_APPLIED:
-        return
-    base_font = max(8.0, 10.0 * float(font_scale))
+    base_font = max(8.8, 10.0 * float(font_scale) * _FONT_BOOST)
     plt.rcParams.update(
         {
             "figure.dpi": 220,
@@ -40,15 +39,15 @@ def apply_gears_paper_style(font_scale: float = 1.0) -> None:
             "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
             "font.size": base_font,
             "axes.labelsize": base_font,
-            "axes.titlesize": base_font + 0.5,
+            "axes.titlesize": base_font + 0.4,
             "axes.titleweight": "regular",
             "axes.facecolor": (0, 0, 0, 0),
             "figure.facecolor": "white",
             "axes.edgecolor": "#4A4A4A",
             "axes.linewidth": 0.8,
             "axes.grid": False,
-            "xtick.labelsize": base_font - 0.5,
-            "ytick.labelsize": base_font - 0.5,
+            "xtick.labelsize": max(7.8, base_font - 0.8),
+            "ytick.labelsize": max(7.8, base_font - 0.8),
             "legend.frameon": False,
             "lines.linewidth": 1.6,
             "patch.linewidth": 0.8,
@@ -71,6 +70,8 @@ def style_axis(ax, *, grid_axis: str | None = None) -> None:
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_color("#4A4A4A")
     ax.spines["bottom"].set_color("#4A4A4A")
+    ax.spines["left"].set_linewidth(0.8)
+    ax.spines["bottom"].set_linewidth(0.8)
     ax.tick_params(length=3.0, width=0.8, colors="#3A3A3A")
     if grid_axis:
         ax.grid(axis=grid_axis, color="#D5D8DC", linewidth=0.7, alpha=0.35)

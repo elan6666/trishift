@@ -14,6 +14,14 @@ Project-level instructions for agents working in the TriShift code repository.
 - After the Chinese structure is settled, mirror the same content decisions into
   the English manuscript; then update the supplement for detailed definitions,
   provenance, extra metrics, and figure-specific notes.
+- Chinese and English manuscript content must stay synchronized after every
+  manuscript revision. Any change to claims, section structure, captions, figure
+  references, metric names, dataset/split descriptions, numerical anchors,
+  caveats, limitations, data availability, or code availability in one language
+  must be reflected in the other language before the task is considered done.
+- Before finishing a manuscript-editing task, explicitly check that the Chinese
+  and English manuscripts describe the same scientific content, even if the
+  wording is naturally adapted for each language.
 - Use the Bioinformatics article format as the submission/formatting standard.
 - Use the scPRAM paper structure as the main manuscript-organization reference,
   especially the structured abstract, Introduction funnel, Methods organization,
@@ -62,6 +70,7 @@ Project-level instructions for agents working in the TriShift code repository.
   - `notebooks/FigS2_AdditionalCases.ipynb`
   - `notebooks/FigS3_DixitRobustness.ipynb`
   - `notebooks/FigS4_Module1LatentState.ipynb`
+  - `notebooks/FigS5_NormanGeneralizationContext.ipynb`
 
 ## Local-Then-Server Rule
 
@@ -82,4 +91,6 @@ Project-level instructions for agents working in the TriShift code repository.
 
 - Keep figure workflow changes focused on notebooks, notebook helpers, docs, and provenance files.
 - Do not rerun expensive training or baseline experiments unless a notebook execution fails because a required artifact is missing.
+- If a task appears to require rerunning training, baselines, missing-result generation, or a long server job, ask the user before starting unless they explicitly requested that rerun.
+- If the requested dataset, split, cell type, condition, figure panel, or manuscript claim is unclear, ask the user before changing code, notebooks, manuscript text, or figure artifacts.
 - Do not stage or commit changes unless the user explicitly asks.
