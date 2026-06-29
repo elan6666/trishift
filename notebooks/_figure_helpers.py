@@ -83,6 +83,15 @@ PAPER_SINGLE_BAR_WIDTH = 0.42
 PAPER_ERROR_COLOR = "#333333"
 PAPER_ERROR_LW = 0.7
 PAPER_ERROR_CAPSIZE = 0.0
+PAPER_FIG_FONT_SCALE = 0.80
+PAPER_AXIS_LABEL_FONTSIZE = 8.0
+PAPER_TITLE_FONTSIZE = 8.2
+PAPER_TICK_FONTSIZE = 7.4
+PAPER_LEGEND_FONTSIZE = 6.4
+PAPER_SMALL_TEXT_FONTSIZE = 6.2
+PAPER_PANEL_LABEL_PX = 34
+PAPER_PANEL_LABEL_PT = 9.0
+PAPER_PANEL_LABEL_PAD = 46
 PAPER_FIG4_BAR_PANEL_FIGSIZE = (3.4, 4.3)
 PAPER_FIG4_BAR_CELL_W = 463
 PAPER_FIG4_BAR_CELL_H = 538
@@ -629,11 +638,11 @@ def available_order(values: pd.Series, preferred: list[str]) -> list[str]:
 
 
 def no_data_panel(out: Path, title: str, message: str = "Required source table is unavailable") -> Path:
-    apply_gears_paper_style(font_scale=0.85)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(4.4, 2.8), dpi=240)
-    ax.text(0.5, 0.58, title, ha="center", va="center", fontsize=10, weight="bold")
-    ax.text(0.5, 0.42, message, ha="center", va="center", fontsize=8, color="#555555")
+    ax.text(0.5, 0.58, title, ha="center", va="center", fontsize=PAPER_TITLE_FONTSIZE, weight="bold")
+    ax.text(0.5, 0.42, message, ha="center", va="center", fontsize=PAPER_AXIS_LABEL_FONTSIZE, color="#555555")
     ax.axis("off")
     fig.tight_layout(pad=0.4)
     fig.savefig(out)
@@ -655,7 +664,7 @@ def _legend_above(
     labels=None,
     *,
     ncol: int | None = None,
-    fontsize: float = 6.2,
+    fontsize: float = PAPER_LEGEND_FONTSIZE,
     y: float = 1.18,
 ) -> None:
     if handles is None or labels is None:
@@ -848,12 +857,12 @@ def _draw_grouped_summary_axis(
                     **_paper_error_kwargs(),
                 )
             if y_cap is not None and value > y_cap:
-                ax.text(xpos, y_cap, f">{y_cap:.2g}", ha="center", va="bottom", fontsize=6.5, color="#222222")
+                ax.text(xpos, y_cap, f">{y_cap:.2g}", ha="center", va="bottom", fontsize=PAPER_SMALL_TEXT_FONTSIZE, color="#222222")
     ax.set_xticks(x_positions)
     ax.set_xticklabels(xs, rotation=xtick_rotation, ha=xtick_ha)
     ax.set_xlabel("")
-    ax.set_ylabel(ylabel, fontsize=8.6, labelpad=2)
-    ax.set_title(metric_title, pad=4, fontsize=9.4)
+    ax.set_ylabel(ylabel, fontsize=PAPER_AXIS_LABEL_FONTSIZE, labelpad=2)
+    ax.set_title(metric_title, pad=4, fontsize=PAPER_TITLE_FONTSIZE)
     half_group = base_width * max(max_present - 1, 0) / 2 + bar_width / 2
     ax.set_xlim(float(x_positions[0]) - half_group - 0.08, float(x_positions[-1]) + half_group + 0.08)
     if y_cap is not None:
@@ -861,8 +870,8 @@ def _draw_grouped_summary_axis(
     elif not summary["mean"].dropna().empty and summary["mean"].dropna().min() >= 0:
         ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis=None)
-    ax.tick_params(axis="both", labelsize=8.1)
-    ax.text(-0.24, 1.10, panel_label, transform=ax.transAxes, fontsize=10.5, fontweight="bold", va="top")
+    ax.tick_params(axis="both", labelsize=PAPER_TICK_FONTSIZE)
+    ax.text(-0.24, 1.10, panel_label, transform=ax.transAxes, fontsize=PAPER_PANEL_LABEL_PT, fontweight="bold", va="top")
 
 
 def compact_bar_panel(
@@ -901,7 +910,7 @@ def compact_bar_panel(
     hues = [h for h in hues if h in set(summary[hue_col])]
     if not xs or not hues:
         return no_data_panel(out, title, "No plottable groups")
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     colors = _color_map(hues)
     if color_overrides:
         colors.update({name: color for name, color in color_overrides.items() if name in hues})
@@ -955,7 +964,7 @@ def compact_bar_panel(
                     f">{y_cap:.2g}",
                     ha="center",
                     va="bottom",
-                    fontsize=7,
+                    fontsize=PAPER_SMALL_TEXT_FONTSIZE,
                     color="#222222",
                 )
     ax.set_xticks(x_positions)
@@ -1030,7 +1039,7 @@ def compact_summary_bar_panel(
     hues = [h for h in hues if h in set(summary[hue_col])]
     if not xs or not hues:
         return no_data_panel(out, title, "No plottable groups")
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     colors = _color_map(hues)
     if color_overrides:
         colors.update({name: color for name, color in color_overrides.items() if name in hues})
@@ -1084,7 +1093,7 @@ def compact_summary_bar_panel(
                     f">{y_cap:.2g}",
                     ha="center",
                     va="bottom",
-                    fontsize=7,
+                    fontsize=PAPER_SMALL_TEXT_FONTSIZE,
                     color="#222222",
                 )
     ax.set_xticks(x_positions)
@@ -1135,7 +1144,7 @@ def boxplot_panel(
     hues = [h for h in hues if h in set(plot[hue_col])]
     if not xs or not hues:
         return no_data_panel(out, title, "No plottable groups")
-    apply_gears_paper_style(font_scale=0.78)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     colors = _color_map(hues)
     fig, ax = plt.subplots(figsize=(5.4, 3.6), dpi=240)
     present_by_x = {
@@ -1361,7 +1370,7 @@ def _render_fig3_vector_composite(ab: pd.DataFrame, out: Path) -> Path:
         ("c", ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "nmse", "Conditioning input: nMSE", "nMSE"),
         ("d", ["cond_no_reference", "cond_no_prior", "cond_full"], cond_labels, "systema_corr_20de_allpert", "Conditioning input: Systema", "Systema Pearson"),
     ]
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, axes = plt.subplots(1, 4, figsize=(13.6, 4.3), dpi=240)
     hue_union: list[str] = []
     for ax, (label, presets, labels, metric, title, ylabel) in zip(axes, configs):
@@ -1398,7 +1407,7 @@ def _render_fig3_vector_composite(ab: pd.DataFrame, out: Path) -> Path:
             ncol=min(len(handles), 5),
             loc="upper center",
             bbox_to_anchor=(0.5, 1.03),
-            fontsize=7.8,
+            fontsize=PAPER_LEGEND_FONTSIZE,
             handlelength=0.9,
             columnspacing=0.8,
             handletextpad=0.35,
@@ -1419,7 +1428,7 @@ def heatmap_panel(df: pd.DataFrame, out: Path, title: str, metric: str = "pearso
     sub["model"] = sub["model"].map(_display_model)
     piv = sub.pivot_table(index="model", columns="subgroup", values=metric, aggfunc="mean")
     piv = piv.reindex(index=available_order(pd.Series(piv.index), MODEL_ORDER), columns=[c for c in SUBGROUP_ORDER if c in piv.columns])
-    apply_gears_paper_style(font_scale=0.78)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(4.4, 2.9), dpi=240)
     im = ax.imshow(piv.values, aspect="auto", cmap="viridis")
     ax.set_xticks(range(len(piv.columns)))
@@ -1430,7 +1439,7 @@ def heatmap_panel(df: pd.DataFrame, out: Path, title: str, metric: str = "pearso
         for j in range(piv.shape[1]):
             val = piv.iloc[i, j]
             if pd.notna(val):
-                ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=6, color="white")
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=PAPER_SMALL_TEXT_FONTSIZE, color="white")
     ax.set_title(title, pad=3)
     fig.colorbar(im, ax=ax, fraction=0.045, pad=0.02)
     fig.tight_layout(pad=0.35)
@@ -1455,13 +1464,13 @@ def cellot_alignment_panel(out: Path) -> Path:
         .size()
         .sort_values(["dataset", "status"])
     )
-    apply_gears_paper_style(font_scale=0.78)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(4.5, 2.5), dpi=240)
     ax.axis("off")
     lines = ["CellOT PBMC official-style OOD baseline"]
     for _, row in status.iterrows():
         lines.append(f"{row['dataset']}: {row['status']} (n={row['size']})")
-    ax.text(0.02, 0.95, "\n".join(lines), ha="left", va="top", fontsize=8)
+    ax.text(0.02, 0.95, "\n".join(lines), ha="left", va="top", fontsize=PAPER_AXIS_LABEL_FONTSIZE)
     fig.tight_layout(pad=0.4)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
@@ -1509,7 +1518,7 @@ def cellot_aligned_metric_panel(metric_col: str, out: Path, title: str, ylabel: 
         .agg(mean="mean", median="median", count="count")
         .sort_values("dataset", key=lambda col: col.map({name: i for i, name in enumerate(DATASET_ORDER)}).fillna(99))
     )
-    apply_gears_paper_style(font_scale=0.84)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(5.2, 3.6), dpi=240)
     order = [name for name in DATASET_ORDER if name in set(summary["dataset"])]
     x = np.arange(len(order), dtype=float)
@@ -1536,14 +1545,14 @@ def cellot_aligned_metric_panel(metric_col: str, out: Path, title: str, ylabel: 
             alpha=0.38,
             linewidths=0,
         )
-        ax.text(x[idx], med.loc[dataset], f"n={len(vals)}", ha="center", va="bottom", fontsize=5.5, color="#333333")
+        ax.text(x[idx], med.loc[dataset], f"n={len(vals)}", ha="center", va="bottom", fontsize=PAPER_SMALL_TEXT_FONTSIZE, color="#333333")
     ax.set_xticks(x)
     ax.set_xticklabels(order, rotation=20, ha="right")
     ax.set_xlabel("")
     ax.set_ylabel(ylabel)
     ax.set_title(title, pad=4)
     style_axis(ax, grid_axis=None)
-    ax.legend(frameon=False, loc="upper right", fontsize=6.2)
+    ax.legend(frameon=False, loc="upper right", fontsize=PAPER_LEGEND_FONTSIZE)
     fig.tight_layout(pad=0.45)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
@@ -1639,7 +1648,7 @@ def module1_metrics_panel(out: Path) -> Path:
         colors = ["#4E79A7", "#5B8CC0", "#6E9BC8", "#7FAAD0"][: len(plot_df)]
         ax.bar(plot_df["metric"], plot_df["score"], color=colors, width=PAPER_SINGLE_BAR_WIDTH, **_paper_bar_kwargs())
         for x, y in enumerate(plot_df["score"]):
-            ax.text(x, y + 0.025, f"{y:.2f}", ha="center", va="bottom", fontsize=7)
+            ax.text(x, y + 0.025, f"{y:.2f}", ha="center", va="bottom", fontsize=PAPER_SMALL_TEXT_FONTSIZE)
         ax.set_title("PBMC clustering metrics", pad=5)
         ax.set_ylabel("Score")
         ax.set_ylim(0, max(0.9, float(plot_df["score"].max()) * 1.22))
@@ -1683,7 +1692,7 @@ def case_bar_panel_from_table(
         return no_data_panel(out, title, "Case source table is empty")
     genes_order = list(dict.fromkeys(plot_df["gene"].astype(str).tolist()))
     hue_order = available_order(plot_df["model"], ["Truth", "TriShift", "BioLORD", "GEARS", "GenePert", "scGPT"])
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=figsize, dpi=240)
     base_width = min(0.16, 0.90 / max(len(hue_order), 1))
     bar_width = base_width * PAPER_BAR_WIDTH_FRACTION
@@ -1712,7 +1721,7 @@ def case_bar_panel_from_table(
     ax.set_title(title, pad=3)
     ax.tick_params(axis="x", rotation=38)
     style_axis(ax, grid_axis=None)
-    _legend_above(ax, ncol=min(6, len(hue_order)), fontsize=6.2, y=legend_y)
+    _legend_above(ax, ncol=min(6, len(hue_order)), fontsize=PAPER_LEGEND_FONTSIZE, y=legend_y)
     fig.subplots_adjust(top=layout_top, bottom=layout_bottom, left=0.08, right=0.99)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
@@ -1917,7 +1926,7 @@ def case_bar_panel(
             rows.append({"gene": gene, "model": labels.get(model_name, model_name), "delta": float(pred_delta)})
     plot_df = pd.DataFrame(rows)
     hue_order = ["Truth"] + [labels[m] for m in models if m in labels]
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=figsize, dpi=240)
     genes_order = list(dict.fromkeys(plot_df["gene"].astype(str).tolist()))
     base_width = min(0.16, 0.90 / max(len(hue_order), 1))
@@ -1947,7 +1956,7 @@ def case_bar_panel(
     ax.set_title(title, pad=16)
     ax.tick_params(axis="x", rotation=38)
     style_axis(ax, grid_axis=None)
-    _legend_above(ax, ncol=min(6, len(hue_order)), fontsize=6.5, y=legend_y)
+    _legend_above(ax, ncol=min(6, len(hue_order)), fontsize=PAPER_LEGEND_FONTSIZE, y=legend_y)
     fig.subplots_adjust(top=layout_top, bottom=layout_bottom, left=0.08, right=0.99)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
@@ -1999,7 +2008,7 @@ def violin_case_panel(
             return copy_panel(fallback, out, title)
         return no_data_panel(out, title, "Case payload is unavailable")
     order = [group for group in ["Control", "Perturbed", "TriShift", "scGPT", "CellOT"] if group in set(plot_df["group"])]
-    apply_gears_paper_style(font_scale=0.85)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(6.6, 4.4), dpi=240)
     values = [plot_df[plot_df["group"].eq(group)]["expression"].astype(float).dropna().values for group in order]
     parts = ax.violinplot(values, positions=np.arange(len(order)), widths=0.82, showmeans=False, showmedians=False, showextrema=False)
@@ -2063,7 +2072,7 @@ def pbmc_case_violin_panel(
         return no_data_panel(out, title, "PBMC case payload is unavailable")
 
     order = [group for group in ["Control", "Perturbed", "TriShift", "scGPT", "CellOT"] if group in set(plot_df["group"])]
-    apply_gears_paper_style(font_scale=0.85)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(7.0, 4.4), dpi=240)
     values = [plot_df[plot_df["group"].eq(group)]["expression"].astype(float).dropna().values for group in order]
     positions = np.arange(len(order), dtype=float) * 0.82
@@ -2201,7 +2210,7 @@ def pbmc_case_umap_panel(
     except Exception:
         return no_data_panel(out, title, "PBMC case payload is unavailable")
 
-    apply_gears_paper_style(font_scale=0.85)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     panels = [panel for panel in ["TriShift", "scGPT", "CellOT"] if panel in set(plot_df["panel"])]
     fig, axes = plt.subplots(1, len(panels), figsize=(8.1, 2.85), dpi=240, squeeze=False)
     color_map = {
@@ -2272,7 +2281,7 @@ def pbmc_case_umap_panel(
                 label=role,
                 zorder=zidx,
             )
-        ax.set_title(panel_name, pad=3.8, fontsize=9.2)
+        ax.set_title(panel_name, pad=3.8, fontsize=PAPER_TITLE_FONTSIZE)
         x_min, x_max, y_min, y_max = local_display_window(panel)
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
@@ -2283,11 +2292,11 @@ def pbmc_case_umap_panel(
         for spine in ax.spines.values():
             spine.set_visible(False)
     first_ax = axes.flat[0]
-    first_ax.text(-0.09, 0.56, "PBMC", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=8.2)
+    first_ax.text(-0.09, 0.56, "PBMC", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=PAPER_AXIS_LABEL_FONTSIZE)
     first_ax.plot([0.08, 0.27], [0.13, 0.13], transform=first_ax.transAxes, color="black", lw=0.9, clip_on=False)
     first_ax.plot([0.08, 0.08], [0.13, 0.38], transform=first_ax.transAxes, color="black", lw=0.9, clip_on=False)
-    first_ax.text(0.175, 0.03, "UMAP1", transform=first_ax.transAxes, ha="center", va="bottom", fontsize=6.8)
-    first_ax.text(0.00, 0.255, "UMAP2", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=6.8)
+    first_ax.text(0.175, 0.03, "UMAP1", transform=first_ax.transAxes, ha="center", va="bottom", fontsize=PAPER_LEGEND_FONTSIZE)
+    first_ax.text(0.00, 0.255, "UMAP2", transform=first_ax.transAxes, rotation=90, ha="center", va="center", fontsize=PAPER_LEGEND_FONTSIZE)
 
     handles = [
         plt.Line2D([0], [0], marker="o", linestyle="", markersize=5.2, markerfacecolor=color_map[role], markeredgewidth=0, alpha=alpha_map[role])
@@ -2299,7 +2308,7 @@ def pbmc_case_umap_panel(
         loc="lower center",
         ncol=3,
         frameon=False,
-        fontsize=7.4,
+        fontsize=PAPER_LEGEND_FONTSIZE,
         handletextpad=0.35,
         columnspacing=1.2,
         bbox_to_anchor=(0.5, 0.00),
@@ -2413,7 +2422,7 @@ def pbmc_cmonge_umap_panel(
     except Exception as exc:
         return no_data_panel(out, title, f"PBMC payload unavailable: {exc}")
 
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(4.6, 3.6), dpi=240)
     background = plot_df[plot_df["role"].eq("Background")]
     if not background.empty:
@@ -2446,9 +2455,9 @@ def pbmc_cmonge_umap_panel(
             label=role,
             zorder=2,
         )
-    ax.set_title(title, pad=4, fontsize=8.0)
-    ax.set_xlabel(f"{method}1", labelpad=1, fontsize=6.2)
-    ax.set_ylabel(f"{method}2", labelpad=1, fontsize=6.2)
+    ax.set_title(title, pad=4, fontsize=PAPER_TITLE_FONTSIZE)
+    ax.set_xlabel(f"{method}1", labelpad=1, fontsize=PAPER_LEGEND_FONTSIZE)
+    ax.set_ylabel(f"{method}2", labelpad=1, fontsize=PAPER_LEGEND_FONTSIZE)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.tick_params(length=0)
@@ -2460,7 +2469,7 @@ def pbmc_cmonge_umap_panel(
     ax.legend(
         loc="lower left",
         frameon=False,
-        fontsize=5.6,
+        fontsize=PAPER_LEGEND_FONTSIZE,
         handletextpad=0.25,
         labelspacing=0.18,
         markerscale=1.8,
@@ -2496,7 +2505,7 @@ def density_umap_from_points_panel(src_candidates: list[Path], out: Path, title:
     if plot.empty:
         return no_data_panel(out, title, "No finite UMAP coordinates")
 
-    apply_gears_paper_style(font_scale=0.82)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     color_map = {
         "Control": "#F0B38F",
         "Ground truth": "#A9CBE8",
@@ -2564,10 +2573,10 @@ def density_umap_from_points_panel(src_candidates: list[Path], out: Path, title:
         Patch(facecolor=color_map[group], edgecolor="none", alpha=alphas[group], label=group)
         for group in groups
     ]
-    ax.legend(handles=legend_handles, loc="upper right", fontsize=5.2, frameon=False, handletextpad=0.25, labelspacing=0.18)
-    ax.set_title(title, pad=4, fontsize=8.0)
-    ax.set_xlabel("UMAP1", labelpad=1, fontsize=6.2)
-    ax.set_ylabel("UMAP2", labelpad=1, fontsize=6.2)
+    ax.legend(handles=legend_handles, loc="upper right", fontsize=PAPER_LEGEND_FONTSIZE, frameon=False, handletextpad=0.25, labelspacing=0.18)
+    ax.set_title(title, pad=4, fontsize=PAPER_TITLE_FONTSIZE)
+    ax.set_xlabel("UMAP1", labelpad=1, fontsize=PAPER_LEGEND_FONTSIZE)
+    ax.set_ylabel("UMAP2", labelpad=1, fontsize=PAPER_LEGEND_FONTSIZE)
     ax.set_xticks([])
     ax.set_yticks([])
     if plot["x"].nunique() > 1 and plot["y"].nunique() > 1:
@@ -2663,7 +2672,7 @@ def line_panel(
     models = available_order(plot[model_col].map(_display_model), MODEL_ORDER)
     plot[model_col] = plot[model_col].map(_display_model)
     summary = plot.groupby([bin_col, model_col], as_index=False).agg(mean=(metric_col, "mean"), sem=(metric_col, "sem"), n=(metric_col, "size"))
-    apply_gears_paper_style(font_scale=0.78)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     colors = _color_map(models)
     fig, ax = plt.subplots(figsize=(4.8, 3.4), dpi=240)
     x = np.arange(len(order))
@@ -2682,7 +2691,7 @@ def line_panel(
     style_axis(ax, grid_axis="y")
     ax.legend(
         frameon=False,
-        fontsize=5.8,
+        fontsize=PAPER_LEGEND_FONTSIZE,
         ncol=min(3, max(1, len(models))),
         loc="upper center",
         bbox_to_anchor=(0.5, -0.25),
@@ -2707,7 +2716,7 @@ def dixit_distance_scatter_panel(out: Path) -> Path:
     meta["train_test_distance"] = pd.to_numeric(meta["train_test_distance"], errors="coerce")
     meta["truth_ctrl_shift_norm"] = pd.to_numeric(meta["truth_ctrl_shift_norm"], errors="coerce")
     meta = meta.dropna(subset=["train_test_distance", "truth_ctrl_shift_norm", "train_distance_bin"])
-    apply_gears_paper_style(font_scale=0.78)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, ax = plt.subplots(figsize=(4.6, 3.0), dpi=240)
     palette = {"near": "#22B8B0", "medium": "#7C68D9", "far": "#F39A2E"}
     for bin_name in ["near", "medium", "far"]:
@@ -2728,7 +2737,7 @@ def dixit_distance_scatter_panel(out: Path) -> Path:
     ax.set_ylabel("Observed response norm")
     ax.set_title("Dixit difficulty structure", pad=4)
     style_axis(ax, grid_axis="y")
-    ax.legend(frameon=False, fontsize=6.2, title="", handlelength=1.0)
+    ax.legend(frameon=False, fontsize=PAPER_LEGEND_FONTSIZE, title="", handlelength=1.0)
     fig.tight_layout(pad=0.35)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out)
@@ -2766,14 +2775,14 @@ def fit(im: Image.Image, max_w: int, max_h: int) -> Image.Image:
 def compose_grid(panels: list[tuple[str, Path]], out: Path, *, cols: int, cell_w: int = 980, cell_h: int = 620) -> Path:
     rows = math.ceil(len(panels) / cols)
     margin = 60
-    label_pad = 58
+    label_pad = PAPER_PANEL_LABEL_PAD
     gap_x = 36
     gap_y = 52
     width = margin * 2 + cols * cell_w + (cols - 1) * gap_x
     height = margin * 2 + rows * (cell_h + label_pad) + (rows - 1) * gap_y
     canvas = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(canvas)
-    label_font = _font(44, bold=True)
+    label_font = _font(PAPER_PANEL_LABEL_PX, bold=True)
     for idx, (label, src) in enumerate(panels):
         row, col = divmod(idx, cols)
         x = margin + col * (cell_w + gap_x)
@@ -2815,7 +2824,7 @@ def compose_grid_spans(
         rows.append(current)
 
     margin = 60
-    label_pad = 58
+    label_pad = PAPER_PANEL_LABEL_PAD
     gap_x = 36
     gap_y = 52
     width = margin * 2 + cols * cell_w + (cols - 1) * gap_x
@@ -2826,7 +2835,7 @@ def compose_grid_spans(
     height = margin * 2 + sum(row_heights) + len(rows) * label_pad + (len(rows) - 1) * gap_y
     canvas = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(canvas)
-    label_font = _font(44, bold=True)
+    label_font = _font(PAPER_PANEL_LABEL_PX, bold=True)
 
     y = margin
     for row_idx, row in enumerate(rows):
@@ -2864,7 +2873,7 @@ def compose_rows(
     wide_h: int = 620,
 ) -> Path:
     margin = 60
-    label_pad = 58
+    label_pad = PAPER_PANEL_LABEL_PAD
     gap_x = 36
     gap_y = 52
     width = margin * 2 + max_cols * cell_w + (max_cols - 1) * gap_x
@@ -2872,7 +2881,7 @@ def compose_rows(
     height = margin * 2 + sum(h + label_pad for h in row_heights) + (len(rows) - 1) * gap_y
     canvas = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(canvas)
-    label_font = _font(44, bold=True)
+    label_font = _font(PAPER_PANEL_LABEL_PX, bold=True)
     y = margin
     for row, row_h in zip(rows, row_heights):
         row_cols = len(row)
@@ -3095,7 +3104,7 @@ def render_fig4() -> Path:
     colors = _color_map(hue_union)
     colors.update({name: color for name, color in FIG2_MODEL_COLORS.items() if name in hue_union})
 
-    apply_gears_paper_style(font_scale=0.86)
+    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, axes = plt.subplots(1, 4, figsize=(8.4, 2.45), dpi=300, squeeze=False)
     specs = [
         ("a", pearson_axis, "Pearson", "Pearson", False, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
@@ -3131,7 +3140,7 @@ def render_fig4() -> Path:
         ncol=min(len(hue_union), 6),
         loc="upper center",
         bbox_to_anchor=(0.5, 1.035),
-        fontsize=7.8,
+        fontsize=PAPER_LEGEND_FONTSIZE,
         handlelength=0.9,
         columnspacing=0.8,
         handletextpad=0.35,
