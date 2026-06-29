@@ -57,10 +57,10 @@ DISPLAY_COLORS = {
     **BAR_MODEL_COLORS,
     "random": "#C8DCEB",
     "kNN": "#B7C8A6",
-    "OT": "#9FD9D3",
+    "OT": "#DDB328",
     "no reference": "#C9CDD1",
     "no prior": "#D8BFD8",
-    "full": "#9FD9D3",
+    "full": "#5DAE61",
 }
 FIG3_DATASET_COLORS = {
     "Adamson": "#B8DFDB",
@@ -73,7 +73,7 @@ FIG3_VARIANT_COLORS = {
     "OT": "#DDB328",
     "no reference": "#8E7CCB",
     "no prior": "#D45A4C",
-    "full": "#DDB328",
+    "full": "#5DAE61",
 }
 FIG2_MODEL_COLORS = {name: BAR_MODEL_COLORS[name] for name in ["TriShift", "CellOT", "GEARS", "BioLORD", "GenePert", "scGPT"]}
 PAPER_BAR_WIDTH_FRACTION = 0.68
