@@ -2930,10 +2930,10 @@ def render_fig2() -> Path:
                 condition="ELMSAN1+ctrl",
                 out=out_dir / "fig2g_elmsan1_case.png",
                 title="ELMSAN1+ctrl response case",
-                figsize=(11.8, 6.0),
-                legend_y=1.15,
-                layout_top=0.80,
-                layout_bottom=0.25,
+                figsize=(16.0, 6.8),
+                legend_y=1.12,
+                layout_top=0.82,
+                layout_bottom=0.27,
                 fallback=[
                     SERVER_REFRESH_ROOT
                     / "artifacts"
@@ -2947,7 +2947,7 @@ def render_fig2() -> Path:
         ),
     ]
     panel_specs = [
-        {"label": label, "src": src, "span": 2 if label == "g" else 1, "height_scale": 1.28 if label == "g" else 1.0}
+        {"label": label, "src": src, "span": 4 if label == "g" else 1, "height_scale": 1.32 if label == "g" else 1.0}
         for label, src in panels
     ]
     return compose_grid_spans(
