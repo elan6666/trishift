@@ -76,25 +76,30 @@ FIG3_VARIANT_COLORS = {
     "full": "#5DAE61",
 }
 FIG2_MODEL_COLORS = {name: BAR_MODEL_COLORS[name] for name in ["TriShift", "CellOT", "GEARS", "BioLORD", "GenePert", "scGPT"]}
-PAPER_BAR_WIDTH_FRACTION = 0.68
+PAPER_GROUP_WIDTH = 0.90
+PAPER_BAR_STEP_MAX = 0.18
+PAPER_BAR_WIDTH_FRACTION = 0.94
 PAPER_BAR_EDGE_COLOR = "black"
-PAPER_BAR_EDGE_LW = 0.8
-PAPER_SINGLE_BAR_WIDTH = 0.42
+PAPER_BAR_EDGE_LW = 0.6
+PAPER_SINGLE_BAR_WIDTH = 0.58
 PAPER_ERROR_COLOR = "#333333"
-PAPER_ERROR_LW = 0.7
-PAPER_ERROR_CAPSIZE = 0.0
+PAPER_ERROR_LW = 0.8
+PAPER_ERROR_CAPSIZE = 1.5
 PAPER_FIG_FONT_SCALE = 0.80
 PAPER_AXIS_LABEL_FONTSIZE = 8.0
 PAPER_TITLE_FONTSIZE = 8.2
 PAPER_TICK_FONTSIZE = 7.4
 PAPER_LEGEND_FONTSIZE = 6.4
 PAPER_SMALL_TEXT_FONTSIZE = 6.2
-PAPER_PANEL_LABEL_PX = 34
-PAPER_PANEL_LABEL_PT = 9.0
+PAPER_PANEL_LABEL_PX = 30
+PAPER_PANEL_LABEL_PT = 8.8
 PAPER_PANEL_LABEL_PAD = 46
-PAPER_FIG4_BAR_PANEL_FIGSIZE = (3.4, 4.3)
+PAPER_FIG4_BAR_PANEL_FIGSIZE = (3.7, 4.3)
 PAPER_FIG4_BAR_CELL_W = 463
 PAPER_FIG4_BAR_CELL_H = 538
+PAPER_FIG5_BAR_PANEL_FIGSIZE = (5.0, 4.3)
+PAPER_FIG5_BAR_CELL_W = 629
+PAPER_FIG5_BAR_CELL_H = 538
 RESULT_MODE = "unseen_ctrl"
 REQUIRED_PBMC_PROTOCOL = "true_unseen_target_domain_ctrl"
 SUPP_DIRS = {
@@ -135,7 +140,7 @@ def _paper_error_kwargs() -> dict[str, object]:
         "color": PAPER_ERROR_COLOR,
         "linewidth": PAPER_ERROR_LW,
         "capsize": PAPER_ERROR_CAPSIZE,
-        "capthick": 0,
+        "capthick": PAPER_ERROR_LW,
     }
 
 
@@ -781,10 +786,10 @@ def _visible_limit(values: pd.Series) -> float | None:
 
 def _group_mark_width(
     max_present: int,
-    group_width: float = 0.82,
+    group_width: float = PAPER_GROUP_WIDTH,
     *,
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
-    bar_step_max: float = 0.15,
+    bar_step_max: float = PAPER_BAR_STEP_MAX,
 ) -> tuple[float, float]:
     base_width = min(bar_step_max, group_width / max(max_present, 1))
     return base_width, base_width * bar_width_fraction
@@ -803,9 +808,9 @@ def _draw_grouped_summary_axis(
     hue_col: str = "model",
     colors: dict[str, object] | None = None,
     cap_extreme: bool = False,
-    group_width: float = 0.82,
+    group_width: float = PAPER_GROUP_WIDTH,
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
-    bar_step_max: float = 0.15,
+    bar_step_max: float = PAPER_BAR_STEP_MAX,
     xtick_rotation: float = 26,
     xtick_ha: str = "right",
 ) -> None:
@@ -895,9 +900,9 @@ def compact_bar_panel(
     xtick_rotation: float = 32,
     xtick_ha: str = "right",
     grid_axis: str | None = None,
-    group_width: float = 0.82,
+    group_width: float = PAPER_GROUP_WIDTH,
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
-    bar_step_max: float = 0.15,
+    bar_step_max: float = PAPER_BAR_STEP_MAX,
     x_step: float = 1.0,
 ) -> Path:
     plot = _metric_plot_frame(df, metric_col, x_col=x_col, hue_col=hue_col)
@@ -1017,9 +1022,9 @@ def compact_summary_bar_panel(
     xtick_rotation: float = 32,
     xtick_ha: str = "right",
     grid_axis: str | None = None,
-    group_width: float = 0.82,
+    group_width: float = PAPER_GROUP_WIDTH,
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
-    bar_step_max: float = 0.15,
+    bar_step_max: float = PAPER_BAR_STEP_MAX,
     x_step: float = 1.0,
 ) -> Path:
     if df.empty or x_col not in df.columns or hue_col not in df.columns or value_col not in df.columns:
@@ -1330,9 +1335,9 @@ def ablation_metric_panel(
         xtick_rotation=0,
         xtick_ha="center",
         grid_axis=None,
-        group_width=0.82,
+        group_width=PAPER_GROUP_WIDTH,
         bar_width_fraction=PAPER_BAR_WIDTH_FRACTION,
-        bar_step_max=0.15,
+        bar_step_max=PAPER_BAR_STEP_MAX,
         x_step=1.0,
     )
 
@@ -2917,9 +2922,9 @@ def render_fig2() -> Path:
         "layout_top": 0.84,
         "title_pad": 4,
         "grid_axis": None,
-        "group_width": 0.82,
+        "group_width": PAPER_GROUP_WIDTH,
         "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
-        "bar_step_max": 0.15,
+        "bar_step_max": PAPER_BAR_STEP_MAX,
         "x_step": 1.0,
         "xtick_rotation": 24,
         "xtick_ha": "right",
@@ -3064,14 +3069,14 @@ def render_fig4() -> Path:
         "layout_top": 0.84,
         "title_pad": 4,
         "grid_axis": None,
-        "group_width": 0.78,
+        "group_width": PAPER_GROUP_WIDTH,
         "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
-        "bar_step_max": 0.20,
+        "bar_step_max": PAPER_BAR_STEP_MAX,
         "x_step": 1.10,
         "xtick_rotation": 0,
         "xtick_ha": "center",
     }
-    fig4_overlap_kwargs = {**fig4_bar_kwargs, "group_width": 0.56, "bar_step_max": 0.14}
+    fig4_overlap_kwargs = {**fig4_bar_kwargs, "group_width": 0.68, "bar_step_max": 0.17}
 
     if _has_subgroup_metric(norman, "pearson"):
         pearson_axis, xs, hues = _summary_for_axis(norman, "pearson", x_col="subgroup", x_order=SUBGROUP_ORDER)
@@ -3107,10 +3112,10 @@ def render_fig4() -> Path:
     apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
     fig, axes = plt.subplots(1, 4, figsize=(8.4, 2.45), dpi=300, squeeze=False)
     specs = [
-        ("a", pearson_axis, "Pearson", "Pearson", False, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("b", nmse_axis, "nMSE", "nMSE", True, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("c", systema_axis, "Systema", "Systema Pearson", False, 0.82, 0.15, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("d", overlap_axis, "Overlap@20", "Overlap@20", False, 0.72, 0.14, "dataset", ["Norman"], 0, "center"),
+        ("a", pearson_axis, "Pearson", "Pearson", False, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("b", nmse_axis, "nMSE", "nMSE", True, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("c", systema_axis, "Systema", "Systema Pearson", False, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
+        ("d", overlap_axis, "Overlap@20", "Overlap@20", False, 0.68, 0.17, "dataset", ["Norman"], 0, "center"),
     ]
     for ax, (label, summary, title, ylabel, cap, group_width, bar_step_max, x_col, x_values, xrot, xha) in zip(axes.flat, specs):
         _draw_grouped_summary_axis(
@@ -3172,14 +3177,14 @@ def render_fig5() -> Path:
         metrics = metrics[~(metrics["dataset"].eq("PBMC") & metrics["model"].eq("BioLORD"))].copy()
     _write_source(metrics, out_dir / "fig5_summary_used.csv")
     fig5_bar_kwargs = {
-        "figsize": PAPER_FIG4_BAR_PANEL_FIGSIZE,
+        "figsize": PAPER_FIG5_BAR_PANEL_FIGSIZE,
         "legend_y": 1.22,
         "layout_top": 0.82,
         "title_pad": 6,
         "grid_axis": None,
-        "group_width": 0.82,
+        "group_width": PAPER_GROUP_WIDTH,
         "bar_width_fraction": PAPER_BAR_WIDTH_FRACTION,
-        "bar_step_max": 0.15,
+        "bar_step_max": PAPER_BAR_STEP_MAX,
         "x_step": 1.0,
     }
     panels = [
@@ -3246,8 +3251,8 @@ def render_fig5() -> Path:
         panels,
         COMP_ROOT / "fig5_main_composite.png",
         cols=3,
-        cell_w=PAPER_FIG4_BAR_CELL_W,
-        cell_h=PAPER_FIG4_BAR_CELL_H,
+        cell_w=PAPER_FIG5_BAR_CELL_W,
+        cell_h=PAPER_FIG5_BAR_CELL_H,
     )
 
 
