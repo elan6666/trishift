@@ -1,7 +1,7 @@
 ﻿# TriShift 默认配置（总入口：scripts/run_dataset.py）
 
 # 每个 pert 细胞匹配的 top-k control 邻居数。
-k_topk: 100
+k_topk: 300
 # control/pert 匹配方式：knn | ot | knn_ot | soft_ot | scpram_ot。
 matching_mode: ot
 # matching_mode options: knn | ot (Sinkhorn OT) | knn_ot | soft_ot | scpram_ot (EMD / POT ot.emd)
@@ -244,4 +244,4 @@ model:
     # Stage3 dropout。
     dropout: 0.0
     # 残差头：x_pred = x_ctrl + delta_x。
-    use_residual_head: false
+    use_residual_head: true

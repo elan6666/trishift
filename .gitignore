@@ -42,7 +42,8 @@ output/pdf/
 artifacts/
 csv_output/
 external/
-docs/
+docs/*
+!docs/perturbation_prediction_writing_patterns.md
 
 # Local datasets / embeddings (too large for git)
 src/data/
