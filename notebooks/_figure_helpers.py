@@ -904,6 +904,7 @@ def compact_bar_panel(
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
     bar_step_max: float = PAPER_BAR_STEP_MAX,
     x_step: float = 1.0,
+    show_legend: bool = True,
 ) -> Path:
     plot = _metric_plot_frame(df, metric_col, x_col=x_col, hue_col=hue_col)
     if plot.empty:
@@ -987,12 +988,14 @@ def compact_bar_panel(
         if not vals.empty and vals.min() >= 0:
             ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis=grid_axis)
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
-        for h in hues
-    ]
-    _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
-    fig.tight_layout(pad=0.35, rect=(0, 0, 1, layout_top))
+    if show_legend:
+        handles = [
+            plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
+            for h in hues
+        ]
+        _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
+    rect_top = layout_top if show_legend else 0.92
+    fig.tight_layout(pad=0.35, rect=(0, 0, 1, rect_top))
     out.parent.mkdir(parents=True, exist_ok=True)
     _save_figure(fig, out, vector_sidecar=True)
     plt.close(fig)
@@ -1026,6 +1029,7 @@ def compact_summary_bar_panel(
     bar_width_fraction: float = PAPER_BAR_WIDTH_FRACTION,
     bar_step_max: float = PAPER_BAR_STEP_MAX,
     x_step: float = 1.0,
+    show_legend: bool = True,
 ) -> Path:
     if df.empty or x_col not in df.columns or hue_col not in df.columns or value_col not in df.columns:
         return no_data_panel(out, title)
@@ -1114,12 +1118,14 @@ def compact_summary_bar_panel(
     elif not summary["mean"].dropna().empty and summary["mean"].dropna().min() >= 0:
         ax.set_ylim(bottom=0)
     style_axis(ax, grid_axis=grid_axis)
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
-        for h in hues
-    ]
-    _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
-    fig.tight_layout(pad=0.35, rect=(0, 0, 1, layout_top))
+    if show_legend:
+        handles = [
+            plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs(bar_alpha))
+            for h in hues
+        ]
+        _legend_above(ax, handles, hues, ncol=min(4, max(1, len(hues))), y=legend_y)
+    rect_top = layout_top if show_legend else 0.92
+    fig.tight_layout(pad=0.35, rect=(0, 0, 1, rect_top))
     out.parent.mkdir(parents=True, exist_ok=True)
     _save_figure(fig, out, vector_sidecar=True)
     plt.close(fig)
@@ -2772,9 +2778,134 @@ def crop_white(im: Image.Image, pad: int = 10) -> Image.Image:
     return rgba.crop((max(0, l - pad), max(0, t - pad), min(rgba.width, r + pad), min(rgba.height, b + pad)))
 
 
-def fit(im: Image.Image, max_w: int, max_h: int) -> Image.Image:
+def fit(im: Image.Image, max_w: int, max_h: int, *, allow_upscale: bool = True) -> Image.Image:
     scale = min(max_w / max(1, im.width), max_h / max(1, im.height))
+    if not allow_upscale:
+        scale = min(scale, 1.0)
     return im.resize((max(1, int(im.width * scale)), max(1, int(im.height * scale))), Image.Resampling.LANCZOS)
+
+
+def fig2_shared_model_legend_panel(out: Path) -> Path:
+    rows = [
+        ["TriShift", "GEARS", "GenePert"],
+        ["CellOT", "BioLORD", "scGPT"],
+    ]
+    font = _font(24)
+    box_w = 20
+    box_h = 15
+    box_gap = 8
+    item_gap = 24
+    row_gap = 18
+    pad_x = 22
+    pad_y = 18
+
+    def text_size(draw: ImageDraw.ImageDraw, text: str) -> tuple[int, int]:
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        return right - left, bottom - top
+
+    scratch = Image.new("RGBA", (1, 1), (255, 255, 255, 0))
+    scratch_draw = ImageDraw.Draw(scratch)
+    row_sizes: list[list[tuple[str, int, int]]] = []
+    row_widths: list[int] = []
+    row_heights: list[int] = []
+    for row in rows:
+        measured = []
+        width = 0
+        height = box_h
+        for label in row:
+            text_w, text_h = text_size(scratch_draw, label)
+            item_w = box_w + box_gap + text_w
+            measured.append((label, item_w, text_h))
+            width += item_w
+            height = max(height, text_h, box_h)
+        width += item_gap * max(0, len(row) - 1)
+        row_sizes.append(measured)
+        row_widths.append(width)
+        row_heights.append(height)
+
+    canvas_w = max(row_widths) + 2 * pad_x
+    canvas_h = sum(row_heights) + row_gap * (len(rows) - 1) + 2 * pad_y
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+
+    y = pad_y
+    for measured, row_w, row_h in zip(row_sizes, row_widths, row_heights):
+        x = (canvas_w - row_w) // 2
+        for label, item_w, text_h in measured:
+            color = FIG2_MODEL_COLORS[label]
+            box_y = y + (row_h - box_h) // 2
+            draw.rectangle(
+                (x, box_y, x + box_w, box_y + box_h),
+                fill=color,
+                outline=(0, 0, 0),
+                width=2,
+            )
+            text_y = y + (row_h - text_h) // 2 - 1
+            draw.text((x + box_w + box_gap, text_y), label, fill=(0, 0, 0), font=font)
+            x += item_w + item_gap
+        y += row_h + row_gap
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(out, quality=95)
+    _write_source(
+        pd.DataFrame(
+            [
+                {"row": row_idx + 1, "label": label, "color": FIG2_MODEL_COLORS[label]}
+                for row_idx, row in enumerate(rows)
+                for label in row
+            ]
+        ),
+        out.with_suffix(".csv"),
+    )
+    return out
+
+
+def add_top_legend_to_composite(
+    image_path: Path,
+    labels: list[str],
+    *,
+    y: int = 22,
+    font_px: int = 20,
+    box_w: int = 18,
+    box_h: int = 14,
+    box_gap: int = 8,
+    item_gap: int = 22,
+) -> Path:
+    if not labels:
+        return image_path
+    image = Image.open(image_path).convert("RGBA")
+    draw = ImageDraw.Draw(image)
+    font = _font(font_px)
+    items: list[tuple[str, int, int]] = []
+    total_w = 0
+    for label in labels:
+        left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+        text_w = right - left
+        text_h = bottom - top
+        item_w = box_w + box_gap + text_w
+        items.append((label, item_w, text_h))
+        total_w += item_w
+    total_w += item_gap * max(0, len(items) - 1)
+    x = (image.width - total_w) // 2
+    row_h = max([box_h] + [text_h for _, _, text_h in items])
+    for label, item_w, text_h in items:
+        color = FIG2_MODEL_COLORS.get(label, DISPLAY_COLORS.get(label, "#BBBBBB"))
+        box_y = y + (row_h - box_h) // 2
+        draw.rectangle(
+            (x, box_y, x + box_w, box_y + box_h),
+            fill=color,
+            outline=(0, 0, 0),
+            width=1,
+        )
+        text_y = y + (row_h - text_h) // 2 - 1
+        draw.text((x + box_w + box_gap, text_y), label, fill=(0, 0, 0), font=font)
+        x += item_w + item_gap
+    image.convert("RGB").save(image_path, quality=95)
+    _write_source(
+        pd.DataFrame({"label": labels, "color": [FIG2_MODEL_COLORS.get(label, DISPLAY_COLORS.get(label, "#BBBBBB")) for label in labels]}),
+        image_path.with_name(f"{image_path.stem}_legend.csv"),
+    )
+    return image_path
 
 
 def compose_grid(panels: list[tuple[str, Path]], out: Path, *, cols: int, cell_w: int = 980, cell_h: int = 620) -> Path:
@@ -2853,12 +2984,21 @@ def compose_grid_spans(
             height_scale = float(panel.get("height_scale", 1.0))
             slot_h = int(round(cell_h * height_scale))
             slot_w = span * cell_w + (span - 1) * gap_x
-            draw.text((x, y), label, fill=(0, 0, 0), font=label_font)
+            if label:
+                draw.text((x, y), label, fill=(0, 0, 0), font=label_font)
             if not src.exists():
                 src = no_data_panel(src, src.stem)
-            im = fit(crop_white(Image.open(src), pad=12), slot_w, slot_h)
+            im = fit(
+                crop_white(Image.open(src), pad=12),
+                slot_w,
+                slot_h,
+                allow_upscale=bool(panel.get("allow_upscale", True)),
+            )
             px = x + (slot_w - im.width) // 2
-            py = y + label_pad + (row_h - im.height) // 2
+            if str(panel.get("valign", "center")) == "top":
+                py = y + label_pad
+            else:
+                py = y + label_pad + (row_h - im.height) // 2
             canvas.alpha_composite(im, (px, py))
             x += slot_w + gap_x
         y += row_h + label_pad + gap_y
@@ -2928,6 +3068,7 @@ def render_fig2() -> Path:
         "x_step": 1.0,
         "xtick_rotation": 24,
         "xtick_ha": "right",
+        "show_legend": False,
     }
     panels = [
         ("a", compact_bar_panel(metrics, "pearson", out_dir / "fig2a_pearson.png", "Held-out/reference transfer Pearson", "Pearson", **fig2_bar_kwargs)),
@@ -2960,9 +3101,16 @@ def render_fig2() -> Path:
             ),
         ),
     ]
+    legend_panel = fig2_shared_model_legend_panel(out_dir / "fig2_shared_model_legend.png")
     panel_specs = [
-        {"label": label, "src": src, "span": 4 if label == "g" else 1, "height_scale": 1.32 if label == "g" else 1.0}
-        for label, src in panels
+        {"label": "a", "src": panels[0][1], "span": 1},
+        {"label": "b", "src": panels[1][1], "span": 1},
+        {"label": "", "src": legend_panel, "span": 2, "allow_upscale": False},
+        {"label": "c", "src": panels[2][1], "span": 1},
+        {"label": "d", "src": panels[3][1], "span": 1},
+        {"label": "e", "src": panels[4][1], "span": 1},
+        {"label": "f", "src": panels[5][1], "span": 1},
+        {"label": "g", "src": panels[6][1], "span": 4, "height_scale": 1.32},
     ]
     return compose_grid_spans(
         panel_specs,
@@ -3109,52 +3257,87 @@ def render_fig4() -> Path:
     colors = _color_map(hue_union)
     colors.update({name: color for name, color in FIG2_MODEL_COLORS.items() if name in hue_union})
 
-    apply_gears_paper_style(font_scale=PAPER_FIG_FONT_SCALE)
-    fig, axes = plt.subplots(1, 4, figsize=(8.4, 2.45), dpi=300, squeeze=False)
-    specs = [
-        ("a", pearson_axis, "Pearson", "Pearson", False, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("b", nmse_axis, "nMSE", "nMSE", True, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("c", systema_axis, "Systema", "Systema Pearson", False, PAPER_GROUP_WIDTH, PAPER_BAR_STEP_MAX, "subgroup", SUBGROUP_ORDER, 24, "right"),
-        ("d", overlap_axis, "Overlap@20", "Overlap@20", False, 0.68, 0.17, "dataset", ["Norman"], 0, "center"),
+    panel_kwargs = {key: value for key, value in fig4_bar_kwargs.items() if key != "color_overrides"}
+    panel_kwargs["show_legend"] = False
+    overlap_panel_kwargs = {**panel_kwargs, "group_width": 0.68, "bar_step_max": 0.17}
+    panels = [
+        {
+            "label": "a",
+            "src": compact_summary_bar_panel(
+                pearson_axis,
+                out_dir / "fig4a_subgroup_pearson.png",
+                "Pearson",
+                "Pearson",
+                x_col="subgroup",
+                hue_col="model",
+                x_order=SUBGROUP_ORDER,
+                hue_order=hue_union,
+                color_overrides=colors,
+                cap_extreme=False,
+                **panel_kwargs,
+            ),
+            "valign": "top",
+        },
+        {
+            "label": "b",
+            "src": compact_summary_bar_panel(
+                nmse_axis,
+                out_dir / "fig4b_subgroup_nmse.png",
+                "nMSE",
+                "nMSE",
+                x_col="subgroup",
+                hue_col="model",
+                x_order=SUBGROUP_ORDER,
+                hue_order=hue_union,
+                color_overrides=colors,
+                cap_extreme=True,
+                **panel_kwargs,
+            ),
+            "valign": "top",
+        },
+        {
+            "label": "c",
+            "src": compact_summary_bar_panel(
+                systema_axis,
+                out_dir / "fig4c_subgroup_systema.png",
+                "Systema",
+                "Systema Pearson",
+                x_col="subgroup",
+                hue_col="model",
+                x_order=SUBGROUP_ORDER,
+                hue_order=hue_union,
+                color_overrides=colors,
+                cap_extreme=False,
+                **panel_kwargs,
+            ),
+            "valign": "top",
+        },
+        {
+            "label": "d",
+            "src": compact_summary_bar_panel(
+                overlap_axis,
+                out_dir / "fig4d_overlap_at_20.png",
+                "Overlap@20",
+                "Overlap@20",
+                x_col="dataset",
+                hue_col="model",
+                x_order=["Norman"],
+                hue_order=hue_union,
+                color_overrides=colors,
+                cap_extreme=False,
+                **overlap_panel_kwargs,
+            ),
+            "valign": "top",
+        },
     ]
-    for ax, (label, summary, title, ylabel, cap, group_width, bar_step_max, x_col, x_values, xrot, xha) in zip(axes.flat, specs):
-        _draw_grouped_summary_axis(
-            ax,
-            summary,
-            metric_title=title,
-            ylabel=ylabel,
-            panel_label=label,
-            xs=x_values,
-            hues=hue_union,
-            x_col=x_col,
-            colors=colors,
-            cap_extreme=cap,
-            group_width=group_width,
-            bar_step_max=bar_step_max,
-            xtick_rotation=xrot,
-            xtick_ha=xha,
-        )
-    handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor=colors[h], **_paper_bar_kwargs())
-        for h in hue_union
-    ]
-    fig.legend(
-        handles,
-        hue_union,
-        frameon=False,
-        ncol=min(len(hue_union), 6),
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.035),
-        fontsize=PAPER_LEGEND_FONTSIZE,
-        handlelength=0.9,
-        columnspacing=0.8,
-        handletextpad=0.35,
+    out = compose_grid_spans(
+        panels,
+        COMP_ROOT / "fig4_main_composite.png",
+        cols=4,
+        cell_w=PAPER_FIG4_BAR_CELL_W,
+        cell_h=380,
     )
-    fig.subplots_adjust(left=0.065, right=0.995, bottom=0.23, top=0.80, wspace=0.52)
-    out = COMP_ROOT / "fig4_main_composite.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    _save_figure(fig, out, vector_sidecar=True)
-    plt.close(fig)
+    add_top_legend_to_composite(out, hue_union)
     _write_source(pearson_axis, out_dir / "fig4a_subgroup_pearson.csv")
     _write_source(nmse_axis, out_dir / "fig4b_subgroup_nmse.csv")
     _write_source(systema_axis, out_dir / "fig4c_subgroup_systema.csv")
