@@ -8,10 +8,7 @@ Project-level instructions for agents working in the TriShift code repository.
   figure-generation provenance and server-side execution.
 - Manuscript prose, captions, supplement text and compiled paper PDFs are owned
   by `/Users/elan/code/trishift-paper`. When a task touches manuscript text,
-  follow that repository's `AGENTS.md`, where paper optimization starts from
-  `byte-do`, uses `perturbation-prediction-writing` as the primary guide,
-  applies `nature-polishing` only as an auxiliary layer, and ends with a
-  `pre-submission-reviewer` gate for substantive edits.
+  follow that repository's `AGENTS.md`.
 - Do not stage or commit changes unless the user explicitly asks.
 
 ## Manuscript Touchpoints
