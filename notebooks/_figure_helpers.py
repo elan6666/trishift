@@ -102,6 +102,7 @@ PAPER_FIG5_BAR_CELL_W = 629
 PAPER_FIG5_BAR_CELL_H = 538
 RESULT_MODE = "unseen_ctrl"
 REQUIRED_PBMC_PROTOCOL = "true_unseen_target_domain_ctrl"
+OFFICIAL_PBMC_SPLITS = {1, 2, 3, 4, 5}
 SUPP_DIRS = {
     "figs1": "FigS1_ReferenceTransferFull",
     "figs2": "FigS2_AdditionalCases",
@@ -273,6 +274,18 @@ def _assert_pbmc_protocol_df(df: pd.DataFrame, source: Path) -> None:
             )
 
 
+def _filter_official_pbmc_splits(df: pd.DataFrame, source: Path) -> pd.DataFrame:
+    if df.empty or "split_id" not in df.columns:
+        return df
+    split_ids = pd.to_numeric(df["split_id"], errors="coerce")
+    keep = split_ids.isin(OFFICIAL_PBMC_SPLITS)
+    if not keep.any():
+        raise ValueError(
+            f"PBMC result source has no official split1-5 rows after filtering: {source}"
+        )
+    return df.loc[keep].copy()
+
+
 def _assert_pbmc_payload_protocol(item: dict[str, object], source: object = "payload") -> None:
     meta = item.get("export_metadata", {}) if isinstance(item, dict) else {}
     if not isinstance(meta, dict):
@@ -323,6 +336,8 @@ def _mean_metrics_from_csv(path: Path) -> dict[str, float]:
     df = _read_csv(path)
     if df.empty:
         return {}
+    if "scgen_pbmc_celltype" in str(path):
+        df = _filter_official_pbmc_splits(df, path)
     values: dict[str, float] = {}
     for col in df.columns:
         if col in {"split", "split_id", "condition", "dataset", "model", "status", "subgroup", "source_file"}:
@@ -406,6 +421,7 @@ def collect_prediction_metrics(*, heldout: bool = True) -> pd.DataFrame:
             continue
         if _display_dataset(dataset) == "PBMC":
             _assert_pbmc_protocol_df(df, source_path)
+            df = _filter_official_pbmc_splits(df, source_path)
         df = df.copy()
         df["model"] = model
         df["dataset"] = _display_dataset(dataset)
@@ -421,6 +437,7 @@ def collect_prediction_metrics(*, heldout: bool = True) -> pd.DataFrame:
             if cellot.empty:
                 continue
             _assert_pbmc_protocol_df(cellot, cellot_path)
+            cellot = _filter_official_pbmc_splits(cellot, cellot_path)
             cellot = cellot.copy()
             cellot["model"] = "CellOT"
             if "dataset" not in cellot.columns:
@@ -490,7 +507,7 @@ def collect_prediction_summary_metrics(*, heldout: bool = True, cellot_pbmc_only
                 base / "metrics_unseen_ctrl.csv",
             )
         row = _mean_metric_row(
-            txt_path=base / "mean_pearson.txt",
+            txt_path=base / "__ignore_mean_pearson_for_pbmc__.txt",
             csv_path=base / "metrics.csv",
             model=model,
             dataset="PBMC",

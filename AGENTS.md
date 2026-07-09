@@ -18,10 +18,20 @@ Project-level instructions for agents working in the TriShift code repository.
   1. Chinese manuscript;
   2. English manuscript;
   3. Supplement, only when definitions, provenance or extra diagnostics change.
+- If benchmark results, baseline outputs, ablation values or figure-derived
+  numerical claims change, update both the Bioinformatics manuscript package and
+  the BIBM manuscript package in `/Users/elan/code/trishift-paper`; do not leave
+  one venue version on stale result values.
 - Treat the Chinese manuscript as the content source of truth for claim order,
   terminology, figure references, caveats and interpretation.
 - Keep Chinese and English scientific content synchronized after every
   manuscript-relevant change.
+- When server results, metric summaries, table values or figure source data
+  change, update both manuscript tracks that depend on them: the Bioinformatics
+  version in `/Users/elan/code/trishift-paper` and the BIBM version under
+  `/Users/elan/code/trishift-paper/bibm2026`. For example, PBMC ablation results
+  from the current true-unseen target-domain protocol should replace the
+  corresponding ablation values in both versions.
 
 ## Figure Workflow
 
