@@ -1,20 +1,68 @@
-# TriShift: Tripartite Reference-Conditioned Shift Model
+<div align="center">
+  <img src="assets/branding/trishift-avatar.png" alt="TriShift avatar" width="152" />
 
-TriShift is a single-cell perturbation response prediction toolkit built around the `Tripartite Reference-Conditioned Shift Model` (`TriShift`). The repository contains the native TriShift implementation, shared evaluation code, benchmark wrappers for major baselines, and the notebooks used to generate the paper figures.
+  <h1>TriShift</h1>
 
-The project uses a `src/` layout and is installable as a Python package.
+  <p><strong>让 AI 从状态匹配的参考细胞出发，预测未见扰动下的单细胞响应。</strong></p>
+  <p><em>A reference-conditioned framework for predicting single-cell perturbation responses beyond observed perturbation space.</em></p>
 
-## Method overview
+  <p>
+    <a href="https://github.com/elan6666/trishift/stargazers"><img src="https://img.shields.io/github/stars/elan6666/trishift?style=flat-square&color=5B8FF9" alt="GitHub stars" /></a>
+    <a href="https://github.com/elan6666/trishift/network/members"><img src="https://img.shields.io/github/forks/elan6666/trishift?style=flat-square&color=8B5CF6" alt="GitHub forks" /></a>
+    <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-%3E%3D3.10-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python >= 3.10" /></a>
+    <a href="https://github.com/elan6666/trishift-paper"><img src="https://img.shields.io/badge/paper-source-0F766E?style=flat-square" alt="Paper source" /></a>
+  </p>
 
-Overall framework:
+  <p><a href="#for-users">English</a> · <a href="#为什么选择-trishift">中文</a></p>
+</div>
 
-![TriShift overview](assets/readme/fig1a_white.png)
+---
 
-Detailed pipeline:
+## 📰 News
 
-![TriShift pipeline](assets/readme/fig1b_white.png)
+- **[2026-07-11]** The public repository now uses the manuscript's current Fig. 1 as its overview, adds a project avatar, and reorganizes the README around the scientific problem, method, and reproducibility paths.
+- **[2026-07-11]** The repository documents a reference-conditioned view of perturbation prediction: an unseen perturbation requires both a perturbation-specific shift and a compatible starting cell state.
+
+---
+
+## 为什么选择 TriShift？
+
+单细胞扰动实验揭示了细胞如何响应基因编辑、药物、细胞因子和组合条件，但实验空间会随扰动、剂量、时间、细胞状态和个体背景迅速膨胀。仅凭“扰动是什么”并不能决定预测应从哪一种细胞状态开始。
+
+TriShift 将这个问题拆成三个相互依赖的部分：
+
+- **找对起点：** 用最优传输从未配对观测中构建状态兼容的参考候选，而不把它误解为真实的一对一细胞配对。
+- **表示未知扰动：** 结合外部扰动先验，帮助模型在训练中没有直接观测的扰动上形成可迁移表示。
+- **生成条件响应：** 从参考细胞出发，预测参考相对的表达位移，同时保留群体异质性而非只回归平均终点。
+
+这使 TriShift 适用于严格的未见扰动、参考转移、组合泛化与分布恢复评估；不同指标衡量不同失败模式，因此仓库同时保留端点、响应基因与分布层面的诊断。
+
+## 方法概览
+
+<p align="center">
+  <img src="assets/readme/trishift-fig1.png" alt="TriShift manuscript Figure 1: experimental data, representation learning, OT reference retrieval, shift prediction, and reference-conditioned generation" width="100%" />
+</p>
+
+*Current manuscript Fig. 1. TriShift learns a retrieval representation, constructs OT-guided state-compatible reference pools, predicts a perturbation-specific shift, and generates a reference-conditioned response.*
+
+## 从这里开始
+
+| 你的目标 | 推荐入口 |
+| --- | --- |
+| 快速验证核心训练/预测路径 | [Adamson mini demo](#built-in-adamson-mini-demo) |
+| 用自己的 `AnnData` 运行 TriShift | [custom-dataset tutorial](#minimal-custom-dataset-tutorial) |
+| 复现实验、基线与论文图 | [reproducibility guide](#for-reproducibility) |
+| 查看论文源文件与编译产物 | [TriShift paper repository](https://github.com/elan6666/trishift-paper) |
+
+---
 
 ## For Users
+
+TriShift is a single-cell perturbation response prediction toolkit built around
+the `Tripartite Reference-Conditioned Shift Model`. The repository contains the
+native implementation, shared evaluation code, baseline wrappers, and the
+notebooks used to generate manuscript figures. It uses a `src/` layout and is
+installable as a Python package.
 
 ### Install the core package
 
