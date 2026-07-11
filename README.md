@@ -493,5 +493,4 @@ Primary outputs are written under:
 ### Notes
 
 - Legacy top-level `scripts/run_*` files, if present, should be treated as compatibility entrypoints rather than the primary maintained interface.
-- Local paper drafts and supporting notes may live under `docs/`; this directory is intentionally ignored by git and is not part of the reproducible repository interface.
 - Large local outputs, datasets, and external baseline clones are intentionally ignored by git.

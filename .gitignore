@@ -23,6 +23,7 @@ nul
 # Local assistant / temp
 .backup/
 .byte-os/
+AGENTS.md
 assets/biorender/
 .claude/
 .qoder/
@@ -43,8 +44,6 @@ artifacts/
 csv_output/
 external/
 docs/*
-!docs/perturbation_prediction_writing_patterns.md
-!docs/unseen_perturbation_generalization_2025plus.md
 
 # Local datasets / embeddings (too large for git)
 src/data/

@@ -307,7 +307,6 @@ The following directories are intentionally local and ignored by git:
 - `src/data/`
 - `artifacts/`
 - `external/`
-- `docs/`
 - `output/`
 
 Do not use ignored directories as public repository entrypoints. Use the scripts and configs tracked in git.
